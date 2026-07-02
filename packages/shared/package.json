@@ -1,0 +1,19 @@
+{
+  "name": "@00/shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "echo 'shared is source-only (consumed via TS paths)'",
+    "test": "echo 'no tests'"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
