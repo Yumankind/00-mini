@@ -226,3 +226,14 @@ export interface ProviderCatalogEntry {
 export interface ProviderCatalogResponse {
   providers: ProviderCatalogEntry[];
 }
+
+/** A custom OpenAI-compatible provider (endpoint + key + model list), as pi's models.json holds it.
+ *  `hasKey` and never the key: a provider list is drawn on every settings screen. */
+export interface CustomProviderView {
+  id: string;
+  label: string;
+  baseUrl: string;
+  api: string;
+  models: string[];
+  hasKey: boolean;
+}

@@ -250,3 +250,71 @@ export interface CommsCatalogResponse {
 export interface InstalledCommsResponse {
   channels: string[];
 }
+
+// ── What one channel can DO with a message, and who is on the other end ──────────────────────────
+
+/**
+ * What a transport can actually do with ONE message: "both" = we can send it AND read it; "receive" =
+ * it arrives and renders, but we cannot send one; "none" = the transport has no such concept (or no
+ * path to it we would trust).
+ *
+ * Reactions and quoted replies exist on most transports, but not symmetrically: iMessage delivers
+ * tapbacks and inline replies and has no way to send either. Offering a react button that would be
+ * dropped on the floor is worse than not offering one, so the UI asks the table first — and that table
+ * (`MESSAGE_ACTION_CAPS`) lives in the engine, beside the adapters that do the sending, because it is a
+ * fact about them. Only the SHAPE of the answer lives here.
+ */
+export type ActionSupport = "none" | "receive" | "both";
+
+export interface MessageActionCaps {
+  react: ActionSupport;
+  reply: ActionSupport;
+}
+
+/** "main" = the agent itself, with its workspace and tools. "public" = the restricted light agent. */
+export type SenderMode = "main" | "public";
+
+/** One person (or group) that has written to a channel the agent answers on, and which agent they get. */
+export interface DirectSender {
+  channel: string;
+  /** The conversation id (a Telegram chat id — a person's chat or a group's). */
+  threadId: string;
+  name?: string;
+  /** Their @handle, when the channel has one — what the owner will actually recognise. */
+  username?: string;
+  isGroup?: boolean;
+  mode: SenderMode;
+  firstSeen: string;
+  lastSeen: string;
+  messages: number;
+  /** When the owner last changed the mode, so the UI can show a decision as deliberate. */
+  decidedAt?: string;
+}
+
+/** Telegram-as-the-operator (GramJS, QR login) — everything a link screen needs to draw itself. */
+export interface TelegramStatus {
+  /** GramJS importable (bundled). */
+  installed: boolean;
+  /** TELEGRAM_API_ID + TELEGRAM_API_HASH present in Secrets. */
+  configured: boolean;
+  /** Session authorized and connected. */
+  linked: boolean;
+  /** The current login QR as a data URL, while waiting to be scanned. */
+  qr?: string;
+  /** The account has 2FA — waiting for the cloud password. */
+  needsPassword?: boolean;
+  passwordHint?: string;
+  self?: { username?: string; name?: string; phone?: string };
+  /** The last login error, surfaced on the link screen. */
+  error?: string;
+}
+
+/** WhatsApp via Baileys — pairing is a QR and nothing else, so the shape is three fields. */
+export interface WhatsappStatus {
+  /** Baileys importable (bundled). */
+  installed: boolean;
+  /** Paired and connected. */
+  linked: boolean;
+  /** The current pairing QR as a data URL, while waiting to be scanned. */
+  qr?: string;
+}

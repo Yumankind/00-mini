@@ -347,3 +347,211 @@ export type OverblastToolName = (typeof OVERBLAST_TOOLS)[number]["name"];
 export function overblastToolOn(tools: Record<string, boolean> | undefined, name: string): boolean {
   return tools?.[name] !== false;
 }
+
+// ── The workspace's commerce, as the engine proxies it ───────────────────────────────────────────
+//
+// Everything below is money that belongs to the WORKSPACE and its customers — a spend the platform's
+// queue holds, a payment somebody made, what a rail costs, what a task is owed. The engine reads these
+// off the worker and hands them to a screen unchanged; the operator's OWN instruments (their cards,
+// their crypto wallet) are a different subject and live in `money.ts`.
+//
+// SHAPES ARE PASSED THROUGH, NEVER RESHAPED — the snake_case ones especially. `SpendProposal` looks
+// foreign here because it IS foreign: it is the worker's row, and renaming its columns on the way past
+// would be a translation layer nobody asked for and one more place for the two repos to disagree.
+
+/** One row of the payment approval queue, as the worker returns it (snake_case, its own store). */
+export interface SpendProposal {
+  id: string;
+  computer_id: string;
+  /** NULLABLE: the worker records the computer for certain and the agent when it knows one. A row filed
+   *  by a surface that is not an agent has no agent id to give, and a client that assumed a string here
+   *  would be rendering "null" at somebody. */
+  agent_id: string | null;
+  origin: string;
+  task_id: string | null;
+  conversation_id: string | null;
+  payee: string;
+  /** Integer minor units — never a float, because money is not a float. */
+  amount_cents: number;
+  currency: string;
+  reason: string;
+  /** JSON string of whatever the supplier needs to be paid ({iban, link, reference}), or null. A
+   *  string, not an object: it is captured text the worker stores verbatim, so a reader parses it
+   *  defensively rather than trusting a shape. */
+  payment_details_json: string | null;
+  status:
+    | "proposed"
+    | "approved"
+    | "executing"
+    | "paid"
+    | "declined"
+    | "cancelled"
+    | "manual_required"
+    | "manually_paid";
+  proposed_at: string;
+  decided_at: string | null;
+  decided_by: string | null;
+  decision_note: string | null;
+  settled_at: string | null;
+  manual_receipt: string | null;
+}
+
+/**
+ * WHAT KIND OF MONEY (worker migration 0089). One column, four meanings that were being conflated:
+ *
+ *   budget — an allowance: authority to propose a spend, no funds anywhere. The original meaning.
+ *   real   — funds earmarked out of the workspace's OWN Stripe balance. The worker refuses an earmark
+ *            larger than the account actually holds, which is what makes the word mean anything.
+ *   credit — money owed TO the customer (goodwill, a deposit carried forward).
+ *   refund — money returned to the customer, recorded against the task it came from.
+ *
+ * `budget` and `real` are spendable; `credit` and `refund` are the customer's side of the ledger and
+ * never raise what a task may spend — a refund must not fund the next purchase.
+ */
+export type TaskMoneyKind = "budget" | "real" | "credit" | "refund";
+
+/** How a payment ARRIVED. It decides how it can go back, so it is stored rather than inferred. */
+export type TaskPaymentRail = "stripe-checkout" | "stripe-terminal" | "cash" | "transfer" | "other";
+
+/**
+ * One payment in the workspace's payer-keyed ledger (worker migration 0090).
+ *
+ * `taskId` is a LINK and may be null — a payment need not belong to a job, and the ones that do not are
+ * exactly what no task page can show. `refundableCents` is the cap on giving it back.
+ */
+export interface CustomerPaymentRow {
+  id: string;
+  contactId: string | null;
+  conversationId: string | null;
+  channel: string | null;
+  payerName: string | null;
+  payerEmail: string | null;
+  taskId: string | null;
+  amountCents: number;
+  refundedCents: number;
+  refundableCents: number;
+  currency: string;
+  rail: TaskPaymentRail;
+  paymentIntentId: string | null;
+  note: string | null;
+  recordedBy: string;
+  paidAt: string;
+}
+
+/** One Stripe payment on a task, in cents, with what is still refundable on it. */
+export interface TaskPaymentRecord {
+  paymentIntentId: string;
+  amountCents: number;
+  refundedCents: number;
+  /** amount − refunded, floored at 0. What a refund of THIS payment may be at most. */
+  refundableCents: number;
+  currency: string;
+  paidAt?: string;
+  refundedAt?: string;
+}
+
+/** One payer's running total, grouped by the worker over everything it holds. */
+export interface PayerTotalRow {
+  key: string | null;
+  payerName: string | null;
+  payments: number;
+  paidCents: number;
+  refundedCents: number;
+  netCents: number;
+  currency: string;
+  lastPaidAt: string;
+}
+
+/** How money is meant to ARRIVE from one person: a link they open, a card they tap, cash in a hand, a
+ *  bank transfer — or `null`, which is "nobody has said yet" and deliberately not a default. */
+export type IncomingPaymentPref = "link" | "tap-to-pay" | "cash" | "transfer";
+
+/**
+ * ONE CONVERSATION'S COMMERCE RECORD — who to invoice, and how to pay them back.
+ *
+ * Scoped to the CONVERSATION and not to the person, because what somebody tells one conversation stays
+ * in it (the same rule as saved-locations, and the reason contact-links are pointers rather than a
+ * merge). An IBAN pasted into one thread is a fact that thread was told.
+ *
+ * TWO STORES ANSWER IN THIS SHAPE. On an Overblast channel the platform owns the record and the local
+ * thread key IS its `conversationId`; on every other channel the engine owns a `commerce.json` in the
+ * thread's own directory. Identical field names on purpose: the surfaces reading this must not be able
+ * to tell the authorities apart except by the `source` the route stamps on the answer.
+ *
+ * Every field is optional and an absent one means UNSAID — a record is filled in over the life of a
+ * conversation, so "no tax id" and "tax id we have not been told" are the same state and must render
+ * the same way (as nothing). Delivery addresses are NOT here: saved-locations already owns those, also
+ * per conversation.
+ */
+export interface ConversationCommerce {
+  billingName?: string;
+  billingLine1?: string;
+  billingLine2?: string;
+  billingCity?: string;
+  billingPostalCode?: string;
+  billingCountry?: string;
+  taxId?: string;
+  /** What KIND of tax id (`vat`, `nif`, `ein`…) — free text, because the world's list is not ours. */
+  taxIdType?: string;
+  incomingPref?: IncomingPaymentPref | null;
+  /** THE PAYEE HALF: how to pay the person in this conversation, which is not always the billing name
+   *  (a supplier invoices as a company and is paid into someone's account). */
+  payeeName?: string;
+  payeeIban?: string;
+  payeePaymentLink?: string;
+  /** What they asked to see on the transfer — an invoice number, a reference, a name to put on it. */
+  payeeReference?: string;
+  note?: string;
+  /** Who last changed it. `operator` from this engine; the platform stamps its own writers. */
+  updatedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * WHAT MOVING MONEY COSTS, as the worker prices it (`payment-fees.ts` over there) — asked, never
+ * hardcoded on either side of the wire.
+ *
+ * One read, every rail. `manual` adds nothing (a person pays it themselves), `stripe-collect` takes the
+ * platform's cut out of an incoming payment (so covering a 100.00 spend out of collected money takes
+ * 106.00 present), and the two outgoing Stripe rails are UNAVAILABLE today — with the reason, and with
+ * `unknownFees` set so no surface presents a total as final. A virtual card in particular needs Stripe
+ * Issuing enabled AND a business cardholder created before it can exist at all.
+ */
+export type PaymentRail = "manual" | "stripe-collect" | "stripe-transfer" | "stripe-card";
+
+export interface RailCost {
+  rail: PaymentRail;
+  direction: "in" | "out";
+  amountCents: number;
+  currency: string;
+  feesCents: number;
+  grossCents: number;
+  netCents: number;
+  fees: Array<{ label: string; cents: number }>;
+  available: boolean;
+  unavailable?: string;
+  unknownFees?: boolean;
+  /** What has to be ON the task for a payment of `amountCents` to happen over this rail. */
+  funding: number;
+}
+
+/** One live-share link, as the platform mints it. `url` is the whole point — the thing to hand over. */
+export interface TaskShare {
+  shareId: string;
+  token: string;
+  url: string;
+  expiresAt: string | null;
+  permissions: { location: boolean; tracking: boolean; activity: boolean; tracker: boolean };
+}
+
+/** A link that already exists, as the listing reports it. No token: a listing is for deciding what to
+ *  REVOKE, and re-handing an existing link is not something a list needs to enable. */
+export interface TaskShareMeta {
+  shareId: string;
+  label?: string;
+  todoTitle?: string;
+  permissions: { location: boolean; tracking: boolean; activity: boolean; tracker: boolean };
+  expiresAt?: string | null;
+  createdAt?: string;
+}
