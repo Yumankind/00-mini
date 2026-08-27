@@ -216,6 +216,111 @@ export interface QuarantineItem {
   sendAt?: string;
 }
 
+// ---------------------------------------------------------------------------
+// The platform vocabulary — one canonical spelling per surface
+// ---------------------------------------------------------------------------
+
+/**
+ * One surface, under the ONE name this codebase calls it.
+ *
+ * The engine and the worker are two halves of one product that had never agreed on how to spell a
+ * platform. The worker writes `platform: 'website'` on every web-chat conversation; the engine tested
+ * for `webchat` and routed the row to a fallback channel that answers strangers' DMs. Nothing failed —
+ * a web-chat customer simply landed in the wrong inbox. That is what an undeclared vocabulary costs,
+ * and this table is the declaration: every spelling either side may emit resolves here, once, instead
+ * of at each `p === "..."` a reader happens to find.
+ *
+ * `aliases` are the OTHER spellings that must resolve to `name` — the worker's mostly, plus the two
+ * this side grew (`x`, `messenger`). They are not "also acceptable": they are wrong spellings of a
+ * right thing, and `canonicalPlatform` is where they stop existing.
+ *
+ * `localOnly` marks a surface the worker has no counterpart identity for: it lives on this machine and
+ * nothing arriving from the worker will ever be spelled this way. `telegram-bot` is DISTINCT here by
+ * decision, not oversight — a bot with its own @name is a different account from the operator's, and
+ * routing identity keeps the channel apart even though `SELF_PLATFORM` (threads.ts) renames it to
+ * `telegram` for DISPLAY. Those are two different questions and this table answers only the first.
+ */
+export interface CanonicalPlatformInfo {
+  /** The one spelling every surface in this codebase uses. */
+  name: string;
+  /** Spellings that MUST resolve to `name`. */
+  aliases?: string[];
+  /** No worker counterpart as a distinct identity — this surface only exists locally. */
+  localOnly?: boolean;
+}
+
+/**
+ * The whole vocabulary, declared once.
+ *
+ * The non-`localOnly` half is the worker's own list twice over: `SocialPlatform` (social/types.ts) and
+ * the three named kinds `conversationKindOf` (workspace/conversations-store.ts) can answer — email,
+ * webchat, phone. That is a twin, so it is guarded rather than trusted: `platform-vocabulary.test.ts`
+ * carries the worker's unions as fixtures and fails with a sentence when either side moves. The worker
+ * is authoritative; this file follows it.
+ *
+ * `social` is deliberately absent. It is `conversationKindOf`'s CATEGORY for "not email, not webchat,
+ * not phone", not a place anyone writes from — treating it as a platform would mint `overblast-dm-social`
+ * for every Instagram row on the feed.
+ */
+export const CANONICAL_PLATFORMS: CanonicalPlatformInfo[] = [
+  // ── Social platforms the worker connects (SocialPlatform) ──
+  { name: "twitter", aliases: ["x"] },
+  { name: "instagram" },
+  // Messenger is Facebook's DM surface on one connected Facebook account, not a second account.
+  { name: "facebook", aliases: ["messenger"] },
+  { name: "linkedin" },
+  { name: "tiktok" },
+  { name: "youtube" },
+  { name: "threads" },
+  { name: "pinterest" },
+  { name: "mastodon" },
+  { name: "bluesky" },
+  { name: "telegram" },
+  { name: "whatsapp" },
+  { name: "reddit" },
+  { name: "google_business", aliases: ["googlebusiness", "google-business"] },
+
+  // ── The three named conversation kinds (conversationKindOf) ──
+  { name: "email" },
+  // THE BUG THIS TABLE WAS BORN FOR: the worker's spelling is `website`.
+  { name: "webchat", aliases: ["website", "web"] },
+  { name: "phone", aliases: ["voice", "call"] },
+
+  // ── Local transports: no worker counterpart, so nothing inbound is ever spelled this way ──
+  { name: "signal", localOnly: true },
+  { name: "imessage", localOnly: true },
+  { name: "slack", localOnly: true },
+  { name: "discord", localOnly: true },
+  { name: "telegram-bot", localOnly: true },
+  // Two of the operator's OWN agents talking to each other (AGENT_CHANNEL). Never leaves the machine.
+  { name: "agent", localOnly: true },
+];
+
+/** alias → canonical name, built once. */
+const PLATFORM_ALIASES: Record<string, string> = (() => {
+  const m: Record<string, string> = {};
+  for (const p of CANONICAL_PLATFORMS) for (const a of p.aliases ?? []) m[a] = p.name;
+  return m;
+})();
+
+/**
+ * The canonical spelling of a platform name.
+ *
+ * Unknown names pass through lower-cased rather than being mapped to anything: a platform this build
+ * has never heard of is still a real place someone wrote from, and inventing a name for it would route
+ * their message somewhere confidently wrong. Empty in, empty out.
+ */
+export function canonicalPlatform(name: string): string {
+  const p = (name ?? "").trim().toLowerCase();
+  if (!p) return "";
+  return PLATFORM_ALIASES[p] ?? p;
+}
+
+/** The canonical names, in declaration order. */
+export function canonicalPlatformNames(): string[] {
+  return CANONICAL_PLATFORMS.map((p) => p.name);
+}
+
 // --- Comms channels (installable, off by default) ---
 
 export interface CommsChannelInfo {
