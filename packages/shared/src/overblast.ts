@@ -555,3 +555,259 @@ export interface TaskShareMeta {
   expiresAt?: string | null;
   createdAt?: string;
 }
+
+// ── Entity objects: the shape a task IS, wherever it lives ───────────────────────────────────────
+//
+// The worker mirrors every task and template into its bucket as a folder with an `object.json` at the
+// top (`computers/{cid}/tasks/{taskId}/object.json`, see moltworker `entity-r2.ts`). The engine writes
+// the SAME document into a local agent's workspace — `workspace/tasks/{uuid}/object.json` — for agents
+// that have no Overblast workspace behind them. One shape, two homes.
+//
+// THE WORKER'S FIELD NAMES WIN, every one of them, including the ones that look redundant here
+// (`assignedTo` beside `assignedToId` beside `assignedToIds`) and the ones a local agent will never
+// fill (`taskPricing`, `paymentDeadlineAt`). A local task that spells a field its own way is a task
+// that has to be TRANSLATED the day it syncs, and a translation layer is exactly the migration this
+// design exists to avoid. Fields the local side does not use are simply absent, never renamed.
+//
+// TYPE names are prefixed (`TaskTemplateField`, not `Field`) because this module is re-exported from
+// the package barrel and `Field` belongs to nobody. Property names are untouched.
+
+/**
+ * WHOSE JOB THIS IS — the client on a task, as a reference rather than a copy.
+ *
+ * Contact-first (the 2026-08-28 contract): `contactId` is the identity when there is one, and
+ * everything else narrows it. `handle` carries the raw channel address for a client the agent has
+ * never been introduced to properly (a phone number, an @name) — it is what a local agent usually
+ * has, since minting contacts is not phase 1's job.
+ *
+ * `threadId` is the engine's own thread for this client. `conversationId` on the task is a DIFFERENT
+ * field and stays where it is: that one is the platform's live link, the thread the task is attached
+ * to right now and which an operator can re-target. This is who the client is; that is where the
+ * conversation currently sits.
+ *
+ * `localOnly` marks a client the platform cannot reach — a Signal or iMessage correspondent, an agent
+ * DM — so nothing downstream mistakes a local handle for something a workspace could message or bill.
+ */
+export interface TaskClientRef {
+  platform: string;
+  contactId?: string;
+  handle?: string;
+  threadId?: string;
+  localOnly?: boolean;
+}
+
+/**
+ * One file inside an entity folder.
+ *
+ * The two homes address the bytes differently and both spellings are kept rather than collapsed:
+ * `kbUrl` is the worker's `kb://` sentinel (signed on read), `path` is the LOCAL relative
+ * `files/{fileId}-{name}` under the entity folder. Relative on purpose — an object.json holding an
+ * absolute `/Users/…` path stops being portable the moment the folder is copied, synced or restored,
+ * which is the one thing this layout is for.
+ */
+export interface TaskFileRef {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  /** ISO-8601. */
+  addedAt: string;
+  addedBy: string;
+  sourceMessageId?: string;
+  /** Worker home: `kb://computers/{cid}/tasks/{taskId}/files/{fileId}-{filename}`. */
+  kbUrl?: string;
+  /** Local home: `files/{fileId}-{filename}`, relative to the task folder. */
+  path?: string;
+}
+
+/** The template a task was filled from, frozen at the version it was filled at — so editing the
+ *  template later never rewrites tasks already in flight. */
+export interface TaskTemplateSnapshot {
+  id: string;
+  version: number;
+  name: string;
+  /** Raw form submission, unchanged from what was filled. */
+  data: Record<string, unknown>;
+  /** Flat captured leaves, so a reader can render "Buyer name: Alice" without replaying the
+   *  template's visibility rules. */
+  fields: Array<{ fieldId: string; label: string; type: string; value: unknown }>;
+}
+
+/**
+ * A TASK, as stored in its folder's `object.json`.
+ *
+ * Every field is optional except `id` and `title`, because the two writers fill different halves and a
+ * reader must never assume the other one ran. The worker fills the pricing/payment/assignment half
+ * from a workspace; a local agent fills the half a person can type.
+ *
+ * `deletedAt` is how a task goes away. The folder is NEVER removed: a delete that leaves no trace is
+ * indistinguishable from a task that never synced, and the day this store syncs it needs tombstones
+ * to say "gone" rather than "not yet arrived". A vacuum that reclaims old tombstones is a later,
+ * separate decision.
+ */
+export interface TaskObject {
+  id: string;
+  title: string;
+  description?: string;
+  tags?: string[];
+  /** ISO-8601 start. */
+  dateTime?: string | null;
+  endDateTime?: string | null;
+  /** ISO-8601 duration ("PT1H30M"). */
+  duration?: string | null;
+  location?: string | null;
+  locationLatLng?: string | null;
+  locationAddress?: string | null;
+  locationName?: string | null;
+  endLocationAddress?: string | null;
+  endLocationName?: string | null;
+  endLocationLatLng?: string | null;
+  groupId?: string | null;
+  groupTag?: string | null;
+  assignedTo?: string | null;
+  assignedToId?: string | null;
+  assignedToIds?: string[];
+  assignedAssets?: Array<{ assetId: string; assetName: string; units: number }>;
+  /** Workspace-resolved pricing. Carried opaquely: a local agent has no catalog to resolve against,
+   *  and inventing a second pricing model here would be the drift this shape exists to prevent. */
+  taskPricing?: unknown;
+  status?: string;
+  priority?: string;
+  contactId?: string | null;
+  contactName?: string | null;
+  contactPhone?: string | null;
+  contactEmail?: string | null;
+  platform?: string | null;
+  /** The LIVE link — the conversation this task is attached to now. See {@link TaskClientRef}. */
+  conversationId?: string | null;
+  /** Where it was born. Stamped once, never rewritten. */
+  originConversationId?: string | null;
+  relativePosition?: string | null;
+  templateSnapshot?: TaskTemplateSnapshot | null;
+  paymentDeadlineAt?: string | null;
+  paymentUpfrontPercent?: number | null;
+  paymentUpfrontAmountCents?: number | null;
+  paymentTermsSource?: string | null;
+  recurrence?: unknown;
+  recurrenceSeriesId?: string | null;
+  attachments?: TaskFileRef[];
+  /** The client, as a reference. Added by the 2026-08-28 contract; the flat `contact*` fields above
+   *  stay for the worker's sake and the two agree when both are set. */
+  client?: TaskClientRef;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  /** ISO-8601 soft-delete tombstone. Present = gone. */
+  deletedAt?: string | null;
+}
+
+/**
+ * THE FIELD TYPES a task template may ask for — mirrored from the worker's `FIELD_TYPES`, in its
+ * order, as a value so a runtime can check against it rather than trusting the compiler alone.
+ */
+export const TASK_TEMPLATE_FIELD_TYPES = [
+  "text", "textarea", "rich_text", "email", "phone", "url",
+  "number", "decimal", "currency", "percentage",
+  "date", "time", "datetime", "date_range", "duration", "recurrence",
+  "options", "multi_options", "toggle", "rating", "scale", "tags",
+  "file", "image", "video", "audio", "pdf", "signature",
+  "location",
+  "team_member", "team_group", "asset", "contact", "catalog_item", "task_ref",
+  "repeatable_group", "table", "barcode", "qr", "color", "measurement",
+] as const;
+
+export type TaskTemplateFieldType = (typeof TASK_TEMPLATE_FIELD_TYPES)[number];
+
+/** The words template authors reach for, mapped onto the ones the schema has. Same table the worker
+ *  normalises with — a stored `select` would fall through every type switch forever. */
+export const TASK_TEMPLATE_FIELD_TYPE_ALIASES: Readonly<Record<string, TaskTemplateFieldType>> = {
+  select: "options",
+  dropdown: "options",
+  radio: "options",
+  multiselect: "multi_options",
+  multi_select: "multi_options",
+  checkboxes: "multi_options",
+};
+
+/** The canonical type for a caller-supplied `type`, or `null` when nothing sane maps to it. */
+export function normalizeTaskTemplateFieldType(raw: unknown): TaskTemplateFieldType | null {
+  if (typeof raw !== "string") return null;
+  const key = raw.trim().toLowerCase();
+  if (!key) return null;
+  if ((TASK_TEMPLATE_FIELD_TYPES as readonly string[]).includes(key)) return key as TaskTemplateFieldType;
+  return TASK_TEMPLATE_FIELD_TYPE_ALIASES[key] ?? null;
+}
+
+/** One question on a template. Mirrors the worker's `Field`. */
+export interface TaskTemplateField {
+  id: string;
+  label: string;
+  type: TaskTemplateFieldType;
+  help?: string;
+  placeholder?: string;
+  default?: unknown;
+  required?: boolean;
+  readOnly?: boolean;
+  min?: number;
+  max?: number;
+  pattern?: string;
+  options?: Array<{ value: string; label: string }>;
+  accept?: string[];
+  maxFileSize?: number;
+  /** Workspace-linked binding, conditionals, and nested fields for composite types. Carried opaquely
+   *  — a local template has no workspace to bind against, and dropping them on read would silently
+   *  destroy a template that arrived from one. */
+  bind?: unknown;
+  visibleIf?: unknown;
+  requiredIf?: unknown;
+  fields?: TaskTemplateField[];
+}
+
+/** One group of questions. Mirrors the worker's `Section`. */
+export interface TaskTemplateSection {
+  id: string;
+  label: string;
+  description?: string;
+  repeatable?: boolean;
+  min?: number;
+  max?: number;
+  visibleIf?: unknown;
+  requiredIf?: unknown;
+  fields: TaskTemplateField[];
+}
+
+/**
+ * A TASK TEMPLATE, as stored in its folder's `object.json`.
+ *
+ * `version` is the load-bearing field: it increments on every edit, and a task filled from this
+ * template freezes the number it was filled at inside {@link TaskTemplateSnapshot}. Without it,
+ * editing a template rewrites history for every task ever made from it.
+ *
+ * `visibility` defaults to `internal` on both sides, and that default is about consequences rather
+ * than tidiness: `public` means an anonymous visitor can file tasks from this form. It is a decision
+ * somebody has to make on purpose, never one they make by omitting a field.
+ */
+export interface TaskTemplateObject {
+  id: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  visibility: "public" | "internal";
+  sections: TaskTemplateSection[];
+  /** Catalog pricing, payment terms, release rules, task defaults — workspace concerns, carried
+   *  opaquely so a synced template survives a round trip through a local agent unchanged. */
+  pricing?: unknown;
+  payment?: unknown;
+  outputs?: unknown[];
+  defaults?: unknown;
+  /** Increments on every update. Tasks freeze the value they were filled at. */
+  version: number;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  /** ISO-8601 soft-delete tombstone. See {@link TaskObject.deletedAt}. */
+  deletedAt?: string | null;
+}
