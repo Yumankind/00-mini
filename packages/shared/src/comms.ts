@@ -321,6 +321,20 @@ export function canonicalPlatformNames(): string[] {
   return CANONICAL_PLATFORMS.map((p) => p.name);
 }
 
+/**
+ * Does this platform exist ONLY on this machine — no worker counterpart identity?
+ *
+ * The table above already knows; this is the question asked out loud, so a caller stamping a record
+ * with "the platform cannot reach this person" reads the same list every other surface reads instead
+ * of keeping its own copy of which names are local. An unknown name answers `false`: a surface this
+ * build has never heard of is not one we may assert anything about, and claiming it is unreachable
+ * would be a guess written into stored data.
+ */
+export function isLocalOnlyPlatform(name: string): boolean {
+  const canon = canonicalPlatform(name);
+  return CANONICAL_PLATFORMS.some((p) => p.name === canon && p.localOnly === true);
+}
+
 // --- Comms channels (installable, off by default) ---
 
 export interface CommsChannelInfo {
