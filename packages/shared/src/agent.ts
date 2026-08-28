@@ -216,6 +216,9 @@ export interface UpdateAgentProfileRequest {
   /** Whether this agent's local tasks and task templates sync with its workspace. See
    *  {@link EntitySyncMode}. */
   entitySync?: EntitySyncMode;
+  /** What to do with THIS agent's sessions that a crash cut mid-turn. `"ask"` clears the override
+   *  back to the machine-wide setting. See {@link ResumeInterruptedOverride}. */
+  resumeInterrupted?: ResumeInterruptedPolicy;
 }
 
 /**
@@ -244,6 +247,31 @@ export interface UpdateAgentProfileRequest {
  * discover a second setting to escape.
  */
 export type EntitySyncMode = "linked" | "local-only";
+
+/**
+ * WHAT HAPPENS TO A TURN THE PROCESS DIED IN THE MIDDLE OF.
+ *
+ * Not an error — an error already ends a turn, and the session says so. This is the other ending: the
+ * Mac was shut, the app was quit, the engine was killed while an agent was mid-thought. Nothing
+ * recorded a result because nothing got to; the only trace is the session's own transcript, stopping
+ * mid-sentence.
+ *
+ * Three answers, and the machine-wide setting is allowed all three:
+ *
+ * - **`ask`** — the default. The next start lists what was cut off and asks. An operator who has not
+ *   said otherwise should never come back to a Mac that quietly re-ran work while they were away.
+ * - **`continue`** — send the literal word "continue" back into each of those sessions, in the SAME
+ *   session, so the agent picks up with its own transcript as context.
+ * - **`ignore`** — drop the records. The sessions stay exactly where they stopped.
+ *
+ * An AGENT may override the machine, and there `ask` is spelled as an ABSENT field rather than as a
+ * stored word: absent means "whatever the machine says", which is what an operator who never opened
+ * this setting meant. Writing `"ask"` through the profile API is how the override is CLEARED.
+ */
+export type ResumeInterruptedPolicy = "ask" | "continue" | "ignore";
+
+/** The two answers an agent-level override can hold. Absent = inherit the machine's policy. */
+export type ResumeInterruptedOverride = Exclude<ResumeInterruptedPolicy, "ask">;
 
 export interface UpdateSignalSettingsRequest {
   autoReply?: boolean;
@@ -402,6 +430,9 @@ export interface AgentProfile {
   /** Do this agent's own tasks and task templates travel to its workspace? Absent = `linked`, the
    *  default. See {@link EntitySyncMode} for why that is the default and what the other word means. */
   entitySync?: EntitySyncMode;
+  /** This agent's own answer for a turn a crash cut short. ABSENT = inherit the machine-wide policy,
+   *  which is what an operator who never opened the setting meant. See {@link ResumeInterruptedPolicy}. */
+  resumeInterrupted?: ResumeInterruptedOverride;
   /** Extra tools granted to the restricted public/DM (light) agent. Off by default. */
   publicExtras: PublicExtras;
   /** True until the BOOTSTRAP.md interview is completed. */
@@ -593,6 +624,9 @@ export interface AgentSummary {
   /** Whether this agent's own tasks and task templates travel to its workspace. Absent = `linked`,
    *  the default. See {@link EntitySyncMode}. */
   entitySync?: EntitySyncMode;
+  /** This agent's override for interrupted-turn resume. Absent = follow the machine (see
+   *  {@link ResumeInterruptedPolicy}) — surfaced so the settings panel can draw the current state. */
+  resumeInterrupted?: ResumeInterruptedOverride;
   publicExtras: PublicExtras;
   signalAutoReply?: boolean;
   signalPollMinutes?: number;
