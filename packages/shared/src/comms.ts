@@ -207,6 +207,24 @@ export interface QuarantineItem {
   status: QuarantineStatus;
   /** The tool that produced this item (for audit). */
   tool: string;
+  /**
+   * WHERE THIS CAME FROM, when it did not originate with the operator or their agent's own intent.
+   *
+   * A relayed message is the case this exists for: the body is one member's words, carried to another
+   * member, and an approval card that showed only the text and the destination would be asking the
+   * operator to approve a sentence with no author. `tool` says which verb produced the item; this says
+   * whose message it is. Absent on everything the agent composed itself, which is nearly everything.
+   */
+  origin?: {
+    /** The channel the request arrived on. */
+    channel: string;
+    /** The thread it arrived in — where a reply-back goes. */
+    threadId: string;
+    /** The sender, as the transport named them. Never as they described themselves. */
+    from: string;
+    /** The group whose membership authorised this, by name — what the operator recognises. */
+    groupName?: string;
+  };
   decidedAt?: string;
   /**
    * Send no earlier than this (ISO). Set by the agent (`send_at`) or by the operator when approving.
