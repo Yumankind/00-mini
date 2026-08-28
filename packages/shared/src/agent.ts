@@ -213,7 +213,37 @@ export interface UpdateAgentProfileRequest {
   signature?: string;
   /** Per-tool switches for the Overblast platform tools ({} clears back to "all on"). */
   overblastTools?: Record<string, boolean>;
+  /** Whether this agent's local tasks and task templates sync with its workspace. See
+   *  {@link EntitySyncMode}. */
+  entitySync?: EntitySyncMode;
 }
+
+/**
+ * WHETHER AN AGENT'S OWN TASKS AND TEMPLATES TRAVEL, and it is a per-agent decision.
+ *
+ * An agent that has never been connected keeps its work in folders on this machine
+ * (`docs/local-entities.md`). Connecting one used to leave those folders where they were, forever,
+ * beside a workspace holding the same kind of record — two task lists, one operator, no relationship.
+ *
+ * Two modes, and the third state is not a mode:
+ *
+ * - **`linked`** — the default for an agent that holds its workspace's link. Local entities and
+ *   workspace entities are ONE record: pushed up as they change, pulled down as they change there.
+ * - **`local-only`** — the agent may be fully connected, use every platform tool, answer on every
+ *   channel, and its own tasks still never leave this machine. Not the same as "not connected": it
+ *   is the operator saying that THIS agent's records are theirs. A consultant's own client list on a
+ *   workspace shared with a team is the case that asks for it.
+ *
+ * The third state is an agent with no workspace at all, which is neither of these — nothing to sync
+ * with, nothing to decide, and no setting shown. It is spelled as an ABSENT link rather than as a
+ * third word here, because a word would have to be kept in step with a fact the platform owns.
+ *
+ * Absent means `linked`, and the default direction is deliberate: the whole point of the local store
+ * was that the day these met, a sync would be a copy rather than a migration. An operator who
+ * connects a workspace and finds their tasks did not follow has been given a store they have to
+ * discover a second setting to escape.
+ */
+export type EntitySyncMode = "linked" | "local-only";
 
 export interface UpdateSignalSettingsRequest {
   autoReply?: boolean;
@@ -369,6 +399,9 @@ export interface AgentProfile {
    * knowledge to be reachable, not a second opt-in list to discover.
    */
   overblastTools?: Record<string, boolean>;
+  /** Do this agent's own tasks and task templates travel to its workspace? Absent = `linked`, the
+   *  default. See {@link EntitySyncMode} for why that is the default and what the other word means. */
+  entitySync?: EntitySyncMode;
   /** Extra tools granted to the restricted public/DM (light) agent. Off by default. */
   publicExtras: PublicExtras;
   /** True until the BOOTSTRAP.md interview is completed. */
@@ -557,6 +590,9 @@ export interface AgentSummary {
    *  ever stores the OFF entries, so a tool added later defaults on for everyone. See
    *  `AgentProfile.overblastTools`. Surfaced here so the settings UI can show the current state. */
   overblastTools?: Record<string, boolean>;
+  /** Whether this agent's own tasks and task templates travel to its workspace. Absent = `linked`,
+   *  the default. See {@link EntitySyncMode}. */
+  entitySync?: EntitySyncMode;
   publicExtras: PublicExtras;
   signalAutoReply?: boolean;
   signalPollMinutes?: number;

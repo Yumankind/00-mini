@@ -90,6 +90,92 @@ export interface OverblastKnowledgeConflict {
 }
 
 // ---------------------------------------------------------------------------
+// Entity sync — the local task/template folders ⇄ the workspace
+// ---------------------------------------------------------------------------
+
+/** The families that travel. A new one is a row in the engine's kind table and a value here — see
+ *  `entity-sync.ts` and the P3 section of `docs/local-entities.md`. */
+export type EntitySyncKind = "tasks" | "task-templates";
+
+/** How many entities one side is holding, per kind. Used to decide whether connecting has to ask
+ *  which side wins — the same shape and the same question as {@link OverblastKnowledgeSide}. */
+export interface EntitySyncSide {
+  tasks: number;
+  taskTemplates: number;
+}
+
+/** Does this side hold anything worth losing? */
+export function entitySideEmpty(side: EntitySyncSide): boolean {
+  return side.tasks === 0 && side.taskTemplates === 0;
+}
+
+/**
+ * `POST /api/overblast/connect` answered 409 because BOTH this agent's folders and the workspace hold
+ * entities, and the first sync would otherwise decide silently which came out on top.
+ *
+ * The same shape as {@link OverblastKnowledgeConflict}, deliberately: the UI asks one question in one
+ * step, and the answer travels back on the re-submit as `entities: 'push' | 'pull'`.
+ *
+ * What the two answers MEAN here is milder than for knowledge, and worth stating because it is why
+ * the question can be answered casually: neither direction destroys anything. `push` sends the local
+ * records up and then lets the ordinary two-way sync run; `pull` adopts the workspace's records
+ * first. Both sides survive either way — the arbitration keeps a loser as a conflict sibling — so
+ * this is a question about which copy is the STARTING POINT, not about which one is deleted.
+ */
+export interface OverblastEntityConflict {
+  ok: false;
+  status: "entity_conflict";
+  remote: EntitySyncSide;
+  local: EntitySyncSide;
+}
+
+/** One entity a sync could not move, and when it will be tried again. The entity-sync twin of
+ *  `ParkedKnowledgeItem`. */
+export interface ParkedEntityItem {
+  kind: EntitySyncKind;
+  id: string;
+  failures: number;
+  lastError: string;
+  /** ISO — when it will be tried again. */
+  nextAttemptAt: string;
+}
+
+/** `GET /api/agents/:id/entity-sync` — what the sync is doing for this agent right now. */
+export interface EntitySyncStatus {
+  /** `linked` unless the operator turned it off; see `EntitySyncMode`. */
+  mode: "linked" | "local-only";
+  /** True when this agent holds its workspace's 1:1 link. Holding a key is not enough. */
+  linked: boolean;
+  /** True when the loop is actually watching this agent — mode AND link AND a reachable workspace. */
+  active: boolean;
+  /** The workspace these entities are kept in step with, when there is one. */
+  computerId?: string;
+  lastSyncAt?: string;
+  /** Per-kind counts of what this machine holds, tombstones excluded. */
+  local: EntitySyncSide;
+  /** Entities that keep failing and are serving a backoff. Empty in the healthy case. */
+  parked: ParkedEntityItem[];
+  /** Entities kept as conflict siblings and never yet looked at — see the arbitration rule. */
+  conflicts: Array<{ kind: EntitySyncKind; id: string; at: string; path: string }>;
+}
+
+/** What one sync pass moved — the payload of the `overblast.entities` timeline event. */
+export interface EntitySyncResult {
+  /** Entities written to the workspace. */
+  pushed: number;
+  /** Entities written into this machine's folders. */
+  pulled: number;
+  /** Tombstones propagated, either direction. */
+  deleted: number;
+  /** Entities where both sides had changed; the loser was kept beside the winner, never dropped. */
+  conflicts: number;
+  /** Non-fatal failures; retried on a growing delay. */
+  errors: string[];
+  /** Ids left out of this pass because they keep failing. Absent when nothing is parked. */
+  parked?: string[];
+}
+
+// ---------------------------------------------------------------------------
 // The flip: where the public agent runs
 // ---------------------------------------------------------------------------
 
