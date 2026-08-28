@@ -827,11 +827,11 @@ export const TASK_TEMPLATE_VALUE_SHAPES: Readonly<Record<TaskTemplateFieldType, 
   toggle: 'boolean — true or false, never "yes"',
   scale: 'number — within the field\'s min/max (this is what a star rating is)',
   tags: 'string[] — free-form short labels',
-  file: 'string[] — file references; one entry per file',
-  image: 'string[] — image references; one entry per image',
-  video: 'string[] — video references',
-  audio: 'string[] — audio references',
-  signature: 'string[] — a single signature reference, in a one-element list',
+  file: 'array — one entry per file: a reference string, or {url, filename?, contentType?, size?} when the uploader knows them (that form is what `accept` / `maxFileSize` are checked against)',
+  image: 'array — one entry per image: a reference string, or {url, filename?, contentType?, size?}',
+  video: 'array — one entry per video: a reference string, or {url, filename?, contentType?, size?}',
+  audio: 'array — one entry per clip: a reference string, or {url, filename?, contentType?, size?}',
+  signature: 'array — a single signature, in a one-element list: a reference string or {url, filename?, contentType?, size?}',
   location: '{address?, lat?, lng?, name?} — an address string, coordinates, or both; at least one of address or lat+lng',
   team_member: 'string — a team member id (or string[] when the field pins several)',
   team_group: 'string — a team group id (or string[])',
@@ -860,6 +860,93 @@ export function taskTemplateValueShapeLines(types: Iterable<string>): string {
   return wanted.map((t) => `- ${t}: ${TASK_TEMPLATE_VALUE_SHAPES[t]}`).join("\n");
 }
 
+/**
+ * WHO A QUESTION IS FOR — the party filling the form, or the workspace behind it. The worker's
+ * `FieldAudience`; the spelling there is authoritative and this is the twin.
+ *
+ * A template used to be one audience's form: everything on it went to whoever opened it, and
+ * `visibility` decided who that was. That stops being true the moment ONE form is filled by more
+ * than one party — a tenant answers half, the landlord answers the other half, and the operator's
+ * own notes sit on the same sheet as both.
+ *
+ *   · `party`    (the default, and what an absent key means) — the surface's own filler answers it.
+ *   · `internal` — the workspace answers it: never shown on a party surface, never accepted from
+ *                  one, and never held against a party's submission.
+ *
+ * A section carries the same key and its fields inherit unless they override. NOT `visibility`:
+ * that one is about the TEMPLATE (may a stranger file this form at all), this one about ONE QUESTION
+ * on a form somebody is already allowed to file.
+ */
+export const TASK_TEMPLATE_FIELD_AUDIENCES = ["party", "internal"] as const;
+
+export type TaskTemplateFieldAudience = (typeof TASK_TEMPLATE_FIELD_AUDIENCES)[number];
+
+/** What an absent `audience` means, stated once so no reader re-decides it. */
+export const DEFAULT_TASK_TEMPLATE_FIELD_AUDIENCE: TaskTemplateFieldAudience = "party";
+
+/** The canonical audience for a caller-supplied value, or `null` when the word is not one of ours.
+ *  For a gate that REFUSES; readers use {@link readTaskTemplateFieldAudience}. */
+export function normalizeTaskTemplateFieldAudience(
+  raw: unknown,
+): TaskTemplateFieldAudience | null {
+  if (typeof raw !== "string") return null;
+  const key = raw.trim().toLowerCase();
+  if (!key) return null;
+  return (TASK_TEMPLATE_FIELD_AUDIENCES as readonly string[]).includes(key)
+    ? (key as TaskTemplateFieldAudience)
+    : null;
+}
+
+/**
+ * The audience a field or section actually has — its own word, else the one it inherits, else
+ * `party`. FAILS CLOSED on a word it does not know, exactly as the worker's `readFieldAudience`
+ * does: an absent key is the default, a PRESENT key saying something else is read as `internal`,
+ * because hiding a question by mistake can be corrected and showing a private one cannot.
+ */
+export function readTaskTemplateFieldAudience(
+  raw: unknown,
+  inherited: TaskTemplateFieldAudience = DEFAULT_TASK_TEMPLATE_FIELD_AUDIENCE,
+): TaskTemplateFieldAudience {
+  if (raw === undefined || raw === null || raw === "") return inherited;
+  return normalizeTaskTemplateFieldAudience(raw) ?? "internal";
+}
+
+/**
+ * THE SENTENCE AN AGENT AUTHORING A FORM IS GIVEN, generated rather than written.
+ *
+ * `create_template`'s `sections` parameter is where an agent learns what a task template may
+ * contain, and it used to carry a HAND-COPIED list of field types. A hand-copied closed set is a set
+ * that rots: that list still offered `rating`, `pdf` and `table` as types weeks after 2026-08-28
+ * demoted them to aliases, and nothing anywhere would have said so if they had been deleted instead.
+ *
+ * So the vocabulary comes off the tables. The prose around it stays prose — "what min and max count"
+ * is a judgement about the schema, not an enumeration of it — and the FULL reference (every value
+ * shape, every save-time refusal, every output trigger and whether it fires) is generated on the
+ * platform side and served at `GET /docs/task-templates`, which this points at rather than restates.
+ */
+export function taskTemplateSectionsHint(): string {
+  return (
+    "the form itself, as the platform's own template shape — an array of sections, each " +
+    "{ id, label, description?, repeatable?, audience?, fields: [{ id, label, type, required?, " +
+    "help?, options?, min?, max?, audience? }] }. Field types: " +
+    TASK_TEMPLATE_FIELD_TYPES.join(", ") +
+    " (older spellings such as " +
+    Object.keys(TASK_TEMPLATE_FIELD_TYPE_ALIASES).slice(0, 4).join(", ") +
+    " are accepted and rewritten). Ids are yours to choose and are what the answers come back keyed " +
+    "by — slugs, stable, no spaces. `audience` says WHO answers a question: " +
+    TASK_TEMPLATE_FIELD_AUDIENCES.join(" or ") +
+    ' — "party" (the default) is the person filling the form in, "internal" is the workspace itself, ' +
+    "which is never shown to a customer, never accepted from one, and never held against their " +
+    "submission; put it on a section and its fields inherit it. `min`/`max` are ONE pair whose " +
+    "meaning the type decides (characters for text, the value for numbers, entries for tags and " +
+    "multi_options, FILES for uploads, rows for a repeatable) — dates and single-choice fields read " +
+    "neither. An options or multi_options field MUST carry its `options`, and `min` above `max` is " +
+    "refused. The platform validates all of this and answers with every problem it found, so send " +
+    "your best attempt rather than a minimal one; its full generated reference is at " +
+    "GET /docs/task-templates."
+  );
+}
+
 /** One question on a template. Mirrors the worker's `Field`. */
 export interface TaskTemplateField {
   id: string;
@@ -882,6 +969,9 @@ export interface TaskTemplateField {
   bind?: unknown;
   visibleIf?: unknown;
   requiredIf?: unknown;
+  /** Who answers this question — see {@link TaskTemplateFieldAudience}. Absent means the section's
+   *  audience, and absent there too means `party`. */
+  audience?: TaskTemplateFieldAudience;
   fields?: TaskTemplateField[];
 }
 
@@ -895,6 +985,9 @@ export interface TaskTemplateSection {
   max?: number;
   visibleIf?: unknown;
   requiredIf?: unknown;
+  /** Who answers the questions in this section — every field under it inherits unless it says
+   *  otherwise. See {@link TaskTemplateFieldAudience}. */
+  audience?: TaskTemplateFieldAudience;
   fields: TaskTemplateField[];
 }
 
