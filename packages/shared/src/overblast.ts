@@ -93,9 +93,27 @@ export interface OverblastKnowledgeConflict {
 // Entity sync — the local task/template folders ⇄ the workspace
 // ---------------------------------------------------------------------------
 
-/** The families that travel. A new one is a row in the engine's kind table and a value here — see
- *  `entity-sync.ts` and the P3 section of `docs/local-entities.md`. */
-export type EntitySyncKind = "tasks" | "task-templates";
+/**
+ * The families that travel. A new one is a row in the engine's kind table and a value here — see
+ * `entity-sync.ts` and the P3 section of `docs/local-entities.md`.
+ *
+ * The two group families are here and their rows exist, but the workspace half of their doors does
+ * NOT yet: until it ships, both routes answer 404, the loop parks the kind on its backoff ladder and
+ * says so on the status route. That is the honest shape for a contract whose two sides land in
+ * different repositories — the alternative is a row added later in a hurry, against a door nobody
+ * wrote the local side for.
+ *
+ * They travel in OPPOSITE directions, and that asymmetry is the design rather than a limitation:
+ *
+ *   · `member-groups` comes DOWN only. A group id up there is an authorization principal (it feeds
+ *     the session-token mint), and a local engine minting principals in somebody else's security
+ *     domain is exactly what the "only the linked agent syncs" rule protects against. The workspace
+ *     is the authority; this machine keeps a copy.
+ *   · `comms-groups` travels BOTH ways. An audience is nobody's principal — it grants nothing, costs
+ *     no seat, and is the operator's own data — so the machine that has it offline is entitled to be
+ *     the one that publishes it.
+ */
+export type EntitySyncKind = "tasks" | "task-templates" | "member-groups" | "comms-groups";
 
 /** How many entities one side is holding, per kind. Used to decide whether connecting has to ask
  *  which side wins — the same shape and the same question as {@link OverblastKnowledgeSide}. */
