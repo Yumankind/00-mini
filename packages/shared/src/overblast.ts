@@ -705,22 +705,48 @@ export interface TaskObject {
 /**
  * THE FIELD TYPES a task template may ask for — mirrored from the worker's `FIELD_TYPES`, in its
  * order, as a value so a runtime can check against it rather than trusting the compiler alone.
+ *
+ * ── WHY THIS LIST IS SHORTER THAN IT WAS (2026-08-28) ───────────────────────────────────────────
+ *
+ * Five entries left it and became ALIASES instead: `rich_text` → `textarea`, `pdf` → `file`,
+ * `qr` → `barcode`, `rating` → `scale`, `table` → `repeatable_group`. Each pair was one behaviour
+ * under two names — `rich_text` and `textarea` are validated by the identical branch, `pdf` is a
+ * `file` with a mime hint, a QR code is a barcode, a rating is a bounded scale, and a table IS a
+ * repeatable group drawn as a grid. Every renderer that drew them apart drew them the same, and every
+ * validator that checked them apart checked them the same — so the second name was never a type, it
+ * was a synonym that each new reader had to remember to list beside the first one. The ones that
+ * forgot are the bugs this consolidation is about.
+ *
+ * NOTHING MIGRATES. A stored template keeps the exact word it was stored with, forever, and every one
+ * of those words is still accepted at every door — they moved from the canon into
+ * {@link TASK_TEMPLATE_FIELD_TYPE_ALIASES}, which is a promotion in tolerance, not a removal. What
+ * shrank is the set a NEW template is authored against and the set a reader must branch on. Readers
+ * get there by calling {@link normalizeTaskTemplateFieldType} on the way in — see the note on that
+ * function for why every one of them must.
  */
 export const TASK_TEMPLATE_FIELD_TYPES = [
-  "text", "textarea", "rich_text", "email", "phone", "url",
+  "text", "textarea", "email", "phone", "url",
+  // `number` is the INTEGER one — a count, a quantity, a floor number. `decimal` is the one with a
+  // fractional part. They are separate canonical types rather than one type with a flag because the
+  // difference is what a renderer puts in `step` and what an extractor is allowed to round.
   "number", "decimal", "currency", "percentage",
   "date", "time", "datetime", "date_range", "duration", "recurrence",
-  "options", "multi_options", "toggle", "rating", "scale", "tags",
-  "file", "image", "video", "audio", "pdf", "signature",
+  "options", "multi_options", "toggle", "scale", "tags",
+  "file", "image", "video", "audio", "signature",
   "location",
   "team_member", "team_group", "asset", "contact", "catalog_item", "task_ref",
-  "repeatable_group", "table", "barcode", "qr", "color", "measurement",
+  "repeatable_group", "barcode", "color", "measurement",
 ] as const;
 
 export type TaskTemplateFieldType = (typeof TASK_TEMPLATE_FIELD_TYPES)[number];
 
 /** The words template authors reach for, mapped onto the ones the schema has. Same table the worker
- *  normalises with — a stored `select` would fall through every type switch forever. */
+ *  normalises with — a stored `select` would fall through every type switch forever.
+ *
+ *  The bottom half is the 2026-08-28 consolidation: five names that used to be canonical, kept
+ *  accepted here forever so no stored template ever becomes unreadable. Plus `address`, which was
+ *  never canonical and never should have needed to be — an author writing a field for a street
+ *  address means `location`, whose value shape carries the address string. */
 export const TASK_TEMPLATE_FIELD_TYPE_ALIASES: Readonly<Record<string, TaskTemplateFieldType>> = {
   select: "options",
   dropdown: "options",
@@ -728,15 +754,110 @@ export const TASK_TEMPLATE_FIELD_TYPE_ALIASES: Readonly<Record<string, TaskTempl
   multiselect: "multi_options",
   multi_select: "multi_options",
   checkboxes: "multi_options",
+  // Demoted 2026-08-28 — same behaviour, second name.
+  rich_text: "textarea",
+  pdf: "file",
+  qr: "barcode",
+  rating: "scale",
+  table: "repeatable_group",
+  // Author convenience, new in the same pass.
+  address: "location",
 };
 
-/** The canonical type for a caller-supplied `type`, or `null` when nothing sane maps to it. */
+/**
+ * The canonical type for a caller-supplied `type`, or `null` when nothing sane maps to it.
+ *
+ * EVERY READER GOES THROUGH HERE, and after 2026-08-28 that stopped being advice. While the demoted
+ * five were canonical, a reader could write `f.type === 'table'` and be right; now a stored `table`
+ * and a stored `repeatable_group` are the same question spelled two ways, and a reader that compares
+ * the raw string is right about only one of them. The rule is one line: normalise first, branch on
+ * the answer.
+ */
 export function normalizeTaskTemplateFieldType(raw: unknown): TaskTemplateFieldType | null {
   if (typeof raw !== "string") return null;
   const key = raw.trim().toLowerCase();
   if (!key) return null;
   if ((TASK_TEMPLATE_FIELD_TYPES as readonly string[]).includes(key)) return key as TaskTemplateFieldType;
   return TASK_TEMPLATE_FIELD_TYPE_ALIASES[key] ?? null;
+}
+
+/**
+ * THE EXTRACTION CONTRACT — one line per canonical type saying what a VALUE for it looks like.
+ *
+ * Three different producers write template answers and they have to agree byte for byte, because one
+ * validator reads all three: the worker's `template-eval.validateFieldValue`. The producers are
+ *   · a language model extracting a task out of a sentence (engine `local-task-extract`, worker
+ *     `template-reconstruct`),
+ *   · a form a human fills in (the webchat widget's `collectTemplateData`, the local panel's
+ *     answer collector),
+ *   · and, since the same pass, a document template's variable fill.
+ * Before this table each of them guessed, and they guessed differently: a model would answer a
+ * `measurement` with the number `12`, the widget would answer it with `"12 kg"`, and the validator
+ * wanted `{values: [12], unit: "kg"}`. Two of the three were silently wrong, and "silently" is the
+ * part that mattered — an invalid value is a rejected submission, and a rejected submission is a task
+ * that never existed.
+ *
+ * SO THE SHAPES BELOW ARE DESCRIPTIVE, NOT ASPIRATIONAL. Each one was read off the validator branch
+ * that accepts it, not off what would be tidy. Two are worth flagging because the tidy guess is
+ * wrong: `currency` is a plain NUMBER (the currency code belongs to the workspace, not to the answer),
+ * and `measurement` carries `values` as an ARRAY — a measurement may have up to three axes, which is
+ * how one type covers weight, capacity and W×H×D.
+ *
+ * Aliases are absent on purpose: a producer is told the canonical vocabulary, and a stored alias is
+ * normalised before it ever reaches a lookup here.
+ */
+export const TASK_TEMPLATE_VALUE_SHAPES: Readonly<Record<TaskTemplateFieldType, string>> = {
+  text: 'string — one line',
+  textarea: 'string — may contain newlines',
+  email: 'string — a valid email address',
+  phone: 'string — digits with an optional leading "+", 8–15 digits',
+  url: 'string — an http(s) URL; or {url, label?} when the link needs a name',
+  number: 'number — a whole number (integer); no fractional part',
+  decimal: 'number — may have a fractional part',
+  currency: 'number — the amount in major units (e.g. 12.50). The currency itself is the workspace\'s, never part of the answer',
+  percentage: 'number — 0–100, not 0–1',
+  date: 'string — ISO-8601 date, "YYYY-MM-DD"',
+  time: 'string — 24-hour "HH:MM"',
+  datetime: 'string — full ISO-8601 timestamp',
+  date_range: '{start, end} — both full ISO-8601 timestamps, end not before start',
+  duration: 'string — ISO-8601 duration, e.g. "PT1H30M"',
+  recurrence: '{freq, interval?, byWeekday?, byMonthDay?, byMonth?, endAt?, count?} — freq is required and is one of DAILY/WEEKLY/MONTHLY/YEARLY',
+  options: 'string — exactly one of the field\'s option values (the value, never the label)',
+  multi_options: 'string[] — each entry one of the field\'s option values',
+  toggle: 'boolean — true or false, never "yes"',
+  scale: 'number — within the field\'s min/max (this is what a star rating is)',
+  tags: 'string[] — free-form short labels',
+  file: 'string[] — file references; one entry per file',
+  image: 'string[] — image references; one entry per image',
+  video: 'string[] — video references',
+  audio: 'string[] — audio references',
+  signature: 'string[] — a single signature reference, in a one-element list',
+  location: '{address?, lat?, lng?, name?} — an address string, coordinates, or both; at least one of address or lat+lng',
+  team_member: 'string — a team member id (or string[] when the field pins several)',
+  team_group: 'string — a team group id (or string[])',
+  asset: 'string — an asset id (or string[])',
+  contact: 'string — a contact id (or string[])',
+  catalog_item: 'string — a catalog item id (or string[])',
+  task_ref: 'string — a task id (or string[])',
+  repeatable_group: 'object[] — one object per row, each keyed by the group\'s own nested field ids (this is what a table is)',
+  barcode: 'string — the code\'s text content (this is what a QR code is)',
+  color: 'string — a hex colour, "#RRGGBB" (or string[] when the field allows several)',
+  measurement: '{values, unit} — values is an ARRAY of numbers, one per axis (1 for weight, 3 for W×H×D), unit is a string like "kg"',
+};
+
+/**
+ * The contract as a block of prompt text — the exact lines an extraction prompt injects so a model
+ * writes values the validator accepts. Pass the types actually present on the template so a five-field
+ * form does not carry thirty-six lines of vocabulary it will never use.
+ */
+export function taskTemplateValueShapeLines(types: Iterable<string>): string {
+  const seen = new Set<TaskTemplateFieldType>();
+  for (const t of types) {
+    const canonical = normalizeTaskTemplateFieldType(t);
+    if (canonical) seen.add(canonical);
+  }
+  const wanted = TASK_TEMPLATE_FIELD_TYPES.filter((t) => seen.has(t));
+  return wanted.map((t) => `- ${t}: ${TASK_TEMPLATE_VALUE_SHAPES[t]}`).join("\n");
 }
 
 /** One question on a template. Mirrors the worker's `Field`. */
