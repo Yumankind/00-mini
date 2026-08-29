@@ -166,6 +166,12 @@ export interface ExploreModel {
   reasoningMandatory?: boolean;
   /** One-line description from the provider. */
   blurb?: string;
+  /**
+   * 00's editorial recommendation, from the signed model catalog — the model a picker preselects for
+   * somebody who has not chosen one. Data, not code: republishing the catalog moves it (see
+   * `resolveRecommendedModel`), so a UI must read this rather than hard-coding an id.
+   */
+  recommended?: boolean;
 
   /**
    * Where the model sits relative to the others.

@@ -310,8 +310,53 @@ export const CLOUD_CREDIT_MODELS: { id: string; label: string; note: string }[] 
   { id: "anthropic/claude-haiku-4.5", label: "Claude Haiku 4.5", note: "fastest, cheapest" },
 ];
 
-/** The brain a cloud agent starts on unless the operator picks another. */
+/**
+ * The brain a cloud agent starts on unless the operator picks another — and, from here on, only the
+ * FALLBACK for that: the live recommendation is a mark in the published model catalog (see
+ * `resolveRecommendedModel`). This constant is what answers before the catalog has been read, and on
+ * a machine whose catalog carries no mark at all.
+ */
 export const CLOUD_CREDIT_DEFAULT_MODEL = CLOUD_CREDIT_MODELS[0].id;
+
+/**
+ * WHICH MODEL A NEW AGENT SHOULD START ON, resolved rather than hard-coded.
+ *
+ * The recommendation used to be `CLOUD_CREDIT_MODELS[0]` and nothing else, which meant that the day a
+ * stronger model shipped, recommending it took an app release — for a fact that is pure editorial and
+ * changes far more often than the code around it does. So the recommendation became DATA: an entry in
+ * `catalogs/llm-models.json` carries `recommended: true` (stamped from `scripts/llm-models-recommended.json`
+ * during the catalog refresh), the doc is signed and published, and engines pick the change up on
+ * their next verified read.
+ *
+ * The precedence, cheapest surprise first:
+ *   1. a CATALOG-MARKED model this menu actually serves — the editorial answer, in marker order, so a
+ *      list of marks is a fallback chain (mark the new model, keep the old one behind it, and machines
+ *      whose proxy has not been given the new one yet still land somewhere sensible);
+ *   2. what the PLATFORM said when it minted this brain, if it serves it — a workspace on a pinned
+ *      model list gets its own opinion respected over ours;
+ *   3. `CLOUD_CREDIT_DEFAULT_MODEL`, when served — the shipped answer, for a cold or unmarked catalog;
+ *   4. whatever the menu does serve.
+ *
+ * Every branch is filtered through `served`, because the one failure this cannot have is recommending
+ * a model the menu does not carry: that agent's first turn fails with a sentence about a model id,
+ * which tells its owner nothing about what actually went wrong. Undefined only when the menu is empty.
+ */
+export function resolveRecommendedModel(input: {
+  /** The model ids this menu can actually run — a workspace's proxy list, or the container's. */
+  served: readonly string[];
+  /** Ids the published catalog marks `recommended`, in the marker's own order. */
+  marked?: readonly string[];
+  /** What the platform recommended for this specific workspace, when it named one. */
+  platformDefault?: string;
+}): string | undefined {
+  const served = input.served;
+  if (!served.length) return undefined;
+  const has = (id: string | undefined): id is string => !!id && served.includes(id);
+  for (const id of input.marked ?? []) if (has(id)) return id;
+  if (has(input.platformDefault)) return input.platformDefault;
+  if (has(CLOUD_CREDIT_DEFAULT_MODEL)) return CLOUD_CREDIT_DEFAULT_MODEL;
+  return served[0];
+}
 
 /**
  * IMAGE models the same workspace credits can buy — the shortlist image_generate offers by name.
