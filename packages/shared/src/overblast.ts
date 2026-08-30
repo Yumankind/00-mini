@@ -159,6 +159,32 @@ export interface ParkedEntityItem {
 }
 
 /**
+ * What `POST /overblast/disconnect { keepTasks: true }` copied onto this machine before it let go.
+ *
+ * Every number here exists because the alternative is a silence somebody discovers later. `skipped`
+ * is a choice (the copy keeps a window — a month back, a quarter forward — not an archive);
+ * `attachmentsLeft` is a limit (the documents come across, their bytes stay in the workspace's
+ * storage behind the key being cleared); `failed` and `partial` are the honest half of an operation
+ * run against a platform the operator may already be walking away from.
+ *
+ * A disconnect NEVER fails because of any of this. The copy is best-effort and the leaving is not.
+ */
+export interface OverblastKeptTasks {
+  /** Rows written into this machine's folders. */
+  copied: number;
+  /** Rows the workspace holds that fall outside the kept window — not a failure, a choice. */
+  skipped: number;
+  /** Rows that could not be copied. Each one is named in `errors`. */
+  failed: number;
+  /** Attachments whose bytes stay in the workspace: the refs came across, the files did not. */
+  attachmentsLeft: number;
+  /** At most a handful, in the platform's own words. */
+  errors: string[];
+  /** True when the listing itself could not be completed — `copied` is then a floor, not a total. */
+  partial: boolean;
+}
+
+/**
  * A local task row the sync has repeatedly failed to move up, named so somebody can act on it.
  *
  * WHY THIS IS A SHAPE AND NOT A LOG LINE. When an agent is linked, the workspace is the only task
