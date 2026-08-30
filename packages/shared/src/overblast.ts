@@ -852,6 +852,35 @@ export interface TaskObject {
 }
 
 /**
+ * HOW LONG A TASK TAKES, in minutes — {@link TaskObject.duration} read rather than displayed.
+ *
+ * The store keeps a duration the way the platform writes it, as an ISO-8601 period ("PT1H30M"), and
+ * every surface that wants to DRAW a task needs the same string as a number. Both halves of the app
+ * ask: the engine projects it onto a workspace row, and the calendar turns it into the height of a
+ * block. One parser, here beside the field it parses, because two would drift the first time one of
+ * them learned about days.
+ *
+ * WHAT IT ACCEPTS is the calendar-shaped subset — weeks, days, hours, minutes, seconds. Not months
+ * and not years: a task that takes "P1M" is not a task, and reading it would mean inventing a month
+ * length. `null` for anything it cannot read, for a zero period, and for a negative one — a block
+ * with no height is not a fact about a task, and a caller that gets `null` falls back to the minimum
+ * block rather than drawing a lie.
+ */
+export function taskDurationMinutes(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const m = /^P(?:(\d+(?:\.\d+)?)W)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/.exec(
+    String(iso).trim().toUpperCase(),
+  );
+  if (!m) return null;
+  const [, w, d, h, min, s] = m;
+  if (!w && !d && !h && !min && !s) return null; // a bare "P"/"PT" states nothing
+  const total =
+    Number(w ?? 0) * 7 * 24 * 60 + Number(d ?? 0) * 24 * 60 + Number(h ?? 0) * 60 + Number(min ?? 0) + Number(s ?? 0) / 60;
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return Math.round(total);
+}
+
+/**
  * THE FIELD TYPES a task template may ask for — mirrored from the worker's `FIELD_TYPES`, in its
  * order, as a value so a runtime can check against it rather than trusting the compiler alone.
  *
