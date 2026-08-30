@@ -1203,6 +1203,27 @@ export interface TaskTemplateSection {
  * than tidiness: `public` means an anonymous visitor can file tasks from this form. It is a decision
  * somebody has to make on purpose, never one they make by omitting a field.
  */
+/**
+ * ONE STATUS A RECIPE DECLARES FOR ITS OWN TASKS.
+ *
+ * A workspace's status vocabulary is one list for every task in it, which is the right shape for
+ * `blocked` and the wrong shape for `awaiting parts` — a word that means something on a repair job
+ * and nothing at all on an invoice. A template may therefore add words of its own, and only tasks
+ * filed from that template offer them.
+ *
+ * `color` is CSS (`#4CAF50`), matching {@link TaskTemplateObject.color} beside it rather than the
+ * ARGB integer the workspace's own status config holds — a local template is authored on this
+ * machine, by a colour input that produces hex. Both spellings are read by one normaliser on the
+ * client (`normalizeStatusColor`), so neither store has to convert for the other.
+ *
+ * Absent `color` is not black: it means nobody picked one, and the name's own stable swatch answers.
+ */
+export interface TaskTemplateStatus {
+  id: string;
+  label?: string;
+  color?: string;
+}
+
 export interface TaskTemplateObject {
   id: string;
   name: string;
@@ -1211,6 +1232,9 @@ export interface TaskTemplateObject {
   color?: string;
   visibility: "public" | "internal";
   sections: TaskTemplateSection[];
+  /** The words THIS recipe adds to the status picker, on top of whatever the store publishes. Absent
+   *  ⇒ this recipe adds none, which is every template written before the field existed. */
+  statuses?: TaskTemplateStatus[];
   /** Catalog pricing, payment terms, release rules, task defaults — workspace concerns, carried
    *  opaquely so a synced template survives a round trip through a local agent unchanged. */
   pricing?: unknown;
