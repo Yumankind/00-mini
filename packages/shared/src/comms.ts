@@ -291,12 +291,20 @@ export const CANONICAL_PLATFORMS: CanonicalPlatformInfo[] = [
   { name: "youtube" },
   { name: "threads" },
   { name: "pinterest" },
+  // Delisted from the connect surfaces, never from the VOCABULARY. This table's job is to resolve a
+  // channel id that already exists, and a workspace connected before the delisting still has threads
+  // arriving on `overblast-dm-mastodon`. Taking the name out here would not undo a connection; it
+  // would route that person's messages to the generic social inbox.
   { name: "mastodon" },
   { name: "bluesky" },
   { name: "telegram" },
   { name: "whatsapp" },
   { name: "reddit" },
   { name: "google_business", aliases: ["googlebusiness", "google-business"] },
+  // Publishing only — upstream serves it on no messaging surface at all. It is in the vocabulary
+  // because a POST channel is still a channel whose id has to resolve; see NO_DM_PLATFORMS in
+  // overblast-adapter.ts for why no DM channel is ever minted for it.
+  { name: "snapchat" },
 
   // ── The three named conversation kinds (conversationKindOf) ──
   { name: "email" },
