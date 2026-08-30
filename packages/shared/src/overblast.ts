@@ -105,10 +105,19 @@ export interface OverblastKnowledgeConflict {
  *
  * They travel in OPPOSITE directions, and that asymmetry is the design rather than a limitation:
  *
- *   · `member-groups` comes DOWN only. A group id up there is an authorization principal (it feeds
- *     the session-token mint), and a local engine minting principals in somebody else's security
- *     domain is exactly what the "only the linked agent syncs" rule protects against. The workspace
- *     is the authority; this machine keeps a copy.
+ *   · `member-groups` — the GROUP comes DOWN only. A group id up there is an authorization principal
+ *     (it feeds the session-token mint), and a local engine minting principals in somebody else's
+ *     security domain is exactly what the "only the linked agent syncs" rule protects against. The
+ *     workspace is the authority; this machine keeps a copy and MERGES it (`mergeMemberGroupDown`)
+ *     rather than being overwritten by it, because the two sides do not describe the same object.
+ *
+ *     TWO MEMBER FIELDS GO UP, and nothing else does: a member's `role` and their `conversations`,
+ *     PATCHed onto a roster row that already exists (`PATCH /team-members/:memberId` — the door that
+ *     owns membership, so this is not a group push carrying a member list). They are facts the
+ *     operator sets in a panel the workspace has no equivalent of, and before the roster learned the
+ *     words for them they died on the next pull. A seat is a roster row with a non-empty email, and
+ *     this path can neither create a row, delete one, nor write an address — so it cannot move that
+ *     number.
  *   · `comms-groups` travels BOTH ways. An audience is nobody's principal — it grants nothing, costs
  *     no seat, and is the operator's own data — so the machine that has it offline is entitled to be
  *     the one that publishes it.
