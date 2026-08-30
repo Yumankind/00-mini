@@ -158,6 +158,29 @@ export interface ParkedEntityItem {
   nextAttemptAt: string;
 }
 
+/**
+ * A local task row the sync has repeatedly failed to move up, named so somebody can act on it.
+ *
+ * WHY THIS IS A SHAPE AND NOT A LOG LINE. When an agent is linked, the workspace is the only task
+ * store every surface reads — the `overblast_task` tool and the tasks panel both look up there. A
+ * local row that will not sync is therefore invisible EVERYWHERE except one scrolling activity line
+ * ("Not moved: tasks/…: Overblast 403: Insufficient permissions"), which nobody is watching at the
+ * moment it scrolls past. The operator can lose real work without ever being told. This rides on the
+ * local-tasks listing so the panel can say so, quietly and permanently, until it stops being true.
+ *
+ * `error` is the platform's own sentence, verbatim — see `StuckEntity.error` in the engine.
+ */
+export interface StuckTaskRow {
+  taskId: string;
+  /** The task's own title, or its id when it has none. */
+  title: string;
+  error: string;
+  /** Consecutive attempts that ended in this same error. Two is the floor — one failure is weather. */
+  attempts: number;
+  /** ISO of the last attempt, when it is known. */
+  lastTriedAt?: string;
+}
+
 /** `GET /api/agents/:id/entity-sync` — what the sync is doing for this agent right now. */
 export interface EntitySyncStatus {
   /** `linked` unless the operator turned it off; see `EntitySyncMode`. */
