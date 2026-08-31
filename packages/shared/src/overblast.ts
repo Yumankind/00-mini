@@ -121,8 +121,20 @@ export interface OverblastKnowledgeConflict {
  *   · `comms-groups` travels BOTH ways. An audience is nobody's principal — it grants nothing, costs
  *     no seat, and is the operator's own data — so the machine that has it offline is entitled to be
  *     the one that publishes it.
+ *   · `email-templates` travels BOTH ways, and is the first family whose SUBSTANCE is not in its
+ *     object. The record is a name, a version and a digest; the email itself is `body.html` beside it.
+ *     Both travel — the push carries the body in the same request, and a landing fetches it only when
+ *     the record's digest says it moved. It is two-way for the comms-group reason: a reusable email
+ *     grants nothing, costs no seat and is the operator's own writing, so the machine holding it
+ *     offline is entitled to publish it. PROVENANCE DOES NOT TRAVEL and cannot: the stamp that says
+ *     which template a draft came from lives in the DRAFT, and drafts are not synced at all.
  */
-export type EntitySyncKind = "tasks" | "task-templates" | "member-groups" | "comms-groups";
+export type EntitySyncKind =
+  | "tasks"
+  | "task-templates"
+  | "email-templates"
+  | "member-groups"
+  | "comms-groups";
 
 /** How many entities one side is holding, per kind. Used to decide whether connecting has to ask
  *  which side wins — the same shape and the same question as {@link OverblastKnowledgeSide}. */
