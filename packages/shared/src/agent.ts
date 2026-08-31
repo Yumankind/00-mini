@@ -1,4 +1,5 @@
 import type { AgentEngine, CliEngineId } from "./cli-engines.js";
+import type { WorkspaceMemberCard, WorkspaceSeatRevoked } from "./overblast.js";
 import type { AutoReplySettings, GroupEngageSettings, OutgoingSettings } from "./comms.js";
 import type { VoiceConfig } from "./voice.js";
 import { isLocalProviderId } from "./models.js";
@@ -419,6 +420,29 @@ export interface AgentProfile {
   /** Connected Overblast platform ids (instagram, whatsapp, email, …) — drives the per-platform channels. */
   overblastPlatforms?: string[];
   /**
+   * THE KEY'S SHAPE: true when the connected workspace key was minted by a MEMBER rather than the
+   * workspace owner (`/api-keys/me` answers a card whose `role` is not `owner`).
+   *
+   * A flag rather than a re-read of the card below, because it is asked on every poll tick from
+   * synchronous code and the card is a network answer. The two are written in the same breath and by
+   * one function (`member-scope.ts`), so they cannot disagree.
+   *
+   * WHAT IT MEANS HERE: this agent is "you, in that workspace" — a shallow member agent. It keeps its
+   * tasks in step and reads what its person may read; it does not answer the workspace's inbox, does
+   * not hold its listener socket, and does not publish config the member's role may not write.
+   */
+  memberScoped?: boolean;
+  /**
+   * The identity card as of the last successful status read — WHO this key is over there.
+   *
+   * Re-read on every `/overblast/status`, and deliberately so: a member can be promoted, demoted,
+   * moved between groups or have a capability taken away while the app is open, and a card cached at
+   * connect time would render a surface the very next request refuses.
+   */
+  memberCard?: WorkspaceMemberCard;
+  /** Set when the workspace answered `401 member_seat_revoked` — see {@link WorkspaceSeatRevoked}. */
+  memberSeatRevoked?: WorkspaceSeatRevoked;
+  /**
    * Per-tool switches for the platform tools the MAIN agent gets while its workspace is connected and
    * linked — the names in `OVERBLAST_TOOLS`.
    *
@@ -617,6 +641,13 @@ export interface AgentSummary {
   installedChannels: string[];
   /** Human-readable Overblast workspace name this agent is connected to (empty if none). */
   overblastWorkspace?: string;
+  /** True when this agent's workspace key is MEMBER-shaped. See `AgentProfile.memberScoped` — the UI
+   *  reads it to hide whole surfaces the workspace would refuse anyway. */
+  memberScoped?: boolean;
+  /** Who this connection is over there, as of the last status read. See `AgentProfile.memberCard`. */
+  memberCard?: WorkspaceMemberCard;
+  /** Set while the workspace says this member's seat is gone. See {@link WorkspaceSeatRevoked}. */
+  memberSeatRevoked?: WorkspaceSeatRevoked;
   /** Per-tool switches for the Overblast platform tools. ABSENT (and an absent key) = ON — the map only
    *  ever stores the OFF entries, so a tool added later defaults on for everyone. See
    *  `AgentProfile.overblastTools`. Surfaced here so the settings UI can show the current state. */

@@ -1297,3 +1297,97 @@ export interface TaskTemplateObject {
   /** ISO-8601 soft-delete tombstone. See {@link TaskObject.deletedAt}. */
   deletedAt?: string | null;
 }
+
+// ── WHO THIS CONNECTION IS, in the workspace ────────────────────────────────────────────────────
+//
+// The platform's `/api-keys/me` answers with an IDENTITY CARD (worker `social/api-keys.ts`, the
+// `member` field), and it is the one thing that tells this app whether the key it holds is the
+// workspace OWNER's or a MEMBER's. Everything the member half of this app does hangs off it, so the
+// shape is stated here once and read by the engine, the summary and the settings panel alike.
+//
+// CAPABILITY NAMES, NEVER SCOPE STRINGS. The card's `capabilities` map is keyed by the worker's own
+// vocabulary (`tasks.read`, `conversations.read`, `public_agent.serve`) — a namespace that composes
+// role ceilings, per-person allowances and per-key grants into one answer. The legacy `scopes` array
+// is still on the wire for the surfaces built against it; nothing new should learn it, and no surface
+// in this app should reason about a member's authority from a role STRING where a capability name
+// exists for the same question.
+
+/** One capability name → whether this connection actually holds it. Open-ended by design: the worker
+ *  publishes every name it knows, and a name this build has never heard of is simply not asked about. */
+export type WorkspaceCapabilityMap = Record<string, boolean>;
+
+/** The capability names this app reasons about. A superset lives on the worker; these are the ones a
+ *  surface here is gated on, spelled once so a typo is a compile error rather than a hidden surface. */
+export const WORKSPACE_CAPABILITY = {
+  TASKS_READ: "tasks.read",
+  TASKS_WRITE: "tasks.write",
+  TASKS_CREATE: "tasks.create",
+  TASKS_DELETE: "tasks.delete",
+  KB_READ: "kb.read",
+  TEMPLATES_READ: "templates.read",
+  TEMPLATES_WRITE: "templates.write",
+  DOCUMENTS_READ: "documents.read",
+  CONVERSATIONS_READ: "conversations.read",
+  SOCIAL_DM_SEND: "social.dm.send",
+  EMAIL_SEND: "email.send",
+  CALLS_MAKE: "calls.make",
+  AI_CREDITS: "ai.credits",
+  ASK_MAIN_AGENT: "ask.main_agent",
+  WEBCHAT_LINKS_CREATE: "webchat.links.create",
+  PUBLIC_AGENT_SERVE: "public_agent.serve",
+  CLOUD_BURST: "cloud.burst",
+} as const;
+
+export type WorkspaceCapability = (typeof WORKSPACE_CAPABILITY)[keyof typeof WORKSPACE_CAPABILITY];
+
+/** The three authorities a workspace key can carry. `owner` is what a key with no member seat reports. */
+export type WorkspaceMemberRole = "owner" | "manager" | "member";
+
+/** One group the person sits in, with the level they hold THERE — which is not their workspace role. */
+export interface WorkspaceMemberGroupCard {
+  id: string;
+  name: string;
+  /** The worker's group vocabulary ("member" | "manager", and whatever it grows). */
+  role: string;
+}
+
+/**
+ * THE IDENTITY CARD — "you, in that workspace", as the platform answers it.
+ *
+ * Present for every key, owner included: one shape to decode, and `role` is what branches. An owner
+ * key has no roster row, so its `name`/`email` are null and its `groups` are empty — absence there is
+ * a fact about owners, not a card that failed to load.
+ */
+export interface WorkspaceMemberCard {
+  /** The roster row id for a member; the account id for an owner key. */
+  id: string;
+  name: string | null;
+  email: string | null;
+  role: WorkspaceMemberRole;
+  groups: WorkspaceMemberGroupCard[];
+  /** What this CONNECTION may do — the role's ceiling narrowed by the key's own grant. */
+  capabilities: WorkspaceCapabilityMap;
+}
+
+/** Does this card hold a capability? Absent ⇒ false: a name the card never mentions is not held. */
+export function cardHolds(card: WorkspaceMemberCard | undefined, capability: string): boolean {
+  return card?.capabilities?.[capability] === true;
+}
+
+/**
+ * THE SEAT WENT AWAY — recorded rather than retried.
+ *
+ * The worker answers `401 member_seat_revoked` the instant a member's seat stops existing, and that is
+ * a permanent answer until somebody in the workspace puts the seat back. So the agent freezes on it:
+ * a timeline event, this flag for the UI to say so, and no more polling except one gentle probe an
+ * hour, because a seat CAN come back and an app that never asked again would need a reconnect to
+ * notice.
+ */
+export interface WorkspaceSeatRevoked {
+  /** When the refusal was first seen (ISO-8601). */
+  at: string;
+  /** The workspace's display name at that moment — the panel says which workspace froze. */
+  workspace?: string;
+  /** When the hourly re-probe last ran (ISO-8601). Absent until the first one. */
+  lastProbeAt?: string;
+}
