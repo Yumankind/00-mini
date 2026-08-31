@@ -514,7 +514,7 @@ export const OVERBLAST_TOOLS = [
   {
     name: "overblast_generate_document",
     label: "documents",
-    hint: "Fill one of the workspace's document templates and render it to PDF/HTML.",
+    hint: "Fill one of the workspace's document templates into an editable draft, then render it to PDF.",
   },
   {
     name: "ask_human",
