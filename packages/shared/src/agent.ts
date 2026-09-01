@@ -19,6 +19,11 @@ export interface Capabilities {
   /** Drive the agent's whole DESKTOP: every window on its screen, not just a browser tab. Container
    *  and Linux only — on a Mac the desktop is the operator's own, which 00 never screencasts. */
   desktop: boolean;
+  /** Move the COMPANION CURSOR on the operator's Mac — the agent's face, out beside the real pointer —
+   *  to show things: go there, ring it, say a line. Look-and-point only; it never clicks or types
+   *  (that is a later, separate step), and the operator's own mouse or ESC takes it back at once.
+   *  Only the Mac app can grant it (there is no companion anywhere else); off by default. */
+  pointer: boolean;
   /** Send outbound comms (messages/email/posts) — always quarantined first. */
   comms: boolean;
   /** Create scheduled / cron tasks. */
@@ -102,6 +107,7 @@ export const DEFAULT_CAPABILITIES: Capabilities = {
   internet: true,
   computer: true, // its own browser; the tools still require a vision-capable model
   desktop: false, // MACHINE-decided, not policy — scaffold.ts turns it on where a screen is the agent's
+  pointer: false, // the operator's own screen, in front of them — asked for, never assumed
   comms: true, // outgoing is quarantined for approval regardless, so this grants reach, not send
   schedule: true, // its own cron/interval/one-shot tasks
   media: true, // inert until a provider key exists (OpenAI/Gemini/…)
