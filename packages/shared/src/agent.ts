@@ -294,6 +294,9 @@ export interface UpdateSignalSettingsRequest {
 export interface AgentAvatar {
   rows: string[];
   colors: Record<string, string>;
+  /** Optional extra 8×8 frames (same colour keys) for the idle animation — a blink, a sway. Shown
+   *  briefly between long holds of `rows`, wherever the face is drawn. */
+  frames?: string[][];
 }
 
 /** Ask the engine to (re)generate an agent's pixel-art avatar, optionally guided by a request. */
