@@ -109,7 +109,7 @@ export const DEFAULT_CAPABILITIES: Capabilities = {
   internet: true,
   computer: true, // its own browser; the tools still require a vision-capable model
   desktop: false, // MACHINE-decided, not policy — scaffold.ts turns it on where a screen is the agent's
-  pointer: false, // the operator's own screen, in front of them — asked for, never assumed
+  pointer: false, // MACHINE-decided too — scaffold.ts turns it on where a companion cursor exists (a Mac)
   comms: true, // outgoing is quarantined for approval regardless, so this grants reach, not send
   schedule: true, // its own cron/interval/one-shot tasks
   media: true, // inert until a provider key exists (OpenAI/Gemini/…)
