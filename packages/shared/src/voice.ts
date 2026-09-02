@@ -116,12 +116,50 @@ export interface CaptureSttState {
    *  models are disabled with a reason). Models download on first use. */
   whisperModel: {
     selected: string;
-    options: { id: string; label: string; sizeMB: number; downloaded: boolean; disabled?: boolean; reason?: string }[];
+    /** Free space on the volume the weights land on; undefined when the engine couldn't read it. */
+    freeDiskGB?: number;
+    /** `recommended` marks the size a machine with nothing yet should start with: the best quality that
+     *  runs comfortably here. `disabled` sizes carry the reason (RAM, GPU, or disk space). */
+    options: { id: string; label: string; sizeMB: number; downloaded: boolean; recommended?: boolean; disabled?: boolean; reason?: string }[];
     /** What the transcriber is doing about the SELECTED model right now. A cold pick is a download, not
      *  a failure — but silence about it is what makes a recording look broken, so every surface reads
      *  this: the capture page's footer, its banner, and the gate on real-time transcription. */
     state: WhisperModelState;
   };
+  /** The whisper.cpp binary itself — installed, installing (with brew's last line), or how to get it. */
+  whisperCpp: WhisperCppState;
+  /** The vault keys that would unlock a cloud transcriber, for the page's own setup. */
+  keys: CaptureSttKeyOption[];
+}
+
+/** The whisper.cpp BINARY's situation on the recording machine (the weights are WhisperModelState). */
+export interface WhisperCppState {
+  installed: boolean;
+  /** ready = on PATH · absent = not here, nothing running · installing = brew is at work (`line` is its
+   *  latest output) · error = the last attempt failed (`error` says why). */
+  phase: "ready" | "absent" | "installing" | "error";
+  /** Whether the engine can install it in one click (Homebrew is present). */
+  installable: boolean;
+  /** When not installable: what the operator has to do first. */
+  blocker?: string;
+  /** The command the one-click install runs — shown so the button never does something unnamed. */
+  command: string;
+  line?: string;
+  error?: string;
+}
+
+/** A vault key that unlocks a cloud transcriber — one of the few names the capture page may write. */
+export interface CaptureSttKeyOption {
+  name: string;
+  /** The capture STT engine the key enables (matches CaptureSttOption.id). */
+  engine: string;
+  label: string;
+  /** Where the provider hands the key out. */
+  url: string;
+  /** What a key from this provider usually starts with, as a placeholder. */
+  hint?: string;
+  /** Already in the vault. */
+  set: boolean;
 }
 
 /** The transcription model's situation on the machine that records — see CaptureSttState.whisperModel. */
