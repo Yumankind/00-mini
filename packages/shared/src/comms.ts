@@ -460,6 +460,9 @@ export interface WhatsappStatus {
   installed: boolean;
   /** Paired and connected. */
   linked: boolean;
+  /** Why it is not: a stale handshake, a logout from the phone, a network refusal — the status had
+   *  no way to say any of it, and the modal showed "fetching QR…" forever. */
+  error?: string;
   /** The current pairing QR as a data URL, while waiting to be scanned. */
   qr?: string;
 }

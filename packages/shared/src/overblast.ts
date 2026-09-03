@@ -1367,6 +1367,17 @@ export interface WorkspaceMemberCard {
   groups: WorkspaceMemberGroupCard[];
   /** What this CONNECTION may do — the role's ceiling narrowed by the key's own grant. */
   capabilities: WorkspaceCapabilityMap;
+  /** Per capability, the CHANNELS it is held on: 'all' for a blanket grant, a platform list for a
+   *  parameterized one (`social.dm.read:instagram`). Absent from a platform that predates it, in
+   *  which case a held capability is read as held everywhere — the old reading. */
+  channels?: Record<string, "all" | string[]>;
+}
+
+/** The channels a card holds a capability on: 'all', a list, or null when not held at all. */
+export function cardChannels(card: WorkspaceMemberCard | undefined, capability: string): "all" | string[] | null {
+  if (!cardHolds(card, capability)) return null;
+  const c = card?.channels?.[capability];
+  return c === undefined ? "all" : c;
 }
 
 /** Does this card hold a capability? Absent ⇒ false: a name the card never mentions is not held. */
