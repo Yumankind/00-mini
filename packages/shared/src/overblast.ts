@@ -1371,6 +1371,12 @@ export interface WorkspaceMemberCard {
    *  parameterized one (`social.dm.read:instagram`). Absent from a platform that predates it, in
    *  which case a held capability is read as held everywhere — the old reading. */
   channels?: Record<string, "all" | string[]>;
+  /**
+   * WHERE THIS MEMBER'S CLOUD RUNS GO (2026-09-03). A member's bursts land in a box of their own on
+   * the workspace, reached at its own engine hostname; the app pairs with that host, never the main
+   * box's. Absent for an owner (whose box is the workspace's main one) and on older platforms.
+   */
+  box?: { id: string; engineHost: string };
 }
 
 /** The channels a card holds a capability on: 'all', a list, or null when not held at all. */
