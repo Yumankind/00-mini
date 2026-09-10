@@ -1,0 +1,13 @@
+{
+  // A throwaway tool Worker (see src/index.ts): deployed by scripts/publish-litert-models.sh for the
+  // length of one publish, called with a per-deploy token, deleted after. No node_modules here, ever —
+  // it is deployed with the Homebrew wrangler like apps/yumankind-site.
+  "name": "r2-mirror",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  // A 6 GB copy hashes 6 GB; give it the CPU budget the paid plan allows rather than the default.
+  "limits": { "cpu_ms": 300000 },
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "00-downloads" }]
+}

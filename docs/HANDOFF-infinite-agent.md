@@ -937,9 +937,33 @@ runtime inside the mobile app, scheduled work handed to Mac/cloud.
 5. **Unclaimed apps.** How long an `unclaimed` registration lives (recommend 30 days) and whether
    level 0 keeps working after that (recommend yes: level 0 never needed the server).
 6. **Local model on phones.** Cap at 1.5B and ship one model, not a picker, on the mobile browser.
-7. **Hosting the LiteRT assets.** Gemma `.task`/`.litertlm` files are hundreds of MB and carry
-   Gemma's terms; the provider takes a `modelBaseUrl`, so the decision is where we mirror them (R2
-   like the media model store) and which entries the first catalog carries.
+7. **Hosting the LiteRT assets — DECIDED 2026-09-10: mirrored on the public bucket.**
+   `00-downloads` behind `https://dl.0-0.chat`, flat keys under `litert/` (so
+   `modelBaseUrl = https://dl.0-0.chat/litert`), MediaPipe's runtime under
+   `mediapipe/genai/<version>/wasm/`, a read-only CORS policy on the bucket (GET/HEAD, any origin,
+   Range exposed), and `litert/catalog.json` naming every asset's bytes, sha256, source commit and
+   licence. `scripts/publish-litert-models.sh` streams each file from the Hub straight into R2
+   (nothing touches the disk) and verifies the sha256 on the way through.
+   Why a mirror and not the Hub on demand: the ungated repos DO answer a browser (CORS `*` on the
+   CDN hop, Range → 206), but the URL is a signed redirect marked `no-store`, anonymous traffic is
+   rate-limited at their discretion, and the Gemma 3 / 3n / 270m repos are GATED (401 without a
+   token, and a token in a page is a token for everyone). R2 egress is free and the custom domain
+   sits behind Cloudflare's cache, so the set costs storage only: ~15 GB at $0.015/GB-month is about
+   $0.25 a month, reads at $0.36 per million. What is on the list, and why:
+
+   | Asset | Size | Licence | Gated at source | Role |
+   |---|---|---|---|---|
+   | `gemma-4-E2B-it-web.task` | 2.0 GB | Apache-2.0 | no | default desktop brain, text only |
+   | `gemma-4-E4B-it-web.task` | 3.0 GB | Apache-2.0 | no | strong desktop brain, text only |
+   | `gemma-4-12B-it-web.litertlm` | 6.0 GB | Apache-2.0 | no | power users with the VRAM |
+   | `gemma-3n-E2B-it-int4-Web.litertlm` | 3.0 GB | Gemma terms | yes | **vision and audio** (the Gemma 4 web builds are text-only per their card) |
+   | `gemma-3n-E4B-it-int4-Web.litertlm` | 4.3 GB | Gemma terms | yes | vision, larger |
+   | `gemma3-270m-it-q4_0-web.task` | 0.25 GB | Gemma terms | yes | phones and the embed's "load local AI" |
+   | `gemma3-1b-it-int4-web.task` | 0.7 GB | Gemma terms | yes | small desktop / good phones |
+
+   Left out: `FastVLM-0.5B` (vision, but `apple-amlr`, a research licence); the Qwen LiteRT
+   builds (Apache, ungated, but no `-web` variant, so unproven on the browser runtime). The gated
+   rows need an `HF_TOKEN` at publish time only; visitors never see the Hub.
 
 ---
 

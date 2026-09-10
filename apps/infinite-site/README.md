@@ -55,12 +55,23 @@ registration, the inbox and push arrive in Phase 3, in moltworker or in a second
 The PWA's preferred local brain (LiteRT, `packages/agent-models/src/litert.ts`) loads Google's LLM
 Inference runtime from `/mediapipe/genai/wasm/*` on this origin, never from a CDN. Those are three
 ~27 MB binaries plus their loaders, and Cloudflare caps a static asset at 25 MiB, so `build-site.sh`
-deliberately leaves `dist/mediapipe/` out of `public/`. Serving them needs the first binding this
-Worker gets: an R2 bucket (the same one that will hold the Gemma model assets of the plan's §12.7)
-with `mediapipe/genai/wasm/<file>` keys, answered by the Worker with `content-type: application/wasm`
-and a long immutable cache header. Until that bucket exists, LiteRT reports `download` forever on
-this origin and the app falls through to WebLLM, which is the designed failure. Dev and previews from
-`apps/infinite` (`vite dev` / `vite preview`) serve the folder themselves.
+deliberately leaves `dist/mediapipe/` out of `public/`. They live on the public bucket already
+(`00-downloads`, custom domain `dl.0-0.chat`, read-only CORS for any origin), under
+`mediapipe/genai/0.10.29/wasm/<file>`, beside the model weights under `litert/` — both published
+by `scripts/publish-litert-models.sh` and the plan's §12.7. Two ways to reach them from here, pick
+one when this site is first deployed:
+
+- **Cross-origin, no binding:** build the PWA with
+  `VITE_LITERT_WASM_BASE=https://dl.0-0.chat/mediapipe/genai/0.10.29/wasm` (a `.env.local` in
+  `apps/infinite`). Simplest; the service worker does not cache cross-origin bytes, so the wasm is
+  re-fetched from Cloudflare's edge when the model loads, and offline depends on the browser's own
+  HTTP cache honouring the year-long `immutable` header it carries.
+- **Same-origin through the Worker:** give this Worker an R2 binding to `00-downloads` and answer
+  `/mediapipe/genai/wasm/*` from the `mediapipe/genai/0.10.29/wasm/` keys with the stored
+  content-type. Then the PWA's default (same origin) holds and the service worker caches it, which is
+  the offline promise of the plan's §4.4.
+
+Dev and previews from `apps/infinite` (`vite dev` / `vite preview`) serve the folder themselves.
 
 ## Preview
 

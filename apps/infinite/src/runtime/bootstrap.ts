@@ -57,6 +57,9 @@ import type { Readiness } from "../lib/readiness.js";
 import type { VaultKind } from "../lib/vault-policy.js";
 import { createPrfCredential, getPrfSecret, webauthnAvailable } from "../lib/webauthn-prf.js";
 
+/** Where the LiteRT Gemma weights are served from unless the environment says otherwise (§12.7). */
+export const DEFAULT_LITERT_MODEL_BASE = "https://dl.0-0.chat/litert";
+
 // ── Shapes this app needs on top of the contracts ─────────────────────────────────────────────────
 
 /** The subset of the engine's `AgentProfile` a browser-scaffolded agent is sure to carry. */
@@ -279,8 +282,18 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
     localPct = Math.round((report.progress ?? 0) * 100);
   };
   const webllm = new WebLLMProvider({ modelId: WEBLLM_DEFAULT_MODEL_ID, onProgress: onLocalProgress });
-  const litertBase = (import.meta.env?.VITE_LITERT_MODEL_BASE as string | undefined)?.trim();
-  const litert = litertBase ? new LiteRtProvider({ modelBaseUrl: litertBase, onProgress: onLocalProgress }) : null;
+  // The weights' home was decided on 2026-09-10 (docs/HANDOFF-infinite-agent.md §12.7): the public
+  // mirror on dl.0-0.chat, published by scripts/publish-litert-models.sh. An environment can point
+  // elsewhere, or say `off` to run WebLLM only — the app then says so on the Connections screen.
+  const litertEnv = (import.meta.env?.VITE_LITERT_MODEL_BASE as string | undefined)?.trim();
+  const litertBase = litertEnv === "off" ? "" : litertEnv || DEFAULT_LITERT_MODEL_BASE;
+  // The runtime's wasm: same-origin by default (the vite build copies it beside the bundle, the
+  // service worker keeps it offline). A hosted deploy whose asset layer cannot carry 27 MB files names
+  // the R2 copy instead — CORS is open on that bucket for GET (apps/infinite-site/README.md).
+  const litertWasm = (import.meta.env?.VITE_LITERT_WASM_BASE as string | undefined)?.trim() || undefined;
+  const litert = litertBase
+    ? new LiteRtProvider({ modelBaseUrl: litertBase, wasmBaseUrl: litertWasm, onProgress: onLocalProgress })
+    : null;
   const localChain = localProviders({ litert: litert ?? undefined, webllm });
   /** What the ONE "Local AI" card shows: the leader, unless this browser cannot run it at all. */
   const preferredLocal = async (): Promise<{ provider: ModelProvider; readiness: Readiness }> => {
@@ -291,7 +304,7 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
     const second = localChain[1];
     return { provider: second, readiness: await readinessOf(second, { ready: false, reason: "unsupported" }) };
   };
-  if (!litert) stubs.push("Local AI is web-llm only — no host is configured for the LiteRT model weights");
+  if (!litert) stubs.push("Local AI is web-llm only — VITE_LITERT_MODEL_BASE is off");
   const deviceStore = new IndexedDbDeviceKeyStore();
 
   opts.onStep("runtime", "active", "starting");
