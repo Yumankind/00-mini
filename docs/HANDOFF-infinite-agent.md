@@ -126,6 +126,11 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
 12. **Live transfer is wired end to end but the rooms base is a `.invalid` placeholder** until the
     worker deploys; the UI says "not connected yet" rather than spinning.
 
+14. **"Remote brain via my Mac"** (later): a ModelProvider over mobile connect. The browser sends
+    the latest turn to the Mac's agent, which answers with its own brain and tools, subscription
+    CLIs included; the browser never holds those OAuth tokens (their terms bind them to their own
+    clients). Appears in the chip as "<agent> · via my Mac"; a busy Mac is a retry, a refused relay
+    hands the turn to the local brain; the runtime now respects a provider with no tools of its own.
 13. **Deployed the site Worker to its workers.dev link at your request** (2026-09-10 late):
     `https://infinite-site.powerhouse.workers.dev` serves the app at `/`, the loader at `/e/<ref>.js`,
     and the wasm and weights from R2 on the same origin. No custom domain, no registry behind it
