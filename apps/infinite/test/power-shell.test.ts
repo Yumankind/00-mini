@@ -331,12 +331,15 @@ describe("the small ones", () => {
 });
 
 describe("refusals, by name", () => {
-  it("node and npm say where they can run", async () => {
-    for (const command of ["node -e 'console.log(1)'", "npm install", "pnpm build", "npx vite"]) {
+  it("the toolchains say where they can run — and the package half says it twice", async () => {
+    // `node`, `npm run` and `npx serve` LEFT this list when the runner arrived
+    // (src/power/js-runner.ts, test/shell-scripts.test.ts); installing never will.
+    for (const command of ["npm install", "npm ci", "pnpm build", "npx vite", "tsc", "bun run x"]) {
       const r = await run(command);
-      expect(r.code).toBe(127);
-      expect(r.err).toContain(NO_NODE_LINE);
+      expect(r.code, command).toBe(127);
+      expect(r.err, command).toContain(NO_NODE_LINE);
     }
+    expect((await run("npm install")).err).toContain("packages need your Mac");
   });
 
   it("python, curl and ssh get their own sentence, not `command not found`", async () => {

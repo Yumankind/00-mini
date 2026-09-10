@@ -18,6 +18,7 @@ import { BuiltinShell } from "../power/shell.js";
 import { createPowerGit } from "../power/git-bridge.js";
 import { agent } from "./agent.js";
 import { refreshFiles } from "./files.js";
+import { ensurePortRuntime } from "./ports.js";
 
 export type TerminalRow =
   | { kind: "input"; cwd: string; text: string }
@@ -90,6 +91,9 @@ export function terminal(): BuiltinShell | null {
   if (!shell) {
     shell = new BuiltinShell(owned.fs, { git: createPowerGit(owned.fs) });
     cwdRef.value = shell.cwd;
+    // `serve` and `node`'s `listen` register virtual ports the moment they are typed, and the service
+    // worker must already have somebody to ask. One idempotent call, here, is the whole wiring.
+    ensurePortRuntime();
   }
   return shell;
 }
@@ -144,7 +148,9 @@ export async function runCommand(command: string): Promise<void> {
     if (result.exitCode !== 0) push({ kind: "exit", code: result.exitCode });
     cwdRef.value = sh.cwd;
     // A command that writes is the same event the agent's writes are; the tree must not lag behind.
-    if (/\b(rm|mv|cp|mkdir|touch|tee|git)\b|>/.test(text)) await refreshFiles();
+    // `node` and `npm run` are in the list because a script's `fs.promises.writeFile` lands in the
+    // same workspace through the runner's RPC (src/power/js-runner.ts).
+    if (/\b(rm|mv|cp|mkdir|touch|tee|git|node|npm|npx)\b|>/.test(text)) await refreshFiles();
   } catch (err) {
     push({ kind: "stderr", text: err instanceof Error ? err.message : String(err) });
   } finally {

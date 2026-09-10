@@ -33,22 +33,48 @@ import tailwindcss from "@tailwindcss/vite";
  *  the one thing that could pass while the build shipped something else. */
 const PUSH_LIB_EXPORTS = ["notificationFor", "clickTarget", "clientToFocus"] as const;
 const PUSH_LIB_MARKER = "//__PUSH_LIB__";
+/** The second inlined module: what a `/~/…` path means (src/lib/virtual-route.ts), for the virtual
+ *  ports of docs/HANDOFF-infinite-agent.md §1's terminal row. Same rule as the push one — a marker
+ *  that vanished or a function that was renamed FAILS the build, because a fetch handler calling an
+ *  undefined name would serve nothing and swallow every `/~/` request on the origin. */
+const ROUTE_LIB_EXPORTS = ["routeFor", "requestUrlFor"] as const;
+const ROUTE_LIB_MARKER = "//__VIRTUAL_ROUTE_LIB__";
 
-export async function inlinePushLib(source: string, moduleFile: string): Promise<string> {
-  if (!source.includes(PUSH_LIB_MARKER)) {
-    throw new Error(`public/sw.js has no ${PUSH_LIB_MARKER} marker — the push handlers would ship undefined`);
+/**
+ * Transpile one pure module and drop it in at its marker.
+ *
+ * Inlining rather than `importScripts` because the worker must keep working offline from cache with
+ * no second request, and rather than a duplicated copy in sw.js because two copies of a rule are one
+ * copy of a rule and one bug.
+ */
+async function inlineLib(
+  source: string,
+  marker: string,
+  moduleFile: string,
+  names: readonly string[],
+): Promise<string> {
+  if (!source.includes(marker)) {
+    throw new Error(`public/sw.js has no ${marker} marker — the handlers it feeds would ship undefined`);
   }
   const ts = readFileSync(moduleFile, "utf8");
   const { code } = await transformWithEsbuild(ts, moduleFile, { loader: "ts", format: "esm", target: "es2022" });
   // A worker is a classic script here (`register("/sw.js")` with no `type: "module"`), so the module's
   // `export` keywords have to go; the declarations they were attached to stay exactly as they are.
   const inlined = code.replace(/^export\s*\{[^}]*\};?$/gm, "").replace(/^export\s+/gm, "");
-  for (const name of PUSH_LIB_EXPORTS) {
+  for (const name of names) {
     if (!new RegExp(`function ${name}\\b`).test(inlined)) {
-      throw new Error(`src/lib/push-notification.ts no longer defines ${name}(), which public/sw.js calls`);
+      throw new Error(`${moduleFile} no longer defines ${name}(), which public/sw.js calls`);
     }
   }
-  return source.replace(PUSH_LIB_MARKER, inlined);
+  return source.replace(marker, inlined);
+}
+
+export async function inlinePushLib(source: string, moduleFile: string): Promise<string> {
+  return await inlineLib(source, PUSH_LIB_MARKER, moduleFile, PUSH_LIB_EXPORTS);
+}
+
+export async function inlineVirtualRouteLib(source: string, moduleFile: string): Promise<string> {
+  return await inlineLib(source, ROUTE_LIB_MARKER, moduleFile, ROUTE_LIB_EXPORTS);
 }
 
 function serviceWorkerPrecache(): Plugin {
@@ -88,7 +114,9 @@ function serviceWorkerPrecache(): Plugin {
       const out = readFileSync(src, "utf8")
         .replace('"__PRECACHE__"', JSON.stringify(precache, null, 2))
         .replace('"__BUILD_ID__"', JSON.stringify(buildId));
-      writeFileSync(dest, await inlinePushLib(out, resolve(root, "src/lib/push-notification.ts")));
+      const withPush = await inlinePushLib(out, resolve(root, "src/lib/push-notification.ts"));
+      const withRoutes = await inlineVirtualRouteLib(withPush, resolve(root, "src/lib/virtual-route.ts"));
+      writeFileSync(dest, withRoutes);
     },
   };
 }

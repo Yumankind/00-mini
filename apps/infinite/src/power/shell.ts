@@ -25,6 +25,8 @@
 import type { AgentFs, FsEntry } from "@00/agent-fs";
 import type { Shell, ShellResult, ShellRunOptions } from "@00/agent-runtime";
 import { PathEscapeError, globToRegExp, normalizeSandbox, resolveInSandbox } from "@00/agent-runtime";
+import { NO_PACKAGES_LINE, runScript, type RunnerWorkerFactory } from "./js-runner.js";
+import { DEFAULT_SERVE_PORT, PortInUseError, listPorts, portUrl, serveFolder, unregister } from "./virtual-ports.js";
 
 // ── What the shell answers with ───────────────────────────────────────────────────────────────────
 
@@ -65,6 +67,13 @@ export interface BuiltinShellOptions {
   env?: Record<string, string>;
   /** Per-command output cap; a browser tab has no OOM killer. */
   maxOutputChars?: number;
+  /**
+   * How `node` gets its Worker. The browser passes nothing (a Blob URL Worker); a node test passes
+   * `createEvalWorker`, which runs the SAME prelude in-process — see src/power/js-runner.ts.
+   */
+  createWorker?: RunnerWorkerFactory;
+  /** Wall clock for one `node` run; a server is exempt while its port is registered. */
+  scriptTimeoutMs?: number;
 }
 
 /** The line every "not in a browser" refusal ends with, so the model repeats one sentence, not five. */
@@ -72,7 +81,12 @@ export const NO_NODE_LINE = "this browser has no Node; run it on your Mac";
 /** Reaching a git host from a page needs a proxy nobody has chosen (agent-fs's GitRemoteUnavailableError). */
 export const GIT_REMOTE_LINE = "git clone, push and pull need your Mac or a CORS proxy — nothing was sent";
 
-const NODE_FAMILY = new Set(["node", "npm", "npx", "pnpm", "yarn", "bun", "deno", "tsc", "vite"]);
+/**
+ * The ones that stay refused. `node`, `npm` and `npx` LEFT this set when the runner arrived
+ * (src/power/js-runner.ts): they are builtins now, and `npm install` refuses inside `npm` where it
+ * can say the useful half of the sentence. Everything still here needs a real toolchain.
+ */
+const NODE_FAMILY = new Set(["pnpm", "yarn", "bun", "deno", "tsc", "vite", "webpack", "esbuild"]);
 const OTHER_BINARIES: Record<string, string> = {
   python: "this browser has no Python; run it on your Mac (Pyodide is a later phase)",
   python3: "this browser has no Python; run it on your Mac (Pyodide is a later phase)",
@@ -88,6 +102,10 @@ const OTHER_BINARIES: Record<string, string> = {
 
 const DEFAULT_MAX_OUTPUT = 200_000;
 const EXIT_NOT_FOUND = 127;
+/** `npm run a` whose script is `npm run b` is fine; a ring of them is not. */
+const MAX_SCRIPT_DEPTH = 4;
+/** The sandbox `serve` and the virtual routes agree on — the same root `/` means in this shell. */
+const WORKSPACE_ROOT = "workspace";
 
 // ── Lexing ────────────────────────────────────────────────────────────────────────────────────────
 
@@ -262,6 +280,10 @@ export class BuiltinShell implements Shell {
   private readonly now: () => Date;
   private readonly maxOutput: number;
   private readonly env: Record<string, string>;
+  private readonly createWorker?: RunnerWorkerFactory;
+  private readonly scriptTimeoutMs?: number;
+  /** `npm run` runs a line through this same shell; a script that calls itself must not spin. */
+  private scriptDepth = 0;
   /** The sandbox root, agent-root-relative (`workspace`). */
   private root = "workspace";
   /** Where we are INSIDE the root, `""` at the top. */
@@ -274,6 +296,8 @@ export class BuiltinShell implements Shell {
     this.git = opts.git ?? null;
     this.now = opts.now ?? (() => new Date());
     this.maxOutput = opts.maxOutputChars ?? DEFAULT_MAX_OUTPUT;
+    this.createWorker = opts.createWorker;
+    this.scriptTimeoutMs = opts.scriptTimeoutMs;
     this.env = { SHELL: "browser shell", HOME: "/", PWD: "/", TERM: "00-infinite", ...(opts.env ?? {}) };
     this.builtins = this.table();
   }
@@ -854,6 +878,13 @@ export class BuiltinShell implements Shell {
       help: async () => ok(this.helpText()),
 
       git: async (ctx) => this.gitCommand(ctx),
+
+      node: async (ctx) => this.nodeCommand(ctx),
+      npm: async (ctx) => this.npmCommand(ctx),
+      npx: async (ctx) => this.npxCommand(ctx),
+      serve: async (ctx) => this.serveCommand(ctx.argv.slice(1)),
+      ports: async () => this.portsCommand(),
+      kill: async ({ argv }) => this.killCommand(argv[1]),
     };
   }
 
@@ -1077,6 +1108,191 @@ export class BuiltinShell implements Shell {
     }
   }
 
+  // ── Scripts, servers and static folders (src/power/js-runner.ts, src/power/virtual-ports.ts) ────
+  //
+  // WHY THESE LIVE IN THE SHELL AND NOT IN A PANE. `node app.js`, `npm run build`, `npx serve` are
+  // what a person's hands already know, and the agent's `bash` tool is this same table — so wiring
+  // them here gives the agent the runner for free, with the same refusals and the same sandbox.
+  // Nothing streams: a command answers with two strings (see the header), so a script's output
+  // arrives when it ends. A server is the exception, and it is why `runScript` hands the terminal
+  // back the moment the main module has finished listening.
+
+  /** `node file.js [args]`, `node -e "…"`, `node -v`. */
+  private async nodeCommand({ argv, signal }: CommandContext): Promise<ExecResult> {
+    const args = argv.slice(1);
+    if (!args.length) {
+      return bad("node: there is no REPL here — give it a file (`node app.js`) or `-e \"console.log(1)\"`.", 2);
+    }
+    if (args[0] === "-v" || args[0] === "--version") {
+      return ok(`browser runtime — your scripts run in a Web Worker, not in Node (${NO_PACKAGES_LINE})\n`);
+    }
+    if (args[0] === "-p" || args[0] === "--print") {
+      return bad("node -p is not supported here — use -e and console.log(), which prints the same thing.", 2);
+    }
+    if (args[0] === "-e" || args[0] === "--eval") {
+      const code = args[1];
+      if (code === undefined) return bad("node: -e wants some code after it", 2);
+      return await this.runNode({ code, argv: args.slice(2), signal });
+    }
+    if (args[0]!.startsWith("-")) return bad(`node: ${args[0]} is not a flag this runtime has (-e, -v)`, 2);
+    return await this.runNode({ entry: args[0], argv: args.slice(1), signal });
+  }
+
+  private async runNode(opts: {
+    entry?: string;
+    code?: string;
+    argv: string[];
+    signal?: AbortSignal;
+  }): Promise<ExecResult> {
+    let stdout = "";
+    let stderr = "";
+    try {
+      const result = await runScript(this.fs, {
+        entry: opts.entry,
+        code: opts.code,
+        argv: opts.argv,
+        cwd: this.cwd,
+        env: { ...this.env, PWD: this.cwd },
+        signal: opts.signal,
+        timeoutMs: this.scriptTimeoutMs,
+        createWorker: this.createWorker,
+        onStdout: (text) => (stdout += text),
+        onStderr: (text) => (stderr += text),
+      });
+      for (const port of result.listening) {
+        stdout += `listening on ${portUrl(port)} — it answers while this tab is open; \`kill ${port}\` stops it.\n`;
+      }
+      return { stdout, stderr, exitCode: result.exitCode };
+    } catch (err) {
+      return { stdout, stderr: `${stderr}node: ${this.message(err)}\n`, exitCode: 1 };
+    }
+  }
+
+  /** `npm run <script>` (and `npm start` / `npm test`); everything that installs is refused by name. */
+  private async npmCommand({ argv, signal }: CommandContext): Promise<ExecResult> {
+    const sub = argv[1] ?? "";
+    if (sub === "run" || sub === "run-script") return await this.npmRun(argv[2], signal);
+    if (sub === "start" || sub === "test") return await this.npmRun(sub, signal);
+    if (!sub) return bad(`npm: what would you like it to run? \`npm run <script>\` reads package.json. ${NO_PACKAGES_LINE}`, 2);
+    return bad(`npm ${sub}: ${NO_NODE_LINE}\n${NO_PACKAGES_LINE}`, EXIT_NOT_FOUND);
+  }
+
+  /**
+   * The script line out of `package.json`, run through this same shell — which is exactly what npm
+   * does, minus the `node_modules/.bin` on the PATH that a browser has nothing to put in.
+   */
+  private async npmRun(name: string | undefined, signal?: AbortSignal): Promise<ExecResult> {
+    if (!name) return bad("npm run: which script? `npm run` with a name, and package.json says the rest", 2);
+    let manifest: { scripts?: Record<string, string>; name?: string };
+    let path: string;
+    try {
+      path = this.resolve("package.json");
+    } catch (err) {
+      return bad(`npm run: ${this.message(err)}`);
+    }
+    if (!(await this.fs.stat(path))) return bad(`npm run: no package.json in ${this.cwd}`);
+    try {
+      manifest = JSON.parse(await this.fs.readText(path)) as { scripts?: Record<string, string> };
+    } catch (err) {
+      return bad(`npm run: package.json is not valid JSON — ${this.message(err)}`);
+    }
+    const scripts = manifest.scripts ?? {};
+    const line = scripts[name];
+    if (!line) {
+      const known = Object.keys(scripts).sort();
+      return bad(
+        `npm run: no script named "${name}"${known.length ? ` — package.json has ${known.join(", ")}` : " and package.json has no scripts"}`,
+      );
+    }
+    if (this.scriptDepth >= MAX_SCRIPT_DEPTH) {
+      return bad(`npm run ${name}: scripts are ${MAX_SCRIPT_DEPTH} deep here — something is calling itself`);
+    }
+    this.scriptDepth += 1;
+    try {
+      const result = await this.exec(line, { signal });
+      return { stdout: `> ${name}\n> ${line}\n\n${result.stdout}`, stderr: result.stderr, exitCode: result.exitCode };
+    } finally {
+      this.scriptDepth -= 1;
+    }
+  }
+
+  /** `npx serve [dir]` is the one npx that means something here; the rest say where they can run. */
+  private async npxCommand({ argv }: CommandContext): Promise<ExecResult> {
+    const tool = argv[1] ?? "";
+    if (tool === "serve" || tool === "http-server") return await this.serveCommand(argv.slice(2));
+    if (!tool) return bad(`npx: which one? \`npx serve\` serves a folder. ${NO_PACKAGES_LINE}`, 2);
+    return bad(`npx ${tool}: ${NO_NODE_LINE}\n${NO_PACKAGES_LINE}`, EXIT_NOT_FOUND);
+  }
+
+  /** `serve [dir] [-p PORT]` — a workspace folder on a virtual port, served by the service worker. */
+  private async serveCommand(args: string[]): Promise<ExecResult> {
+    let dir = "";
+    let port = DEFAULT_SERVE_PORT;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!;
+      if (arg === "-p" || arg === "--port" || arg === "-l") {
+        const value = args[++i];
+        if (!value || !/^\d+$/.test(value)) return bad(`serve: ${arg} wants a port number`, 2);
+        port = Number(value);
+        continue;
+      }
+      const inline = /^--port=(\d+)$/.exec(arg);
+      if (inline) {
+        port = Number(inline[1]);
+        continue;
+      }
+      if (arg.startsWith("-")) return bad(`serve: ${arg} is not a flag this has (dir, -p PORT)`, 2);
+      if (!dir) dir = arg;
+    }
+    let full: string;
+    try {
+      full = this.resolve(dir || ".");
+    } catch (err) {
+      return bad(`serve: ${this.message(err)}`);
+    }
+    const stat = await this.fs.stat(full);
+    if (full !== this.root && (!stat || stat.kind !== "dir")) {
+      return bad(`serve: ${dir || "."}: not a folder here`);
+    }
+    // `serveFolder` roots at the workspace, which is what `/` means everywhere in this shell.
+    if (full !== WORKSPACE_ROOT && !full.startsWith(`${WORKSPACE_ROOT}/`)) {
+      return bad(`serve: only folders under your workspace can be served`);
+    }
+    const relative = full === WORKSPACE_ROOT ? "." : full.slice(WORKSPACE_ROOT.length + 1);
+    try {
+      serveFolder(this.fs, port, relative);
+    } catch (err) {
+      return bad(`serve: ${err instanceof PortInUseError ? err.message : this.message(err)}`);
+    }
+    return ok(
+      `serving ${this.display(full)} on port ${port}\n` +
+        `  ${portUrl(port)}\n` +
+        `open it in the preview pane, or \`kill ${port}\` to stop. It answers only in this browser, ` +
+        `only while this tab is open.\n`,
+    );
+  }
+
+  /** `ports` — what is listening in this tab, and where. */
+  private portsCommand(): ExecResult {
+    const live = listPorts();
+    if (!live.length) {
+      return ok("nothing is listening. `node server.js` takes a port, `serve ./public` takes one for a folder.\n");
+    }
+    let out = "PORT   KIND    WHAT                          URL\n";
+    for (const entry of live) {
+      out += `${String(entry.port).padEnd(6)} ${entry.kind.padEnd(7)} ${entry.label.slice(0, 29).padEnd(29)} ${portUrl(entry.port)}\n`;
+    }
+    return ok(out);
+  }
+
+  /** `kill <port>` — the only "process control" this shell has, because a port is the only process. */
+  private killCommand(raw: string | undefined): ExecResult {
+    if (!raw) return bad("kill: which port? `ports` lists them", 2);
+    if (!/^\d+$/.test(raw)) return bad(`kill: ${raw} is not a port — this shell kills ports, not pids`, 2);
+    const port = Number(raw);
+    return unregister(port) ? ok(`${port} stopped\n`) : bad(`kill: nothing is listening on ${port}`);
+  }
+
   private helpText(): string {
     return [
       `${this.label} — the same filesystem your agent reads, and nothing else.`,
@@ -1085,10 +1301,13 @@ export class BuiltinShell implements Shell {
       `text       echo sort uniq tr cut`,
       `shell      cd pwd env date true false which help`,
       `git        init status log diff add commit branch checkout`,
+      `run        node file.js · node -e "…" · npm run <script>`,
+      `serve      serve ./dir -p 3000 · ports · kill 3000`,
       "",
       "pipes `|`, redirects `>` `>>` `<`, `&&` `||` `;`, quotes and one level of globbing.",
       `\`/\` is your workspace, and there is no way out of it.`,
-      `node, npm, python, curl, ssh: ${NO_NODE_LINE.replace("Node", "runtime")} — they are named, not hidden.`,
+      `Scripts run in a Web Worker with fs, path, http and your own require — but ${NO_PACKAGES_LINE}.`,
+      `python, curl, ssh, pnpm, vite: ${NO_NODE_LINE.replace("Node", "runtime")} — they are named, not hidden.`,
       "",
     ].join("\n");
   }
