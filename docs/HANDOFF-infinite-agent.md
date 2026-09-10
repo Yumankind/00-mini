@@ -126,6 +126,15 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
 12. **Live transfer is wired end to end but the rooms base is a `.invalid` placeholder** until the
     worker deploys; the UI says "not connected yet" rather than spinning.
 
+13. **Deployed the site Worker to its workers.dev link at your request** (2026-09-10 late):
+    `https://infinite-site.powerhouse.workers.dev` serves the app at `/`, the loader at `/e/<ref>.js`,
+    and the wasm and weights from R2 on the same origin. No custom domain, no registry behind it
+    (the API bases stay `.invalid`, so "Move live", registration and messages say "not connected
+    yet"); level 0, the local brains, the vault, the file road and the Mac card all work there.
+    Plain http works only on localhost (secure-context features), so this link is also the way to
+    open the agent from another device; `INFINITE_LAN=1` on the dev server reuses the engine's
+    self-signed LAN certificate as an alternative.
+
 **Things I did NOT do, on purpose**
 - No deploy of the landing, the site Worker, or moltworker (your call each time).
 - No enabling of `INFINITE_ENABLED`, no D1 migration applied, no secrets created.

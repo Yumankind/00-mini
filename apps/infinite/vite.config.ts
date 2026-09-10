@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, cpSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import { defineConfig, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
@@ -112,11 +113,35 @@ function mediapipeWasm(): Plugin {
   };
 }
 
+/**
+ * THE LAN, OVER HTTPS. Everything the agent is built on — OPFS, WebGPU, WebCrypto keys, the service
+ * worker — exists only in a secure context, which plain http gets on localhost and nowhere else. To
+ * open the app from a phone or another machine on the LAN, the dev server must speak https, and the
+ * engine already minted a self-signed certificate with this Mac's names and IPs for its own LAN proxy
+ * (apps/00d/src/tls.ts, <dataRoot>/tls). `INFINITE_LAN=1` reuses it: host 0.0.0.0, https on, one
+ * trust prompt on the far device. Absent the flag or the files, the server stays localhost-only http.
+ */
+function lanHttps(): { host: string; https?: { key: Buffer; cert: Buffer } } | undefined {
+  if (process.env.INFINITE_LAN !== "1") return undefined;
+  const dir =
+    process.env.ZEROZERO_DATA_DIR ??
+    (process.platform === "darwin"
+      ? join(homedir(), "Library", "Application Support", "00")
+      : join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "00"));
+  const key = join(dir, "tls", "key.pem");
+  const cert = join(dir, "tls", "cert.pem");
+  if (!existsSync(key) || !existsSync(cert)) {
+    console.warn(`INFINITE_LAN=1 but no certificate at ${dir}/tls — start the 00 app once, it mints one; serving plain http on localhost only`);
+    return undefined;
+  }
+  return { host: "0.0.0.0", https: { key: readFileSync(key), cert: readFileSync(cert) } };
+}
+
 export default defineConfig({
   plugins: [vue(), tailwindcss(), serviceWorkerPrecache(), mediapipeWasm()],
   // The owned agent lives on ONE product origin (§3.1: OPFS and the push subscription are per origin),
   // so the app is always served from the root and every path here is absolute.
   base: "/",
-  server: { port: 5273 },
+  server: { port: 5273, ...lanHttps() },
   build: { outDir: "dist", emptyOutDir: true, target: "es2022" },
 });
