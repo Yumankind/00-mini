@@ -856,6 +856,18 @@ If even that mount line is unwelcome while the sponsoredtokens launch is in flig
 ship as a **second Worker** on its own subdomain with its own bindings; the plan does not depend on
 sharing a process with anything.
 
+**Built 2026-09-10 evening, merged to moltworker main, NOT deployed:** `worker/src/infinite/` (21
+routes, migration `0141_infinite.sql`, 106 tests, the wire in moltworker's `docs/infinite/API.md`).
+Deviations, each argued in-file: a fifth canonical line `X-Infinite-Nonce` (ed25519 is
+deterministic, so a signature cannot be the replay latch the way §24's P-256 one is); the room
+`token` is OUR room-scoped capability, not a Cloudflare credential (Realtime has none per session,
+and the app secret must never reach a browser), so `POST /rooms/:code/join` mints the second
+peer's SFU session server-side; no Turnstile on device registration (the queue is capped and the
+paid brain uses sponsoredtokens' own flow); push subscriptions are stored, not sent (VAPID comes
+later); `inbox.ts::sweepInbox` is exported and unwired. To enable: apply the migration, create the
+`infinite-public` bucket and the `INFINITE_IP_PEPPER` / `REALTIME_APP_SECRET` secrets, set
+`INFINITE_ENABLED` and `REALTIME_APP_ID` in vars, redeploy, wire the sweep into `scheduled()`.
+
 ---
 
 ## 10. Repository layout
