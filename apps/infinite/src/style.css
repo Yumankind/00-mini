@@ -1,0 +1,202 @@
+@import "tailwindcss";
+
+/* ── The 00 design tokens, made theme-aware ────────────────────────────────────────────────────────
+   The names, the values and the intent are packages/web-vue/src/style.css — this app must read as a
+   sibling of the 00 web UI, not as a second look. What is new here is the LIGHT side: the Mac client
+   is dark-only because it lives in one window we control, and this one is a web page on somebody
+   else's phone, where fighting the system theme is the wrong answer.
+
+   Written as plain custom properties rather than Tailwind `@theme` colours, and used from markup as
+   `bg-[var(--color-panel)]`, exactly as web-vue's components do. A `@theme` colour is baked at build
+   time and cannot follow `prefers-color-scheme`; a custom property can, and the utility syntax is the
+   same length either way. */
+:root {
+  --color-void: #0a0b0d; /* app background */
+  --color-card: #0f1114; /* section cards — a hair lighter than the app bg */
+  --color-panel: #141619; /* cards / surfaces */
+  --color-panel-2: #1b1e22; /* raised / hover */
+  --color-line: #262a30; /* hairline borders */
+  --color-edge: rgba(230, 233, 236, 0.3);
+  --color-phosphor: #4ade9b; /* accent green (calmer than neon) */
+  --color-phosphor-dim: #2b9268;
+  --color-cyan: #5cc8e8;
+  --color-magenta: #e879c9;
+  --color-red: #f0555f;
+  --color-amber: #ecc36b;
+  --color-ink: #e6e9ec;
+  --color-ink-dim: #8b95a1;
+  --color-glow: rgba(74, 222, 155, 0.04);
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* One block of overrides, applied twice: once for a system that asks for light and has not been
+   overruled, once for the explicit toggle. Anything not listed keeps its dark value on purpose —
+   the accents are chosen to carry across, the surfaces are not. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --color-void: #f7f8f9;
+    --color-card: #ffffff;
+    --color-panel: #ffffff;
+    --color-panel-2: #eef0f2;
+    --color-line: #dfe3e7;
+    --color-edge: rgba(20, 24, 28, 0.18);
+    --color-phosphor: #14875a;
+    --color-phosphor-dim: #4ade9b;
+    --color-cyan: #1b7fa3;
+    --color-magenta: #a8368b;
+    --color-red: #c9333c;
+    --color-amber: #9a7413;
+    --color-ink: #14181c;
+    --color-ink-dim: #5d6771;
+    --color-glow: rgba(20, 135, 90, 0.05);
+  }
+}
+:root[data-theme="light"] {
+  --color-void: #f7f8f9;
+  --color-card: #ffffff;
+  --color-panel: #ffffff;
+  --color-panel-2: #eef0f2;
+  --color-line: #dfe3e7;
+  --color-edge: rgba(20, 24, 28, 0.18);
+  --color-phosphor: #14875a;
+  --color-phosphor-dim: #4ade9b;
+  --color-cyan: #1b7fa3;
+  --color-magenta: #a8368b;
+  --color-red: #c9333c;
+  --color-amber: #9a7413;
+  --color-ink: #14181c;
+  --color-ink-dim: #5d6771;
+  --color-glow: rgba(20, 135, 90, 0.05);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  /* Same lock as the 00 web client: only inner regions scroll, so the shell never rubber-bands under
+     an iOS home-screen install. */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1100px 700px at 75% -15%, var(--color-glow), transparent 60%),
+    var(--color-void);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Small uppercase section labels; the alias web-vue kept for the same purpose. */
+.font-pixel {
+  font-family: var(--font-sans);
+  letter-spacing: 0.01em;
+}
+
+.panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+}
+
+/* The interactive surface of the 00 right rail: faint fill, hairline shape, ink-dim until touched. */
+.ia-btn {
+  background: color-mix(in srgb, var(--color-panel-2) 45%, transparent);
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  color: var(--color-ink-dim);
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+.ia-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-panel-2) 85%, transparent);
+  color: var(--color-ink);
+}
+.ia-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.ia-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ia-btn-primary {
+  background: color-mix(in srgb, var(--color-phosphor) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-phosphor) 45%, transparent);
+  color: var(--color-phosphor);
+}
+.ia-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-phosphor) 26%, transparent);
+  color: var(--color-phosphor);
+}
+.ia-btn-danger {
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-red) 45%, transparent);
+  color: var(--color-red);
+}
+
+/* Text inputs, one shape everywhere. */
+.ia-input {
+  background: color-mix(in srgb, var(--color-panel-2) 45%, transparent);
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  color: var(--color-ink);
+  padding: 8px 10px;
+  width: 100%;
+  outline: none;
+}
+.ia-input::placeholder {
+  color: var(--color-ink-dim);
+}
+.ia-input:focus {
+  border-color: color-mix(in srgb, var(--color-phosphor) 55%, transparent);
+}
+
+/* A remote card that offline has taken away. Greyed, not hidden — §4.4 wants the reason visible. */
+.ia-unreachable {
+  opacity: 0.5;
+  filter: saturate(0.4);
+}
+
+.ia-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.ia-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.ia-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 4px;
+}
+
+@keyframes ia-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.ia-pulse {
+  animation: ia-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ia-pulse {
+    animation: none;
+  }
+}

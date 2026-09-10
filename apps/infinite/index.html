@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Infinite Agent</title>
+    <meta name="description" content="An AI agent that runs in your browser." />
+    <!-- The FIRST paint, before style.css or any JS exists — same reason as packages/web-vue's
+         index.html: a variable defined in the stylesheet cannot colour the frame drawn before that
+         stylesheet arrives. Both themes are declared here because this app follows the system. -->
+    <meta name="color-scheme" content="dark light" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #0a0b0d;
+      }
+      @media (prefers-color-scheme: light) {
+        html:not([data-theme="dark"]),
+        html:not([data-theme="dark"]) body {
+          background: #f7f8f9;
+        }
+      }
+      html[data-theme="light"],
+      html[data-theme="light"] body {
+        background: #f7f8f9;
+      }
+    </style>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
