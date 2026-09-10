@@ -16,9 +16,21 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
+/** An image travelling with a message: bytes or a base64 string, and its MIME type. Added 2026-09-10
+ *  so a vision-capable brain can be shown a picture; providers that cannot take one ignore it and
+ *  say so in their readiness/detail rather than failing. */
+export interface ImagePart {
+  mime: string;
+  data: Uint8Array | string;
+  /** Where it came from, for the transcript (a workspace path, "screenshot", "camera"). */
+  source?: string;
+}
+
 export interface ChatMessage {
   role: Role;
   content: string;
+  /** Optional pictures beside the text (user and tool messages). */
+  images?: ImagePart[];
   /** assistant only */
   toolCalls?: ToolCall[];
   /** tool only: which call this answers */
@@ -65,6 +77,8 @@ export type ChatChunk =
 
 export interface ModelInfo {
   id: string;
+  /** Accepts `images` on a message. Absent means text-only. */
+  vision?: boolean;
   /** Human name for pickers. */
   label: string;
   /** Rough capability class the router uses: `small` answers fast, `strong` plans and codes. */
