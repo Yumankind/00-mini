@@ -29,7 +29,16 @@
  * Both prefixes are answered BEFORE the SPA fallback and never by the asset layer — no such file
  * exists in `public/`, and without this an embedded `<script>` for a 27 MB wasm would get
  * index.html. R2 is read-only here: a GET, a HEAD, a Range, an If-None-Match, and nothing else.
+ *
+ * AND IT NOW DECIDES THE CROSS-ORIGIN POLICY. The PWA is cross-origin isolated so that a script in
+ * the power shell can have a synchronous filesystem (`SharedArrayBuffer` + `Atomics.wait`, which the
+ * browser hands out only to an isolated page). Isolation is two headers on the DOCUMENT, and the
+ * asset layer sends neither — which is why `assets.run_worker_first` is now on in wrangler.jsonc and
+ * this Worker answers every request, `/` and `/sw.js` included. Which header goes on which route is
+ * `src/headers.ts`, alone, so it can be tested without a deploy.
  */
+
+import { applyCrossOrigin, kindFor } from "./headers.js";
 
 interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
@@ -183,6 +192,9 @@ async function serveMirrored(request: Request, bucket: R2Like, key: string, cach
     headers.set("access-control-allow-origin", "*");
     headers.set("access-control-expose-headers", "content-length, content-range, accept-ranges, etag");
     headers.set("x-content-type-options", "nosniff");
+    // These are published to be fetched from anywhere, and under this origin's own COEP they are
+    // also fetched by an isolated page — `cross-origin` is the header that permits both.
+    applyCrossOrigin(headers, key, "mirror");
     return headers;
   };
 
@@ -266,11 +278,15 @@ export default {
       // Public, static and identical for everyone — CORS costs nothing and lets a page fetch it.
       headers.set("access-control-allow-origin", "*");
       headers.set("x-content-type-options", "nosniff");
+      // NEVER `same-origin` here: the loader exists to be a `<script>` on somebody else's page.
+      applyCrossOrigin(headers, url.pathname, "embed");
       return strip(new Response(file.body, { status: 200, headers }));
     }
 
     if (url.pathname === "/robots.txt") {
-      return strip(new Response("User-agent: *\nAllow: /\n", { headers: { "content-type": "text/plain" } }));
+      const headers = new Headers({ "content-type": "text/plain" });
+      applyCrossOrigin(headers, url.pathname, "asset");
+      return strip(new Response("User-agent: *\nAllow: /\n", { headers }));
     }
 
     // Real files (the PWA's assets, its manifest, its service worker) were already served by the
@@ -279,6 +295,9 @@ export default {
     if (asset.ok) {
       const headers = new Headers(asset.headers);
       headers.set("cache-control", url.pathname.startsWith("/assets/") ? immutable : shortLived);
+      // `/sw.js` and `/index.html` are files, and both are documents in the sense that matters:
+      // the shell's isolation and the service worker's come from the response the browser stored.
+      applyCrossOrigin(headers, url.pathname, kindFor(url.pathname));
       return strip(new Response(asset.body, { status: asset.status, headers }));
     }
 
@@ -289,6 +308,10 @@ export default {
       const headers = new Headers(index.headers);
       headers.set("content-type", "text/html; charset=utf-8");
       headers.set("cache-control", shortLived);
+      // A miss that this Worker chose to answer with the shell IS a document, whatever the path was
+      // — with the one exception of `/~/…`, which belongs to a script in somebody's tab and is not
+      // this Worker's to label (see src/headers.ts).
+      applyCrossOrigin(headers, url.pathname, kindFor(url.pathname) === "served" ? "served" : "document");
       return strip(new Response(index.body, { status: 200, headers }));
     }
     return new Response("not found", { status: 404 });

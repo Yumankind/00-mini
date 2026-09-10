@@ -198,11 +198,36 @@ function lanHttps(): { host: string; https?: { key: Buffer; cert: Buffer } } | u
   return { host: "0.0.0.0", https: { key: readFileSync(key), cert: readFileSync(cert) } };
 }
 
+/**
+ * CROSS-ORIGIN ISOLATION, IN DEV AND IN PREVIEW, SO DEV AND PROD AGREE.
+ *
+ * `SharedArrayBuffer` — and with it `Atomics.wait`, and with it the synchronous filesystem a script
+ * in the power shell gets (`src/power/fs-service.ts`) — exists only in a page the browser calls
+ * `crossOriginIsolated`, which is these two headers on the document and nothing else. In production
+ * they come from the site Worker (`apps/infinite-site/src/headers.ts`); here they come from vite, so
+ * that `pnpm dev` is not a different app from the deploy — the difference would show up as
+ * `SyncUnsupportedError` on a laptop and nowhere else, which is the worst kind of bug to chase.
+ *
+ * `credentialless` rather than `require-corp` for the same reason as in production: every
+ * cross-origin load this app makes is CORS-enabled (the model mirror at dl.0-0.chat answers
+ * `Access-Control-Allow-Origin: *`, the relay and SFU APIs are CORS), and `credentialless` asks
+ * nothing of the far side for those. See apps/infinite-site/README.md.
+ *
+ * They are set on EVERY response rather than on documents only, because vite's dev server has no
+ * per-route hook and a policy header on a JS asset is inert — the browser reads COOP and COEP off
+ * documents and workers.
+ */
+const ISOLATION_HEADERS = {
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "credentialless",
+};
+
 export default defineConfig({
   plugins: [vue(), tailwindcss(), serviceWorkerPrecache(), mediapipeWasm()],
   // The owned agent lives on ONE product origin (§3.1: OPFS and the push subscription are per origin),
   // so the app is always served from the root and every path here is absolute.
   base: "/",
-  server: { port: 5273, ...lanHttps() },
+  server: { port: 5273, headers: ISOLATION_HEADERS, ...lanHttps() },
+  preview: { port: 5273, headers: ISOLATION_HEADERS },
   build: { outDir: "dist", emptyOutDir: true, target: "es2022" },
 });

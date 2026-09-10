@@ -29,6 +29,15 @@
  * from this module's scope, because the closure does not travel. It may use only its own body and
  * the globals a Worker has.
  *
+ * AND SINCE THE ORIGIN IS CROSS-ORIGIN ISOLATED, THE SYNC HALF OF `fs` IS REAL. When
+ * apps/infinite-site sends `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` (and the
+ * dev server sends the same pair), the page may make a `SharedArrayBuffer`, so each script Worker is
+ * handed a channel to the filesystem service Worker (`src/power/fs-service.ts`) and
+ * `readFileSync`/`writeFileSync`/`require` become real calls against the workspace instead of reads
+ * from a snapshot. Nothing else changes: the async RPC below is untouched and is still what
+ * `fs.promises` uses, and on an origin WITHOUT the headers the snapshot and `SyncUnsupportedError`
+ * are exactly what they were. One runtime, two answers, and the error names which one it is on.
+ *
  * WHAT IT NEEDS FROM THE PAGE THAT IT MIGHT NOT GET: `new Function` (the CommonJS module wrapper is
  * `new Function` everywhere, including in Node), so a Content-Security-Policy without `unsafe-eval`
  * would stop this dead. The app sends no CSP today; the day it does, `script-src` needs to allow it
@@ -36,6 +45,8 @@
  */
 import type { AgentFs } from "@00/agent-fs";
 import { PathEscapeError, resolveInSandbox } from "@00/agent-runtime";
+import { fsService, type FsService } from "./fs-service.js";
+import { syncChannelSource } from "./sync-channel.js";
 import {
   FILES_ROOT,
   PortInUseError,
@@ -64,6 +75,14 @@ export interface RunScriptOptions {
   timeoutMs?: number;
   /** The seam: the browser passes nothing, a test passes the in-process one. */
   createWorker?: RunnerWorkerFactory;
+  /**
+   * The synchronous filesystem, when this page is cross-origin isolated. Absent = ask
+   * `fs-service.ts` for the tab's one service, which answers `null` on an origin without the
+   * headers; `null` = force the snapshot path, which is how a test drives the refusal on purpose.
+   */
+  syncFs?: FsService | null;
+  /** Whose workspace the service opens, when this browser holds more than one agent. */
+  agentId?: string;
 }
 
 export interface RunScriptResult {
@@ -118,11 +137,12 @@ export function virtualPath(full: string): string {
 /**
  * The cwd folder, read once, so the Worker can `require` and `readFileSync` without a round trip.
  *
- * WHY A SNAPSHOT AND NOT A LIVE READ. `require()` and `readFileSync` are synchronous by definition,
- * and a Worker can only reach the page's filesystem asynchronously without cross-origin isolation
- * (`SharedArrayBuffer` + `Atomics.wait`, which needs headers this origin does not send yet). So the
- * files come with the script. The cost is honest and bounded: a folder over the caps below is
- * `truncated`, the script is told, and every WRITE still goes to the real filesystem.
+ * WHY A SNAPSHOT AT ALL, NOW THAT THERE IS A SYNC CHANNEL. It is the fast path, not the only path:
+ * the files a script is about to `require` travel with it, so the common case costs no round trips.
+ * On an isolated origin anything the snapshot missed is fetched over the channel
+ * (`src/power/fs-service.ts`) the moment it is asked for, so `truncated` stops being a warning. On an
+ * origin without the isolation headers the snapshot IS the whole synchronous filesystem, the caps
+ * below are real limits, and a sync read past them refuses by name.
  */
 export async function snapshotFolder(
   fs: AgentFs,
@@ -160,9 +180,15 @@ export async function snapshotFolder(
 
 // ── The Worker, both ways of making one ───────────────────────────────────────────────────────────
 
-/** The prelude as source: what a Blob URL Worker is built from, and what the test seam evaluates. */
+/**
+ * The prelude as source: what a Blob URL Worker is built from, and what the test seam evaluates.
+ *
+ * The channel client is APPENDED, not prepended, for two reasons: the assertion that this source
+ * starts with the prelude stays true, and the prelude reads `self.__00SyncChannel` only when a
+ * `start` message arrives — which is always later than the last line of this string.
+ */
 export function workerSource(): string {
-  return `(${preludeMain.toString()})(self);`;
+  return `(${preludeMain.toString()})(self);\n${syncChannelSource()}`;
 }
 
 /**
@@ -191,7 +217,7 @@ export function createBlobWorker(source: string): RunnerWorker {
  * real `require` graph. It is NOT a fake protocol: the messages, the prelude and the page half are
  * the shipped ones; only the thread is missing.
  */
-export function createEvalWorker(source: string): RunnerWorker {
+export function createEvalWorker(source: string, globals?: Record<string, unknown>): RunnerWorker {
   const listeners: ((message: unknown) => void)[] = [];
   const inbox: ((message: unknown) => void)[] = [];
   let dead = false;
@@ -215,6 +241,9 @@ export function createEvalWorker(source: string): RunnerWorker {
   };
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   new Function("self", source)(scope);
+  // AFTER the source, so a test's fake wins over the real channel client the source just installed.
+  // A browser never passes any: there `self` is the Worker's own global and nothing overwrites it.
+  if (globals) Object.assign(scope, globals);
   return {
     post: (message) => {
       if (dead) return;
@@ -273,8 +302,18 @@ export async function runScript(fs: AgentFs, opts: RunScriptOptions): Promise<Ru
     entryPath = virtualPath(full);
   }
 
+  // The synchronous filesystem, if this origin is isolated. Never fatal: `null` is an ordinary
+  // browser without the headers, and the script then gets the snapshot it always got.
+  const service = opts.syncFs === undefined ? await fsService({ agentId: opts.agentId }) : opts.syncFs;
+  let sab: SharedArrayBuffer | null = null;
+  try {
+    sab = service ? service.open() : null;
+  } catch {
+    sab = null;
+  }
+
   const snapshot = await snapshotFolder(fs, cwd);
-  if (snapshot.truncated) {
+  if (snapshot.truncated && !sab) {
     stderr(
       `node: this folder is bigger than a browser snapshot (${SNAPSHOT_MAX_FILES} files / ` +
         `${(SNAPSHOT_MAX_BYTES / 1e6).toFixed(0)} MB), so require and the sync reads may not find everything.\n`,
@@ -303,6 +342,9 @@ export async function runScript(fs: AgentFs, opts: RunScriptOptions): Promise<Ru
       if (!keepPorts) {
         for (const port of listening) unregister(port);
         worker.terminate();
+        // A Worker that is gone will never read its channel again; leaving the service's loop for it
+        // parked on `waitAsync` would be a leak per `node` command.
+        if (sab && service) service.release(sab);
       }
       resolve({ exitCode, listening: keepPorts ? listening : [] });
     };
@@ -310,6 +352,7 @@ export async function runScript(fs: AgentFs, opts: RunScriptOptions): Promise<Ru
       if (message) stderr(message);
       for (const port of [...ports]) unregister(port);
       worker.terminate();
+      if (sab && service) service.release(sab);
       finish(code, false);
     };
     function onAbort(): void {
@@ -418,6 +461,9 @@ export async function runScript(fs: AgentFs, opts: RunScriptOptions): Promise<Ru
       env: opts.env ?? {},
       files: snapshot.files,
       truncated: snapshot.truncated,
+      // The one thing in this message that is not a copy: both threads see the same memory, which is
+      // the whole point. Absent on an origin that is not cross-origin isolated.
+      sab,
     });
   });
 }
@@ -576,6 +622,19 @@ function preludeMain(scope: {
   let mainDone = false;
   let idled = false;
   let alive = 0; // outstanding timers, fetches and filesystem calls — Node's "the loop is not empty"
+  /**
+   * The blocking filesystem, when the page was cross-origin isolated and handed this Worker a
+   * `SharedArrayBuffer` (src/power/sync-channel.ts, src/power/fs-service.ts). `null` on every other
+   * origin, and that `null` is what every `*Sync` refusal below is about.
+   */
+  let syncFs: {
+    call: (op: string, args?: Record<string, unknown>, data?: Uint8Array) => {
+      ok: boolean;
+      value?: unknown;
+      error?: string;
+      data?: Uint8Array;
+    };
+  } | null = null;
   let rpcId = 0;
   const pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void }>();
   const servers = new Map<number, (req: unknown, res: unknown) => void>();
@@ -631,6 +690,17 @@ function preludeMain(scope: {
       });
       post({ t: "fs", id, op, args });
     });
+  };
+
+  /**
+   * The same question, asked synchronously. The service answers with the sentences the async RPC
+   * answers with (`ENOENT: …`), so a script cannot tell which road its call took — which is the
+   * point: the same script must behave the same way here and on the Mac.
+   */
+  const syncAsk = (op: string, args: Record<string, unknown>, data?: Uint8Array): { value?: unknown; data?: Uint8Array } => {
+    const answer = syncFs!.call(op, args, data);
+    if (!answer.ok) throw new Error(answer.error ?? `fs.${op} failed`);
+    return answer;
   };
 
   const write = (stream: "stdout" | "stderr", text: string): boolean => {
@@ -835,16 +905,21 @@ function preludeMain(scope: {
     rename: callbackify(promisesApi.rename),
     existsSync: (p: string) => {
       const full = resolvePath(p);
+      if (syncFs) return syncAsk("exists", { path: full }).value === true;
       return files[full] !== undefined || Object.keys(files).some((f) => f.startsWith(`${full}/`));
     },
     readFileSync: (p: string, encoding?: unknown) => {
       const full = resolvePath(p);
+      // The channel, not the snapshot, when there is one: a file this script wrote a line ago is a
+      // file it can read back, which is the difference people notice first.
+      if (syncFs) return decode(syncAsk("readFile", { path: full }).data ?? new Uint8Array(0), encoding);
       const found = files[full];
       if (!found) throw new SyncUnsupportedError(`readFileSync('${p}')`, SYNC_READ_WHY);
       return decode(found, encoding);
     },
     readdirSync: (p: string) => {
       const full = resolvePath(p) === "/" ? "" : resolvePath(p);
+      if (syncFs) return (syncAsk("readdir", { path: resolvePath(p) }).value as string[]).slice().sort();
       const names = new Set<string>();
       for (const file of Object.keys(files)) {
         if (!file.startsWith(`${full}/`)) continue;
@@ -857,28 +932,60 @@ function preludeMain(scope: {
     },
     statSync: (p: string) => {
       const full = resolvePath(p);
+      if (syncFs) {
+        const stat = syncAsk("stat", { path: full }).value as {
+          size: number;
+          mtimeMs: number;
+          file: boolean;
+          directory: boolean;
+        };
+        return {
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          isFile: () => stat.file,
+          isDirectory: () => stat.directory,
+        };
+      }
       const found = files[full];
       if (found) return { size: found.byteLength, isFile: () => true, isDirectory: () => false };
       if (fsApi.existsSync(p)) return { size: 0, isFile: () => false, isDirectory: () => true };
       throw new SyncUnsupportedError(`statSync('${p}')`, SYNC_READ_WHY);
     },
-    writeFileSync: (p: string) => {
-      throw new SyncUnsupportedError(`writeFileSync('${p}')`, SYNC_WRITE_WHY);
+    writeFileSync: (p: string, data?: unknown) => {
+      if (!syncFs) throw new SyncUnsupportedError(`writeFileSync('${p}')`, SYNC_WRITE_WHY);
+      const full = resolvePath(p);
+      syncAsk("writeFile", { path: full }, bytesOf(data));
+      // The snapshot is this Worker's memory of the folder; a write it did not know about would
+      // leave `require` and `existsSync` reading yesterday's bytes.
+      files[full] = bytesOf(data);
     },
-    appendFileSync: (p: string) => {
-      throw new SyncUnsupportedError(`appendFileSync('${p}')`, SYNC_WRITE_WHY);
+    appendFileSync: (p: string, data?: unknown) => {
+      if (!syncFs) throw new SyncUnsupportedError(`appendFileSync('${p}')`, SYNC_WRITE_WHY);
+      const full = resolvePath(p);
+      syncAsk("appendFile", { path: full }, bytesOf(data));
+      delete files[full];
     },
     mkdirSync: (p: string) => {
-      throw new SyncUnsupportedError(`mkdirSync('${p}')`, SYNC_WRITE_WHY);
+      if (!syncFs) throw new SyncUnsupportedError(`mkdirSync('${p}')`, SYNC_WRITE_WHY);
+      syncAsk("mkdir", { path: resolvePath(p) });
     },
     unlinkSync: (p: string) => {
-      throw new SyncUnsupportedError(`unlinkSync('${p}')`, SYNC_WRITE_WHY);
+      if (!syncFs) throw new SyncUnsupportedError(`unlinkSync('${p}')`, SYNC_WRITE_WHY);
+      const full = resolvePath(p);
+      syncAsk("unlink", { path: full });
+      delete files[full];
     },
     rmSync: (p: string) => {
-      throw new SyncUnsupportedError(`rmSync('${p}')`, SYNC_WRITE_WHY);
+      if (!syncFs) throw new SyncUnsupportedError(`rmSync('${p}')`, SYNC_WRITE_WHY);
+      const full = resolvePath(p);
+      syncAsk("rm", { path: full });
+      delete files[full];
     },
-    renameSync: (p: string) => {
-      throw new SyncUnsupportedError(`renameSync('${p}')`, SYNC_WRITE_WHY);
+    renameSync: (p: string, to?: string) => {
+      if (!syncFs) throw new SyncUnsupportedError(`renameSync('${p}')`, SYNC_WRITE_WHY);
+      const from = resolvePath(p);
+      syncAsk("rename", { path: from, to: resolvePath(String(to ?? "")) });
+      delete files[from];
     },
     constants: { F_OK: 0, R_OK: 4, W_OK: 2 },
   };
@@ -1070,6 +1177,21 @@ function preludeMain(scope: {
   };
   (builtins.path as { posix: unknown }).posix = builtins.path;
 
+  /**
+   * The bytes behind one candidate path, from the snapshot first and from the workspace second.
+   * WITHOUT a channel this is the snapshot and nothing else, which is why `require` used to see only
+   * the working folder; with one, any file in the workspace resolves — and is remembered, because
+   * Node reads a module once too.
+   */
+  const moduleBytes = (candidate: string): Uint8Array | undefined => {
+    if (files[candidate] !== undefined) return files[candidate];
+    if (!syncFs) return undefined;
+    const answer = syncFs.call("readFile", { path: candidate });
+    if (!answer.ok || !answer.data) return undefined;
+    files[candidate] = answer.data;
+    return answer.data;
+  };
+
   const candidates = (target: string): string[] => [
     target,
     `${target}.js`,
@@ -1092,9 +1214,10 @@ function preludeMain(scope: {
       }
       const target = request.startsWith("/") ? normalize(request) : join(fromDir, request);
       for (const candidate of candidates(target)) {
-        if (files[candidate] === undefined) continue;
         if (cache[candidate]) return cache[candidate].exports;
-        const source = decoder.decode(files[candidate]!);
+        const bytes = moduleBytes(candidate);
+        if (bytes === undefined) continue;
+        const source = decoder.decode(bytes);
         if (candidate.endsWith(".json")) {
           const parsed = { exports: JSON.parse(source) };
           cache[candidate] = parsed;
@@ -1221,9 +1344,21 @@ function preludeMain(scope: {
     cwd: string;
     env: Record<string, string>;
     files: Record<string, Uint8Array>;
+    sab?: SharedArrayBuffer | null;
   }): void {
     if (started) return;
     started = true;
+    // The channel client is a global the Worker's own source installed (workerSource()), not an
+    // import — the closure of this function never travelled. No buffer, no client, no sync fs.
+    const makeChannel = (scope as unknown as { __00SyncChannel?: unknown }).__00SyncChannel;
+    const layout = (scope as unknown as { __00SyncChannelLayout?: unknown }).__00SyncChannelLayout;
+    if (message.sab && typeof makeChannel === "function") {
+      try {
+        syncFs = (makeChannel as (...args: unknown[]) => typeof syncFs)(message.sab, layout, "client");
+      } catch {
+        syncFs = null; // a browser that took the buffer and refuses the wait: the snapshot still works
+      }
+    }
     files = message.files ?? {};
     cwd = message.cwd || "/";
     entry = message.entry || "/[eval]";

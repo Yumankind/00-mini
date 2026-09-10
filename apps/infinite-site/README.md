@@ -41,7 +41,9 @@ when somebody asks for it (§5.2.3).
 The ref in the snippet (`ia_…`) is minted **offline, in the owner's browser, with no server call**
 (§5.1). The server therefore never knows a ref, and there can never be a file per ref. `src/index.ts`
 is one rewrite rule: any `/e/<ref>.js` answers with the single built `e.js`. Everything else is a
-real file (served by the asset layer before the Worker runs) or an SPA route that gets `index.html`.
+real file (fetched from the asset binding) or an SPA route that gets `index.html`. Since
+`run_worker_first` was turned on for the isolation headers, the Worker sees every request first and
+the asset layer answers through `env.ASSETS` — see "Cross-origin isolation" below.
 
 `not_found_handling: "none"` is load-bearing. With `single-page-application` or `404-page`, the asset
 layer would answer `/e/<ref>.js` with `index.html` before this Worker ever ran, and every embed on
@@ -109,6 +111,131 @@ VITE_LITERT_WASM_BASE=
 Dev and previews from `apps/infinite` (`vite dev` / `vite preview`) serve the wasm folder themselves,
 from `packages/agent-models/node_modules/@mediapipe/tasks-genai/wasm` — no bucket involved.
 
+## Cross-origin isolation, and what it costs
+
+This origin sends `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless` on every document, which makes
+`self.crossOriginIsolated === true` in the app and `SharedArrayBuffer` exist. That is the whole
+reason it is here: a script run from the power shell (`node file.js`) gets a Worker, and a Worker can
+only have a SYNCHRONOUS filesystem — `readFileSync`, `writeFileSync`, `require` of any workspace file
+— if it can park on `Atomics.wait` against shared memory while another Worker does the OPFS work.
+Without the headers there is no shared memory, and those calls go back to reading a snapshot of the
+working folder and refusing every sync write by name (`SyncUnsupportedError`, see
+`apps/infinite/src/power/js-runner.ts`, `sync-channel.ts` and `fs-service.ts`).
+
+The decision is `src/headers.ts`, alone, and `test/isolation-headers.test.ts` in `apps/infinite`
+runs it and this Worker against a stub bucket:
+
+| Route | `Cross-Origin-Opener-Policy` | `Cross-Origin-Embedder-Policy` | `Cross-Origin-Resource-Policy` |
+|---|---|---|---|
+| `/`, `/index.html`, any SPA route (the shell) | `same-origin` | `credentialless` | `same-origin` |
+| `/sw.js` | `same-origin` | `credentialless` | `same-origin` |
+| `/assets/*`, icons, `/manifest.webmanifest`, `/robots.txt` | — | — | `same-origin` |
+| `/e/<ref>.js` (the embed loader) | — | — | `cross-origin` |
+| `/m/*` (the loader's local-model chunk) | — | — | `cross-origin` |
+| `/mediapipe/genai/wasm/*`, `/litert/*` (the R2 mirror) | — | — | `cross-origin` |
+| `/~/*` (a virtual port or served folder) | — | — | — |
+
+Three of those rows are deliberate exceptions and none of them may become `same-origin`:
+
+- **`/e/<ref>.js` and `/m/*` are somebody else's page's business.** The loader is a `<script>` on a
+  third-party site; `same-origin` there would break every embed on the web at once. They keep
+  `access-control-allow-origin: *` as well.
+- **The mirror is published to be fetched from anywhere** (`dl.0-0.chat` is the same bucket).
+- **`/~/*` is a page a script in the app's tab is serving**, not a document this Worker is deciding a
+  policy for. It reaches the network only when the service worker is not controlling the load.
+
+`assets.run_worker_first: true` in `wrangler.jsonc` is new and load-bearing. By default the asset
+layer answers a request that matches a real file WITHOUT invoking the Worker, so `/` and `/sw.js`
+would go out with none of these headers and the page would silently not be isolated. Two headers can
+only come from code, so the code has to run; the cost is one Worker invocation per asset.
+
+`apps/infinite/vite.config.ts` sends the same two headers from `server.headers` and
+`preview.headers`, so `pnpm dev` and `vite preview` are the same app as the deploy. A difference
+there would show up as `SyncUnsupportedError` on a laptop and nowhere else.
+
+### What still loads under `credentialless`, and what would not
+
+`credentialless` was chosen over `require-corp` because it asks nothing of hosts we do not own: a
+no-cors cross-origin load is sent WITHOUT credentials instead of being refused for want of a
+`Cross-Origin-Resource-Policy` header on the far side, and a CORS-enabled load is unaffected.
+
+Still works, and was checked live:
+
+- **The LiteRT wasm** — same-origin (`/mediapipe/genai/wasm/*`, this Worker's R2 door). Same-origin
+  subresources are never subject to COEP.
+- **The model weights from `dl.0-0.chat`** — a plain `fetch()` of a cross-origin URL is CORS mode,
+  and that bucket answers `Access-Control-Allow-Origin: *` (§12.7). Ranged reads and the streaming
+  download with its progress bar both work unchanged.
+- **The relay, the rooms/SFU and the sponsoredtokens device API** — all `fetch`/WebSocket, all CORS.
+- **web-llm's weights** (Hugging Face, GitHub raw) — `Cache.add()` and `fetch` are CORS mode too.
+
+Would NOT work, and none of it exists in this app: a no-cors `<img>`, `<video>`, `<audio>` or
+stylesheet from a host that sends no `Cross-Origin-Resource-Policy` — the request would be sent
+credentialless and, for an opaque response, silently fail. There are no external images, no web
+fonts and no third-party stylesheets in the PWA (its icons are same-origin, its type is the system
+stack). A cross-origin IFRAME is the other case: under `credentialless` a framed document must send
+COEP itself, which matters for the separate preview origin of §12.1 when that lands — that origin
+has to send `Cross-Origin-Embedder-Policy` too, or be framed from a page that is not isolated.
+
+### The live check
+
+Recorded 2026-09-11, `pnpm --filter @00/infinite build:app` served with `vite preview --port 5299`
+(the same two headers as this Worker), in a Chromium browser:
+
+```js
+self.crossOriginIsolated                // true
+typeof SharedArrayBuffer                // "function"
+new Int32Array(new SharedArrayBuffer(64)).length   // 16
+await fetch("/mediapipe/genai/wasm/genai_wasm_internal.wasm", { headers: { Range: "bytes=0-1023" } })
+                                        // 206, type "basic", 1024 bytes
+await fetch("https://dl.0-0.chat/litert/catalog.json")             // 200, type "cors"
+await fetch("https://dl.0-0.chat/litert/gemma3-270m-it-q4_0-web.task",
+            { headers: { Range: "bytes=0-524287" } })
+                                        // 206, type "cors", content-range bytes 0-524287/249233408
+```
+
+And the capability it buys, in the power shell's terminal on that build:
+
+```
+/ $ node -e "const fs=require('fs'); fs.writeFileSync('/sync-proof.txt','written synchronously');
+             console.log('read back:', fs.readFileSync('/sync-proof.txt','utf8'),
+                         '| size', fs.statSync('/sync-proof.txt').size,
+                         '| exists', fs.existsSync('/sync-proof.txt'))"
+read back: written synchronously | size 21 | exists true
+/ $ cat /sync-proof.txt                      # the shell reads through AgentFs — the same OPFS
+written synchronously
+/ $ node -e "const fs=require('fs'); fs.writeFileSync('/kit/fresh.js','module.exports=41+1');
+             console.log('require gives', require('/kit/fresh.js'))"
+require gives 42                             # a module that did not exist when the run started
+/ $ node -e "const fs=require('fs'); const big='x'.repeat(2500000); fs.writeFileSync('/big.txt', big);
+             const back=fs.readFileSync('/big.txt','utf8');
+             console.log('bytes', fs.statSync('/big.txt').size, '| round trip', back===big)"
+bytes 2500000 | round trip true              # 2.5 MB across a 1 MB frame: three frames each way
+/ $ node -e "try { require('fs').readFileSync('/../vault.json','utf8') } catch (e) { console.log(e.message) }"
+ENOENT: no such file or directory, open '/vault.json'   # `..` floors at the workspace
+```
+
+Every one of those was a `SyncUnsupportedError` before the headers.
+
+The channel underneath is `apps/infinite/src/power/sync-channel.ts`, and its wire is
+`@00/agent-node`'s (`packages/agent-node/src/fs/sync-channel.ts`) byte for byte — same 64-byte
+header, same six states, same 1 MB frames, same `u32 jsonLength` + JSON + raw bytes. The two
+implementations exist because one of them has to survive `Function.prototype.toString()` into a
+classic Blob Worker; `apps/infinite/test/sync-channel.test.ts` drives that Worker's client against
+`@00/agent-node`'s own server to prove they still agree.
+
+Two things that did NOT change and are worth writing down so nobody re-debugs them:
+
+- The app boots, scaffolds its agent and sends a chat message on this build. The local brain
+  downloads its 2.0 GB of weights from the mirror to 100% and initialises the WebGPU graph — and
+  then refuses the turn, because the agent's system prompt is ~5197 tokens and every LiteRT row
+  declares a 4096-token window (`packages/agent-models/src/litert.ts`, `contextTokens`). That is a
+  prompt-length gap, not a header one; it fails identically without isolation.
+- Service worker registration fails in the browser-pane profile used for this check
+  (`An unknown error occurred when fetching the script`). It fails the same way on a plain static
+  server with NO isolation headers, so it is that profile, not this change.
+
 ## Preview
 
 The R2 binding needs the real bucket, so the preview is remote:
@@ -122,6 +249,16 @@ The loader, which needs no binding:
 ```sh
 curl -sI http://127.0.0.1:8794/e/ia_test_abcdefgh.js | grep -i "content-type\|cache-control"
 curl -s  http://127.0.0.1:8794/e/ia_test_abcdefgh.js | head -c 60    # the IIFE, not HTML
+```
+
+The isolation headers, which are the ones a deploy must be re-checked for (the app is not
+`crossOriginIsolated` without the first two, and no site can load the loader if the third ever says
+`same-origin`):
+
+```sh
+curl -sI http://127.0.0.1:8794/            | grep -i "cross-origin"   # opener+embedder+resource
+curl -sI http://127.0.0.1:8794/sw.js       | grep -i "cross-origin"   # the same three
+curl -sI http://127.0.0.1:8794/e/ia_test_abcdefgh.js | grep -i "cross-origin"  # resource: cross-origin
 ```
 
 The mirror:

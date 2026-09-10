@@ -28,9 +28,17 @@
   // handling the asset layer would answer /e/<ref>.js with index.html before the Worker ever ran,
   // and every embed on the web would load an HTML page as a script. "none" falls through to the
   // Worker for anything that is not a real file, and src/index.ts decides.
+  // "run_worker_first" is new here and it is what makes cross-origin isolation possible at all.
+  // By default the asset layer answers a request that matches a real file WITHOUT invoking the
+  // Worker — so `/` (index.html) and `/sw.js` would go out with no
+  // `Cross-Origin-Opener-Policy` / `Cross-Origin-Embedder-Policy`, the page would not be
+  // `crossOriginIsolated`, and `SharedArrayBuffer` would not exist in it. Those two headers can only
+  // come from code, so the code has to run. src/headers.ts then decides per route, and the cost is
+  // one Worker invocation per asset — the price of a synchronous filesystem in the power shell.
   "assets": {
     "directory": "public",
     "binding": "ASSETS",
-    "not_found_handling": "none"
+    "not_found_handling": "none",
+    "run_worker_first": true
   }
 }
