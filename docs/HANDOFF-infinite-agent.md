@@ -973,12 +973,12 @@ runtime inside the mobile app, scheduled work handed to Mac/cloud.
    incorporate the policy as an enforceable term. Nothing is modified (sha256 proves it), so §3.1.3
    has nothing to say. The Gemma 4 rows are Apache-2.0 per the Hub, and carry none of this.
 
-   **Live on 2026-09-10:** the three Gemma 4 rows (E2B, E4B, 12B), both vision rows (Gemma 3n
-   E2B and E4B, published with the owner's Hub token resolved on his Mac), MediaPipe's wasm, the
-   NOTICE and terms copy, and `litert/catalog.json` listing all five; range requests and CORS
-   verified on the custom domain. The 270m and 1B rows wait on the owner clicking through the gate
-   on their two `litert-community` repos (auto-approved), then `HF_TOKEN=… scripts/publish-litert-models.sh`
-   again; the five that exist are skipped. Measured: a 2 GB copy takes ~2 min and 22 s of
+   **Live on 2026-09-10, all seven rows:** Gemma 4 E2B, E4B and 12B; Gemma 3n E2B and E4B
+   (vision); Gemma 3 270m and 1B — each sha256-proven, plus MediaPipe's wasm, the NOTICE and the
+   terms copy, with `litert/catalog.json` listing them; range requests and CORS verified on the
+   custom domain. The gated rows were published with the owner's Hub token resolved on his Mac
+   into the pre-signed CDN URL; the Worker never held it. Re-running the script is idempotent:
+   what exists is skipped by size. Measured: a 2 GB copy takes ~2 min and 22 s of
    Worker CPU, the 6 GB one ~5.5 min and 63 s, well inside the 300 s budget.
 
 ---

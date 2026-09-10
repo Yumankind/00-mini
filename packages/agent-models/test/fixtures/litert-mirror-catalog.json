@@ -1,0 +1,96 @@
+{
+    "version": 1,
+    "base": "https://dl.0-0.chat/litert",
+    "publishedAt": "2026-09-10T18:38:04Z",
+    "notice": "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms",
+    "noticeUrl": "https://dl.0-0.chat/litert/NOTICE.txt",
+    "gemmaTermsUrl": "https://dl.0-0.chat/litert/GEMMA_TERMS.md",
+    "gemmaProhibitedUseUrl": "https://ai.google.dev/gemma/prohibited_use_policy",
+    "assets": [
+        {
+            "file": "gemma-4-E2B-it-web.task",
+            "bytes": 2003697664,
+            "sha256": "2cbff161177a4d51c9d04360016185976f504517ba5758cd10c1564e5421c5a5",
+            "source": "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/blob/b3ca0d2f/gemma-4-E2B-it-web.task",
+            "license": "apache-2.0",
+            "licenseName": "Apache License 2.0",
+            "licenseUrl": "https://www.apache.org/licenses/LICENSE-2.0",
+            "gatedAtSource": false,
+            "vision": false
+        },
+        {
+            "file": "gemma-4-E4B-it-web.task",
+            "bytes": 2964324352,
+            "sha256": "f3bd72fc27627be2a2cc6722199a333599590ed0962ee7047b516a506b7bf086",
+            "source": "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/blob/2eee7ac3/gemma-4-E4B-it-web.task",
+            "license": "apache-2.0",
+            "licenseName": "Apache License 2.0",
+            "licenseUrl": "https://www.apache.org/licenses/LICENSE-2.0",
+            "gatedAtSource": false,
+            "vision": false
+        },
+        {
+            "file": "gemma-4-12B-it-web.litertlm",
+            "bytes": 5986074624,
+            "sha256": "d37f9392b4f093b470b50b72624c9a752cc0b288ed549b769037cbbd04024449",
+            "source": "https://huggingface.co/litert-community/gemma-4-12B-it-litert-lm/blob/7a0b1ce0/gemma-4-12B-it-web.litertlm",
+            "license": "apache-2.0",
+            "licenseName": "Apache License 2.0",
+            "licenseUrl": "https://www.apache.org/licenses/LICENSE-2.0",
+            "gatedAtSource": false,
+            "vision": false
+        },
+        {
+            "file": "gemma-3n-E2B-it-int4-Web.litertlm",
+            "bytes": 3038117888,
+            "sha256": "b6c8e1081ec80730f14473a5ece941b48da5d8e2a80c97c2963da153f3eff3d2",
+            "source": "https://huggingface.co/google/gemma-3n-E2B-it-litert-lm/blob/c03b6f60/gemma-3n-E2B-it-int4-Web.litertlm",
+            "license": "gemma",
+            "licenseName": "Gemma Terms of Use",
+            "licenseUrl": "https://ai.google.dev/gemma/terms",
+            "termsCopyUrl": "https://dl.0-0.chat/litert/GEMMA_TERMS.md",
+            "useRestrictionsUrl": "https://ai.google.dev/gemma/prohibited_use_policy",
+            "gatedAtSource": true,
+            "vision": true
+        },
+        {
+            "file": "gemma-3n-E4B-it-int4-Web.litertlm",
+            "bytes": 4275044352,
+            "sha256": "63730ba3225a23a90d3292d89fdeff1a7537cedeb72aa687de9a35732d057e52",
+            "source": "https://huggingface.co/google/gemma-3n-E4B-it-litert-lm/blob/297ed759/gemma-3n-E4B-it-int4-Web.litertlm",
+            "license": "gemma",
+            "licenseName": "Gemma Terms of Use",
+            "licenseUrl": "https://ai.google.dev/gemma/terms",
+            "termsCopyUrl": "https://dl.0-0.chat/litert/GEMMA_TERMS.md",
+            "useRestrictionsUrl": "https://ai.google.dev/gemma/prohibited_use_policy",
+            "gatedAtSource": true,
+            "vision": true
+        },
+        {
+            "file": "gemma3-270m-it-q4_0-web.task",
+            "bytes": 249233408,
+            "sha256": "a642cc7b183373dbcb186b1d94bf7ac9c0cfff6a2e73a5837ba2ffcffa4ac1ac",
+            "source": "https://huggingface.co/litert-community/gemma-3-270m-it/blob/9d209327/gemma3-270m-it-q4_0-web.task",
+            "license": "gemma",
+            "licenseName": "Gemma Terms of Use",
+            "licenseUrl": "https://ai.google.dev/gemma/terms",
+            "termsCopyUrl": "https://dl.0-0.chat/litert/GEMMA_TERMS.md",
+            "useRestrictionsUrl": "https://ai.google.dev/gemma/prohibited_use_policy",
+            "gatedAtSource": true,
+            "vision": false
+        },
+        {
+            "file": "gemma3-1b-it-int4-web.task",
+            "bytes": 700383232,
+            "sha256": "74f37adc3f94af1eaa0be70875b10060b2a2e45d533bfb7d5e2c08d3e4050cfe",
+            "source": "https://huggingface.co/litert-community/Gemma3-1B-IT/blob/a6306a4e/gemma3-1b-it-int4-web.task",
+            "license": "gemma",
+            "licenseName": "Gemma Terms of Use",
+            "licenseUrl": "https://ai.google.dev/gemma/terms",
+            "termsCopyUrl": "https://dl.0-0.chat/litert/GEMMA_TERMS.md",
+            "useRestrictionsUrl": "https://ai.google.dev/gemma/prohibited_use_policy",
+            "gatedAtSource": true,
+            "vision": false
+        }
+    ]
+}

@@ -170,12 +170,25 @@ describe("the curated catalogue", () => {
     expect(LITERT_VERSION).toBe(installed.version);
   });
 
-  it("TWIN GUARD: every asset name it claims to have verified is in the installed README, verbatim", () => {
+  // The second thing that can vouch for a file name: the mirror's own catalog, snapshotted after a
+  // publish (every entry in it was sha256-checked against the Hub's record on the way up).
+  const mirrorFiles = new Set<string>(
+    (JSON.parse(readFileSync(new URL("./fixtures/litert-mirror-catalog.json", import.meta.url), "utf8")) as { assets: { file: string }[] }).assets.map((a) => a.file),
+  );
+
+  it("TWIN GUARD: every asset name it claims to have verified is in the installed README or on the mirror, verbatim", () => {
     const unverified = new Set<string>(LITERT_UNVERIFIED_ASSETS);
     const verified = LITERT_CATALOG.filter((m) => !unverified.has(m.id));
     expect(verified.length).toBeGreaterThan(0);
     for (const model of verified) {
-      expect(installedReadme.includes(model.assetFile), `${model.assetFile} is not named in the installed README`).toBe(true);
+      const vouched = installedReadme.includes(model.assetFile) || mirrorFiles.has(model.assetFile);
+      expect(vouched, `${model.assetFile} is named neither in the installed README nor in the mirror catalog`).toBe(true);
+    }
+  });
+
+  it("offers nothing the mirror does not serve", () => {
+    for (const model of LITERT_CATALOG) {
+      expect(mirrorFiles.has(model.assetFile), `${model.assetFile} is not on dl.0-0.chat/litert`).toBe(true);
     }
   });
 
@@ -183,8 +196,8 @@ describe("the curated catalogue", () => {
     for (const id of LITERT_UNVERIFIED_ASSETS) {
       const model = LITERT_CATALOG.find((m) => m.id === id);
       expect(model, `${id} is flagged unverified but is not in the catalogue`).toBeDefined();
-      // Being unverified means exactly this: the installed package does not name the file.
-      expect(installedReadme.includes(model?.assetFile ?? "")).toBe(false);
+      // Being unverified means exactly this: neither source names the file.
+      expect(installedReadme.includes(model?.assetFile ?? "") || mirrorFiles.has(model?.assetFile ?? "")).toBe(false);
     }
   });
 
@@ -211,7 +224,7 @@ describe("the curated catalogue", () => {
 
   it("filters to a phone's cap, so a phone is offered one model and not a wall", () => {
     const phone = litertCatalogFor({ maxVramMb: 2000 });
-    expect(phone.map((m) => m.id)).toEqual(["gemma3-1b-it-int4-web"]);
+    expect(phone.map((m) => m.id)).toEqual(["gemma3-270m-it-q4_0-web", "gemma3-1b-it-int4-web"]);
     // The default is NOT the phone row: it is the smallest asset the mirror serves today (§12.7),
     // whose licence carries no use restrictions; the 1B joins the mirror with the gated publish.
     expect(LITERT_DEFAULT_MODEL_ID).toBe("gemma-4-E2B-it-web");

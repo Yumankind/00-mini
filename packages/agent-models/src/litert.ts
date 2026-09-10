@@ -95,16 +95,14 @@ export const GEMMA_TERMS: ModelLicense = {
 export const APACHE_2: ModelLicense = { id: "apache-2.0", name: "Apache License 2.0", url: "https://www.apache.org/licenses/LICENSE-2.0" };
 
 /**
- * The rows whose `assetFile` this package could NOT verify against anything installed.
- *
- * The installed `@mediapipe/tasks-genai@0.10.29` README names four assets by full file name; every
- * other name below was derived from the convention that README states ("files named `-web.task`
- * … are specially converted to run optimally in the browser") and must be checked against the model
- * repository before it is offered to a person, because a wrong name is a 404 minutes into a first
- * visit. `test/litert.test.ts` reads the installed README and fails if a row claiming to be
- * verified is not in it.
+ * The rows whose `assetFile` NOTHING vouches for. Two things can: the installed
+ * `@mediapipe/tasks-genai` README, which names the Gemma 4 and 3n web assets by full file name, and
+ * the mirror we publish to (docs/HANDOFF-infinite-agent.md §12.7), whose catalog is snapshotted at
+ * `test/fixtures/litert-mirror-catalog.json` — every file in it was sha256-checked against the Hub's
+ * record on the way up. The twin guard in test/litert.test.ts accepts either; a row in neither must
+ * be listed here, and is offered to nobody until it is in one of them. Empty since 2026-09-10.
  */
-export const LITERT_UNVERIFIED_ASSETS = ["gemma3-1b-it-int4-web"] as const;
+export const LITERT_UNVERIFIED_ASSETS: readonly string[] = [];
 
 /**
  * The curated LiteRT models.
@@ -119,8 +117,21 @@ export const LITERT_UNVERIFIED_ASSETS = ["gemma3-1b-it-int4-web"] as const;
  * imposes: LLM Inference counts input and output together against one number.
  */
 export const LITERT_CATALOG: LiteRtModelInfo[] = [
-  // VERIFIED name? No — derived from the README's "-web.task" convention for the text-only Gemma 3
-  // variants it says are published on the LiteRT community. Listed in LITERT_UNVERIFIED_ASSETS.
+  // VERIFIED on the mirror (sha256 a642cc7b…), not in the README. The phone row: a quarter of a
+  // gigabyte, the one an embed's "Load local AI" can honestly offer.
+  {
+    id: "gemma3-270m-it-q4_0-web",
+    label: "Gemma 3 270m (q4)",
+    class: "small",
+    local: true,
+    supportsTools: true,
+    contextTokens: 2048,
+    vramMb: 600,
+    assetFile: "gemma3-270m-it-q4_0-web.task",
+    family: "gemma",
+    license: GEMMA_TERMS,
+  },
+  // VERIFIED on the mirror (sha256 74f37adc…), not in the README.
   {
     id: "gemma3-1b-it-int4-web",
     label: "Gemma 3 1B (int4)",
