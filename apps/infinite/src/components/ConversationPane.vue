@@ -6,10 +6,13 @@
  * tool no matter how many times it ran (SessionThread.vue does the same). They expand on click,
  * because "read ×7" is the right default and "what did it actually read" is the right follow-up.
  */
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import TablerIcon from "./TablerIcon.vue";
+import ModelChip from "./ModelChip.vue";
 import { toolRowLabel, toolRowState, type Row } from "../lib/conversation.js";
+import { answeredByLine } from "../lib/model-chip.js";
 import { busy, composerError, rows, send, stop } from "../state/conversation.js";
+import { openChip, primeBrains } from "../state/model-choice.js";
 import { profile } from "../state/agent.js";
 
 const draft = ref("");
@@ -47,6 +50,10 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
+// The chip names the brain that answers next, so it needs readiness before the first message —
+// asked once here, at the speed of four cache lookups, and never on a timer from this pane.
+onMounted(() => void primeBrains());
+
 watch(
   () => rows.value.length,
   async () => {
@@ -80,12 +87,30 @@ watch(
             </div>
           </div>
 
-          <div v-else-if="row.kind === 'agent'" class="text-[13px] leading-relaxed whitespace-pre-wrap break-words">
-            {{ row.text
-            }}<span
-              v-if="row.streaming"
-              class="inline-block w-[7px] h-[14px] align-[-2px] ml-0.5 bg-[var(--color-phosphor)] ia-pulse"
-            />
+          <div v-else-if="row.kind === 'agent'">
+            <div class="text-[13px] leading-relaxed whitespace-pre-wrap break-words">
+              {{ row.text
+              }}<span
+                v-if="row.streaming"
+                class="inline-block w-[7px] h-[14px] align-[-2px] ml-0.5 bg-[var(--color-phosphor)] ia-pulse"
+              />
+            </div>
+            <!-- B20: which brain wrote this, from `model_started`. Under the answer, quiet, and
+                 never fed back to the model — it is the reader's receipt, not context. -->
+            <div v-if="row.by" class="mt-0.5 text-[10px] font-mono text-[var(--color-ink-dim)]">
+              {{ answeredByLine(row.by) }}
+            </div>
+          </div>
+
+          <!-- A6: the wait, made visible. It is replaced by the answer rather than pushed above it. -->
+          <div v-else-if="row.kind === 'status'" class="space-y-1">
+            <div class="flex items-center gap-1.5 text-[11px] text-[var(--color-cyan)]">
+              <TablerIcon name="download" :size="12" class="shrink-0 ia-pulse" />
+              <span class="truncate">{{ row.text }}</span>
+            </div>
+            <div v-if="row.percent !== null" class="h-1 rounded-full bg-[var(--color-line)] overflow-hidden max-w-xs">
+              <div class="h-full bg-[var(--color-cyan)] transition-[width] duration-500" :style="{ width: `${row.percent}%` }"></div>
+            </div>
           </div>
 
           <div v-else-if="row.kind === 'tool'">
@@ -115,7 +140,18 @@ watch(
 
           <div v-else class="flex items-start gap-2 text-[12px] text-[var(--color-red)]">
             <TablerIcon name="alert-triangle" :size="14" class="mt-0.5 shrink-0" />
-            <span>{{ row.text }}</span>
+            <div class="min-w-0">
+              <p>{{ row.text }}</p>
+              <!-- The one error a person can fix from here: the chip is two lines below. -->
+              <button
+                v-if="row.openChip"
+                type="button"
+                class="ia-btn mt-1.5 h-7 px-2.5 text-[11px]"
+                @click="openChip()"
+              >
+                Choose a brain
+              </button>
+            </div>
           </div>
         </template>
       </div>
@@ -125,6 +161,10 @@ watch(
       <p v-if="composerError" class="text-[11px] text-[var(--color-red)] mb-2 max-w-2xl mx-auto">
         {{ composerError }}
       </p>
+      <!-- The composer's control row, the 00 shape: what will answer, where the message is written. -->
+      <div class="max-w-2xl mx-auto flex items-center gap-2 mb-1.5 min-w-0">
+        <ModelChip />
+      </div>
       <div class="max-w-2xl mx-auto flex items-end gap-2">
         <textarea
           v-model="draft"

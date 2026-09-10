@@ -24,8 +24,24 @@ export const brains = computed(() => handles.value);
 export const connectionsBusy = computed(() => busy.value);
 export const connectionsError = computed(() => lastError.value);
 
-export const selectedBrain = computed<string>(() => agent.value?.settings().selected ?? "auto");
-export const settings = computed<ConnectionSettings>(() => agent.value?.settings() ?? { selected: "auto" });
+/**
+ * THE SETTINGS, COPIED INTO A REF rather than read through a computed — the same trap, and the same
+ * fix, as `localBrain()` in `state/local-models.ts`.
+ *
+ * `settings()` is a method on a plain object held in a `shallowRef`, so a computed over it depends
+ * on the REF and not on the answer: the ref never changes after boot, the computed caches its first
+ * result forever, and choosing a brain would leave every screen ticking the old one. It is synced at
+ * the one moment it can change — `refreshBrains`, which every writer here already calls.
+ */
+const settingsRef = ref<ConnectionSettings>({ selected: "auto" });
+
+export const selectedBrain = computed<string>(() => settingsRef.value.selected);
+export const settings = computed<ConnectionSettings>(() => settingsRef.value);
+
+/** Re-read the bootstrap's settings. Safe before boot: it stays at the default. */
+export function syncSettings(): void {
+  settingsRef.value = agent.value?.settings() ?? { selected: "auto" };
+}
 
 export interface BrainCard {
   peer: (typeof BRAIN_PEERS)[number];
@@ -61,6 +77,7 @@ export async function refreshBrains(): Promise<void> {
   busy.value = true;
   try {
     handles.value = await owned.providers();
+    syncSettings();
   } catch (err) {
     lastError.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -82,6 +99,7 @@ export async function chooseBrain(id: string): Promise<void> {
   if (!owned) return;
   await owned.saveSettings({ ...owned.settings(), selected: id });
   handles.value = await owned.refreshBrains();
+  syncSettings();
 }
 
 // ── The three cards that ask for something ────────────────────────────────────────────────────────
@@ -93,6 +111,7 @@ export async function saveOverblast(baseUrl: string, model: string, token: strin
   await owned.vault.set("overblast.deviceToken", token.trim());
   await owned.saveSettings({ ...owned.settings(), overblast: { baseUrl: baseUrl.trim(), model: model.trim() } });
   handles.value = await owned.refreshBrains();
+  syncSettings();
 }
 
 export async function saveByok(vendor: ByokVendor, key: string, baseUrl: string, model: string): Promise<void> {
@@ -113,11 +132,13 @@ export async function registerSponsored(appId: string): Promise<string> {
   if (!owned) throw new Error("No agent yet.");
   const { deviceId } = await owned.registerSponsoredDevice(appId.trim());
   handles.value = await owned.refreshBrains();
+  syncSettings();
   return deviceId;
 }
 
 export function resetConnections(): void {
   handles.value = [];
+  settingsRef.value = { selected: "auto" };
   busy.value = false;
   lastError.value = null;
 }

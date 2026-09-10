@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@00/agent-runtime";
 import {
   emptyConversation,
+  pushError,
   pushUser,
   reduceEvent,
+  setStatus,
   settle,
   toolRowLabel,
   toolRowState,
@@ -162,5 +164,90 @@ describe("the conversation reducer", () => {
     // Settling twice, or with nothing open, changes nothing.
     expect(settle(settle(streaming))).toEqual(settle(streaming));
     expect(settle(emptyConversation()).rows).toHaveLength(0);
+  });
+});
+
+describe("A6: the row that says what the run is waiting on", () => {
+  it("appears once, updates in place, and never doubles", () => {
+    let state = setStatus(emptyConversation(), { text: "Downloading Gemma 3 270m · 4%", percent: 4 });
+    state = setStatus(state, { text: "Downloading Gemma 3 270m · 41%", percent: 41 });
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]).toMatchObject({ kind: "status", text: "Downloading Gemma 3 270m · 41%", percent: 41 });
+  });
+
+  it("is the same object when nothing changed, so a poll costs no repaint", () => {
+    const state = setStatus(emptyConversation(), { text: "Downloading", percent: 1 });
+    expect(setStatus(state, { text: "Downloading", percent: 1 })).toBe(state);
+    expect(setStatus(emptyConversation(), null)).toEqual(emptyConversation());
+  });
+
+  it("turns into the answer: the first delta takes it away", () => {
+    const waiting = setStatus(emptyConversation(), { text: "Downloading Gemma 3 270m · 41%", percent: 41 });
+    const answered = run([{ type: "agent_delta", text: "Hel" }], waiting);
+    expect(answered.rows.map((r) => r.kind)).toEqual(["agent"]);
+  });
+
+  it("survives the `model_started` that comes BEFORE the download starts", () => {
+    // The runtime names the brain, then the provider fetches two gigabytes, then it answers. Only
+    // the answer ends the wait.
+    const waiting = setStatus(emptyConversation(), { text: "Downloading Gemma 4 E2B", percent: null });
+    const started = run([{ type: "model_started", providerId: "local", model: "gemma-4-E2B-it-web" }], waiting);
+    expect(started.rows.map((r) => r.kind)).toEqual(["status"]);
+  });
+
+  it("is taken away by a tool row and by an error, which are also proof the wait is over", () => {
+    const waiting = setStatus(emptyConversation(), { text: "Downloading", percent: 2 });
+    expect(run([{ type: "tool_started", callId: "a", name: "read", args: {} }], waiting).rows.map((r) => r.kind)).toEqual(["tool"]);
+    expect(run([{ type: "error", message: "no" }], waiting).rows.map((r) => r.kind)).toEqual(["error"]);
+  });
+
+  it("does not outlive the run that was waiting", () => {
+    const waiting = setStatus(emptyConversation(), { text: "Downloading", percent: 2 });
+    expect(settle(waiting).rows).toHaveLength(0);
+  });
+
+  it("carries the button that opens the chip, and only on the error that has one", () => {
+    const blocked = pushError(emptyConversation(), "No brain can answer yet — Local AI cannot run in this browser.", true);
+    expect(blocked.rows[0]).toMatchObject({ kind: "error", openChip: true });
+    expect(pushError(emptyConversation(), "boom").rows[0]).toMatchObject({ openChip: false });
+  });
+});
+
+describe("B20: which brain answered", () => {
+  it("stamps the bubble with the model_started that opened it", () => {
+    const state = run([
+      { type: "model_started", providerId: "local", model: "gemma3-270m-it-q4_0-web", brainClass: "small" },
+      { type: "agent_delta", text: "Hi" },
+      { type: "agent_message", text: "Hi.", final: true },
+    ]);
+    expect(state.rows[0]).toMatchObject({
+      kind: "agent",
+      streaming: false,
+      by: { providerId: "local", model: "gemma3-270m-it-q4_0-web", brainClass: "small" },
+    });
+  });
+
+  it("keeps the streaming caret while the deltas arrive, stamped from the first event", () => {
+    const state = run([
+      { type: "model_started", providerId: "byok:openai", model: "gpt-4o-mini" },
+      { type: "agent_delta", text: "Hal" },
+    ]);
+    expect(state.rows[0]).toMatchObject({ kind: "agent", text: "Hal", streaming: true, by: { providerId: "byok:openai" } });
+  });
+
+  it("stamps each bubble with the brain that actually wrote it, not the run's last one", () => {
+    const state = run([
+      { type: "model_started", providerId: "local" },
+      { type: "agent_message", text: "One", final: true },
+      { type: "model_started", providerId: "sponsored" },
+      { type: "agent_message", text: "Two", final: true },
+    ]);
+    expect(state.rows.map((r) => (r.kind === "agent" ? r.by?.providerId : null))).toEqual(["local", "sponsored"]);
+  });
+
+  it("leaves the line off a bubble no model was announced for", () => {
+    const state = run([{ type: "agent_message", text: "restored from a session", final: true }]);
+    expect(state.rows[0]).toMatchObject({ kind: "agent" });
+    expect((state.rows[0] as { by?: unknown }).by).toBeUndefined();
   });
 });

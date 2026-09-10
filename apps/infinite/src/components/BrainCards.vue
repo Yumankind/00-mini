@@ -24,16 +24,11 @@ import {
   selectedBrain,
   startBrainPolling,
 } from "../state/connections.js";
+import ModelPicker from "./ModelPicker.vue";
 import {
-  chooseLocalModel,
   loadLocalRows,
-  localAvailable,
-  localCatalogSource,
   localChoice,
-  localPicker,
   localRows,
-  localRowsBusy,
-  localRowsError,
   localRowsLoaded,
   syncLocalBrain,
   unloadLocal,
@@ -117,10 +112,23 @@ const downloadBytes = computed(() => {
 /** The row the consent line is about: the chosen one, once the catalogue knows it. */
 const chosenRow = computed(() => localRows.value.find((r) => r.selected) ?? null);
 
-async function refreshRows(): Promise<string> {
-  await loadLocalRows(true);
-  return "Model list refreshed.";
-}
+/**
+ * WHICH MODEL THIS CARD IS ABOUT (gap audit A6: "the Local AI card does not name the model it
+ * loaded"). The choice is the remembered one, which the catalogue may later dress with a better
+ * label; before either exists it is the provider's own default, and saying so is more honest than
+ * naming a row nobody picked.
+ */
+const loadedName = computed(
+  () => localChoice.value?.label ?? localChoice.value?.id ?? chosenRow.value?.row.label ?? "The default local model",
+);
+const loadedState = computed(() => {
+  const readiness = localCard.value?.handle?.readiness;
+  if (!readiness) return "is the model this browser would use.";
+  if (readiness.ready) return "is loaded in this browser and answering.";
+  if (readiness.reason === "download") return "is not on this device yet — it downloads with your next message.";
+  if (readiness.reason === "unsupported") return "cannot run here.";
+  return "is not ready.";
+});
 
 async function run(work: () => Promise<string | void>): Promise<void> {
   notice.value = null;
@@ -204,75 +212,15 @@ const keyProblem = computed(() =>
                 <p class="text-[11px] text-[var(--color-ink-dim)]">{{ downloadBytes ?? `${downloadBar}%` }}</p>
               </div>
 
-              <p v-if="!localAvailable" class="text-[11px] text-[var(--color-amber)]">
-                This deployment serves no model weights, so the local brain is web-llm's Llama 3.2 only.
+              <!-- A6: the card NAMES the model it loaded. "Local AI · ready" said nothing about
+                   which two gigabytes are ready, and the person chose them. -->
+              <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+                <span class="text-[var(--color-ink)]">{{ loadedName }}</span>
+                {{ loadedState }}
               </p>
 
-              <template v-else-if="!localPicker">
-                <!-- §12.6: "cap at 1.5B and ship one model, not a picker, on the mobile browser." -->
-                <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
-                  On a phone your agent uses one small model —
-                  <span class="text-[var(--color-ink)]">{{ localChoice?.label ?? localChoice?.id ?? "the smallest one" }}</span
-                  >, chosen to fit the memory a phone has. Bigger models are offered on a computer.
-                </p>
-              </template>
-
-              <template v-else>
-                <div class="flex items-center justify-between">
-                  <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Model</span>
-                  <button type="button" class="text-[10px] text-[var(--color-ink-dim)]" :disabled="localRowsBusy" @click="run(refreshRows)">
-                    {{ localRowsBusy ? "checking…" : "refresh" }}
-                  </button>
-                </div>
-                <p v-if="localRowsError" class="text-[11px] text-[var(--color-red)]">{{ localRowsError }}</p>
-                <p v-else-if="localCatalogSource === 'offline'" class="text-[11px] text-[var(--color-amber)]">
-                  The model list could not be reached, so these are the ones this app was built knowing.
-                </p>
-
-                <div class="space-y-1.5">
-                  <button
-                    v-for="entry in localRows"
-                    :key="entry.row.id"
-                    type="button"
-                    class="w-full text-left px-2.5 py-2 rounded-md border"
-                    :class="
-                      entry.selected
-                        ? 'border-[var(--color-phosphor)] bg-[color-mix(in_srgb,var(--color-phosphor)_8%,transparent)]'
-                        : 'border-[var(--color-line)]'
-                    "
-                    @click="run(() => chooseLocalModel(entry.row).then((name) => `${name} is your local brain.`))"
-                  >
-                    <div class="flex items-center gap-1.5">
-                      <span class="text-[12px] font-medium">{{ entry.row.label }}</span>
-                      <TablerIcon v-if="entry.selected" name="check" :size="12" class="text-[var(--color-phosphor)]" />
-                      <span class="text-[11px] text-[var(--color-ink-dim)]">{{ entry.size }}</span>
-                      <span v-if="entry.vision" class="text-[10px] px-1 rounded bg-[var(--color-line)]">vision</span>
-                      <span v-if="entry.downloaded" class="text-[10px] text-[var(--color-phosphor)]">on this device</span>
-                    </div>
-                    <div class="text-[11px] text-[var(--color-ink-dim)] mt-0.5">
-                      <!-- Gemma §3.1: the licence and its use restrictions are named BEFORE the
-                           download, per row, because the rows do not all carry the same terms. -->
-                      <a
-                        class="underline"
-                        :href="entry.licenseUrl"
-                        target="_blank"
-                        rel="noopener"
-                        @click.stop
-                        >{{ entry.licenseName }}</a
-                      >
-                      <template v-if="entry.useRestrictionsUrl">
-                        ·
-                        <a class="underline" :href="entry.useRestrictionsUrl" target="_blank" rel="noopener" @click.stop>use restrictions</a>
-                      </template>
-                      <template v-if="entry.termsCopyUrl">
-                        ·
-                        <a class="underline" :href="entry.termsCopyUrl" target="_blank" rel="noopener" @click.stop>copy</a>
-                      </template>
-                      <span v-if="entry.estimated"> · size estimated</span>
-                    </div>
-                  </button>
-                </div>
-              </template>
+              <!-- The composer's picker, mounted here: one list, one set of words, one download. -->
+              <ModelPicker section="local" />
 
               <!-- The consent line, about the row that is actually chosen rather than about models
                    in general. The fallback's own licence is named too: the router may reach it. -->

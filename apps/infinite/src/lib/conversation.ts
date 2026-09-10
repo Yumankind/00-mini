@@ -12,10 +12,20 @@
  * person needs and seven identical lines is what they get otherwise.
  */
 import type { AgentEvent, PermissionTier } from "@00/agent-runtime";
+import type { BrainStamp } from "./model-chip.js";
 
 export type Row =
   | { kind: "user"; id: string; text: string }
-  | { kind: "agent"; id: string; text: string; streaming: boolean }
+  /** `by` is B20's line under the answer: which brain wrote it, from `model_started`. */
+  | { kind: "agent"; id: string; text: string; streaming: boolean; by?: BrainStamp }
+  /**
+   * A6: what the run is waiting on while nothing else is happening — a model download, mostly.
+   *
+   * It is NOT an event: readiness is polled, not pushed, so this row is written by `setStatus` from
+   * outside the reducer. The reducer's only job is to take it away the moment anything real arrives,
+   * which is what makes it "turn into the answer" rather than sit above one.
+   */
+  | { kind: "status"; id: string; text: string; percent: number | null }
   | {
       kind: "tool";
       id: string;
@@ -29,7 +39,8 @@ export type Row =
       detail?: string;
     }
   | { kind: "footer"; id: string; text: string }
-  | { kind: "error"; id: string; text: string };
+  /** `openChip` marks the one error a person can act on right here: nothing is ready to answer. */
+  | { kind: "error"; id: string; text: string; openChip?: boolean };
 
 export interface ConversationState {
   rows: Row[];
@@ -37,10 +48,12 @@ export interface ConversationState {
   rowByCall: Record<string, string>;
   /** Monotonic counter behind the row ids: reproducible, and no randomness in a reducer. */
   seq: number;
+  /** The last `model_started`, stamped onto the next bubble opened — B20's answered-by line. */
+  brain: BrainStamp | null;
 }
 
 export function emptyConversation(): ConversationState {
-  return { rows: [], rowByCall: {}, seq: 0 };
+  return { rows: [], rowByCall: {}, seq: 0, brain: null };
 }
 
 /**
@@ -62,10 +75,44 @@ export function pushUser(state: ConversationState, text: string): ConversationSt
   return withRow(state, { kind: "user", text });
 }
 
+export function pushError(state: ConversationState, text: string, openChip = false): ConversationState {
+  return withRow(state, { kind: "error", text, openChip });
+}
+
+/**
+ * A6's live row, written from OUTSIDE the event stream (readiness is polled, not emitted).
+ *
+ * One at a time, always last: a second download line under the first would read as two downloads.
+ * `null` takes it away, which is what a run's end does when no answer ever arrived.
+ */
+export function setStatus(
+  state: ConversationState,
+  status: { text: string; percent: number | null } | null,
+): ConversationState {
+  const existing = state.rows.find((r) => r.kind === "status");
+  if (!status) {
+    return existing ? { ...state, rows: state.rows.filter((r) => r.kind !== "status") } : state;
+  }
+  if (existing) {
+    if (existing.kind === "status" && existing.text === status.text && existing.percent === status.percent) return state;
+    return replaceRow(state, existing.id, { ...existing, ...status } as Row);
+  }
+  return withRow(state, { kind: "status", ...status });
+}
+
+/** Anything real arriving retires the status row: the download became an answer. */
+function clearStatus(state: ConversationState): ConversationState {
+  return state.rows.some((r) => r.kind === "status") ? setStatus(state, null) : state;
+}
+
 /** The row a delta belongs to: the last agent bubble, but only while it is still streaming. */
 function openAgentRow(state: ConversationState): (Row & { kind: "agent" }) | null {
   const last = state.rows[state.rows.length - 1];
   return last && last.kind === "agent" && last.streaming ? last : null;
+}
+
+function stamp(state: ConversationState): BrainStamp | undefined {
+  return state.brain ?? undefined;
 }
 
 function openToolRow(state: ConversationState, name: string): (Row & { kind: "tool" }) | null {
@@ -73,7 +120,9 @@ function openToolRow(state: ConversationState, name: string): (Row & { kind: "to
   return last && last.kind === "tool" && last.name === name ? last : null;
 }
 
-export function reduceEvent(state: ConversationState, event: AgentEvent): ConversationState {
+export function reduceEvent(input: ConversationState, event: AgentEvent): ConversationState {
+  // Every event below is proof that the run got past whatever the status row was waiting on.
+  const state = event.type === "model_started" ? input : clearStatus(input);
   switch (event.type) {
     // THE TWO ANSWER EVENTS (contract revision 2026-09-10). They used to be one event with a boolean,
     // and this reducer had to honour BOTH readings of it — appending unless the text happened to be a
@@ -82,16 +131,23 @@ export function reduceEvent(state: ConversationState, event: AgentEvent): Conver
     // REPLACES and closes.
     case "agent_delta": {
       const open = openAgentRow(state);
-      if (!open) return withRow(state, { kind: "agent", text: event.text, streaming: true });
+      if (!open) return withRow(state, { kind: "agent", text: event.text, streaming: true, by: stamp(state) });
       return replaceRow(state, open.id, { ...open, text: open.text + event.text });
     }
     case "agent_message": {
       const open = openAgentRow(state);
       // The whole message, once: it repeats every delta of the same message, so the accumulation is
       // replaced rather than added to, and the bubble stops streaming.
-      if (!open) return withRow(state, { kind: "agent", text: event.text, streaming: false });
+      if (!open) return withRow(state, { kind: "agent", text: event.text, streaming: false, by: stamp(state) });
       return replaceRow(state, open.id, { ...open, text: event.text, streaming: false });
     }
+    /**
+     * B20: which brain answered. Remembered rather than drawn, because it arrives BEFORE the bubble
+     * it belongs to — and because a run that falls through to a second provider mid-way stamps each
+     * bubble with the brain that actually wrote it rather than with the run's last one.
+     */
+    case "model_started":
+      return { ...state, brain: { providerId: event.providerId, model: event.model, brainClass: event.brainClass } };
     case "tool_started": {
       const open = openToolRow(state, event.name);
       if (open) {
@@ -104,6 +160,7 @@ export function reduceEvent(state: ConversationState, event: AgentEvent): Conver
       const seq = state.seq + 1;
       const id = `r${seq}`;
       return {
+        ...state,
         seq,
         rows: [...state.rows, { kind: "tool", id, name: event.name, calls: 1, running: 1, failed: 0, ms: 0 }],
         rowByCall: { ...state.rowByCall, [event.callId]: id },
@@ -138,16 +195,21 @@ export function reduceEvent(state: ConversationState, event: AgentEvent): Conver
     case "error":
       return withRow(state, { kind: "error", text: event.message });
     default:
-      // model_started, permission_*, file_changed, command_* are consumed by other panes.
+      // permission_*, file_changed and command_* are consumed by other panes.
       return state;
   }
 }
 
-/** Closes any bubble left streaming when a run ends (final, aborted or failed alike). */
+/**
+ * Closes any bubble left streaming when a run ends (final, aborted or failed alike), and takes the
+ * status row with it: a download the run was waiting on is not still being waited on once the run
+ * is over, whatever became of it.
+ */
 export function settle(state: ConversationState): ConversationState {
-  const open = openAgentRow(state);
-  if (!open) return state;
-  return replaceRow(state, open.id, { ...open, streaming: false });
+  const cleared = clearStatus(state);
+  const open = openAgentRow(cleared);
+  if (!open) return cleared;
+  return replaceRow(cleared, open.id, { ...open, streaming: false });
 }
 
 export function toolRowLabel(row: Row & { kind: "tool" }): string {
