@@ -114,6 +114,18 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
 10. **The model mirror** lives on `00-downloads` at `dl.0-0.chat/litert` with CORS opened read-only
     on that bucket, copied at the edge by a throwaway Worker deployed per publish and removed after.
 
+11. **Phase 3's browser halves are built** (owner: ref, link key, claim pane, owner panel with
+    origins, publish, inbox-as-escalations, purse link; visitor: device key, register-on-first-need,
+    real `send_to_owner` with a 30 s reply poll, public bundle as carrier 1, the Register card in
+    the setup flow). Two shapes chosen where the plan was silent: the public bundle is ONE JSON
+    document `{ version, ref, publishedAt, files: [{ path, text }] }` (≤ 256 KB) rather than a
+    tar.gz, so the 40 KB embed needs no tar reader; and `site.json` gains an optional `linkPub`
+    because registration must come from the site's origin while only the owner's browser holds
+    the key — the owner's page shows the public half to copy. Both halves refuse by name
+    (`link_key_unavailable`) in a browser without WebCrypto Ed25519.
+12. **Live transfer is wired end to end but the rooms base is a `.invalid` placeholder** until the
+    worker deploys; the UI says "not connected yet" rather than spinning.
+
 **Things I did NOT do, on purpose**
 - No deploy of the landing, the site Worker, or moltworker (your call each time).
 - No enabling of `INFINITE_ENABLED`, no D1 migration applied, no secrets created.
