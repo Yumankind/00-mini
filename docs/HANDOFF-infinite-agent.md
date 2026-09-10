@@ -151,6 +151,16 @@ vault, export and restore a `.00agent`, move it to the Mac by file, put the leve
 website. Everything below is what the plan or the original spec promises beyond that and the code
 does not yet deliver. Ordered by user-visible impact; each item names the evidence.
 
+**Status of this list, later on 2026-09-10:** A1–A6 and B7–B17, B20 are DONE (commits `1134d68c`
+… `e81f5ddf`): real relay origin with a sentinel, the vault stays home unless ticked, iOS builds,
+six-word code on the Mac, no phantom bash, download progress in the chat; the power shell (built-in
+terminal, editor, preview, git panel, IDE layout), git wired with a real diff, delete/move/copy/stat,
+vision input through to LiteRT/OpenAI/Anthropic, streaming, secrets reachable from tools with
+`${secret:NAME}`, onboarding runs, BM25 without a model, push received in the service worker,
+credential fallthrough, high-risk tier in use, http_get under a policy, brain and answered-by shown.
+Still open from B: B18 (cloud burst, R2 backup, schedules UI) and B19 (Sponsored sign-in, Overblast
+mint, embed paid path) — cloud-side. The audit itself follows as written that evening.
+
 **A. Broken or misleading today (fix first)**
 1. **The Mac card points at an invented host.** `apps/infinite/src/mac/config.ts` has
    `RELAY_ORIGIN = "https://api.overblast.com"`; the real relay is the worker origin
