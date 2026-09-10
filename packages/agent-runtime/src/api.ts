@@ -5,7 +5,7 @@
  * nothing deeper. Change this file only with those owners in the loop.
  */
 import type { AgentFs } from "@00/agent-fs";
-import type { ModelProvider, ToolSchema, ChatMessage, Usage } from "@00/agent-models";
+import type { ModelClass, ModelProvider, ToolSchema, ChatMessage, Usage } from "@00/agent-models";
 
 /**
  * THE VAULT IS PART OF THE SURFACE (contract revision 2026-09-10, finding 4).
@@ -34,7 +34,13 @@ export interface Tool {
 }
 
 export type AgentEvent =
-  | { type: "model_started"; providerId: string; model?: string }
+  /**
+   * `brainClass` (added additively, class-aware routing 2026-09-10) is the class this call was
+   * ACTUALLY answered in, not the one that was asked for: a run that wanted `strong` on a machine
+   * where only the small local brain is ready says `small` here. Optional, so a consumer written
+   * against the previous union still compiles and a consumer that wants to draw the chip can.
+   */
+  | { type: "model_started"; providerId: string; model?: string; brainClass?: ModelClass }
   | { type: "model_completed"; providerId: string; usage?: Usage; footer?: string }
   /**
    * A streamed increment of the answer being written. Never the whole thing, never repeated.
@@ -70,6 +76,18 @@ export interface RunOptions {
   workspace?: string;
   /** Provider id or `auto` (the router picks). */
   model?: string;
+  /**
+   * WHICH CLASS OF BRAIN THIS RUN WANTS — `auto` by default (class-aware routing 2026-09-10, §6).
+   *
+   * `auto` does NOT mean one class for the run: the runtime derives a class PER MODEL CALL from the
+   * shape of that call (`classifyCall` in brain-class.ts — a tool-less short question is `small`,
+   * planning over a tool result is `strong`), and the picker takes the first ready provider that
+   * offers it. `small` and `strong` force it for every call of the run instead.
+   *
+   * It is a preference and never a cap. When no ready provider offers the class asked for, the run
+   * still happens on what IS ready, and `model_started.brainClass` says which class answered.
+   */
+  brain?: "auto" | "small" | "strong";
   /** Tool names; all registered tools by default. */
   tools?: string[];
   maxSteps?: number;

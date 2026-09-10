@@ -10,6 +10,11 @@
  * call's own `models` / `defaultModel` fields (cloud-agents contract §3b), OpenRouter's from its
  * live list, and a custom host's from whatever the person points it at. A default list baked in
  * here would be a list that is wrong the week after it is written.
+ *
+ * WHICH CLASS THESE ARE, given that (class-aware routing, §6, 2026-09-10). Every `ModelInfo` row a
+ * caller passes carries its own `class`; a caller who passes NO rows leaves `models()` empty, and
+ * `providerClasses()` in router.ts reads that as `strong`. That is the right reading precisely here:
+ * the factories in this file are the cloud brains, and a cloud brain is the strong one.
  */
 
 import { AnthropicProvider } from "./anthropic.js";

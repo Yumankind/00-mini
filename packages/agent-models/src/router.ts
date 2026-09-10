@@ -24,9 +24,42 @@
  */
 
 import { isAborted, isSwitchable, ProviderError } from "./errors.js";
-import type { ChatChunk, ChatRequest, ChatResponse, ModelProvider } from "./types.js";
+import type { ChatChunk, ChatRequest, ChatResponse, ModelInfo, ModelProvider } from "./types.js";
 
 export type ModelClass = "small" | "strong";
+
+/**
+ * WHAT CLASS A PROVIDER CAN ANSWER IN — one rule, one place (§6, class-aware routing 2026-09-10).
+ *
+ * `ModelInfo.class` is required, so a catalogue row always says which it is; the only interesting
+ * case is a catalogue that is EMPTY or a `models()` that throws, and the honest answer there is
+ * `strong`. An empty catalogue is not "I have nothing", it is "nobody listed me": `byokProvider()`
+ * takes `catalog?` and defaults it to `[]`, and Overblast's rows only arrive with the mint call, so
+ * the providers most likely to answer with an empty list are exactly the cloud brains — and a cloud
+ * brain is the strong one. Guessing `small` there would route planning to a frontier model and then
+ * refuse to admit it; guessing `strong` names the peer for what it is.
+ *
+ * A provider whose `models()` throws is treated the same way rather than being dropped: readiness is
+ * the door, and a catalogue read is not allowed to become a second, quieter one.
+ */
+export async function providerClasses(provider: ModelProvider): Promise<Set<ModelClass>> {
+  let rows: ModelInfo[];
+  try {
+    rows = await provider.models();
+  } catch {
+    return new Set<ModelClass>(["strong"]);
+  }
+  const out = new Set<ModelClass>();
+  for (const row of rows) out.add(row.class);
+  return out.size ? out : new Set<ModelClass>(["strong"]);
+}
+
+/** The class a provider will actually be answering in when it was asked for `wanted`. */
+export function classActuallyUsed(offered: ReadonlySet<ModelClass>, wanted: ModelClass): ModelClass {
+  if (offered.has(wanted)) return wanted;
+  const other: ModelClass = wanted === "strong" ? "small" : "strong";
+  return offered.has(other) ? other : wanted;
+}
 
 /** Why the router moved on from a provider. `initial` is the first pick, not a switch. */
 export type SwitchReason = "initial" | "readiness" | "credential" | "insufficient_credits";
@@ -44,8 +77,18 @@ export interface SwitchEvent {
 
 export interface ModelRouterOptions {
   providers: ModelProvider[];
-  /** Provider ids, best first, per class. An id with no provider behind it is simply skipped. */
-  preference: { small: string[]; strong: string[] };
+  /**
+   * Provider ids, best first, per class. An id with no provider behind it is simply skipped.
+   *
+   * OPTIONAL since the class-aware round of 2026-09-10. Leave it out and **the order of `providers`
+   * IS the preference**, for both classes — which is the shape the PWA already speaks: it calls
+   * `setProviders([litert, webllm])` and means "in that order". In that mode the router does not
+   * throw a provider away for being the wrong class, it RANKS: the ones whose catalogue offers the
+   * asked class come first, in the caller's order, and the ones that do not follow behind them. So a
+   * setup where nothing offers `strong` still answers from the small brain, and a single-provider
+   * setup behaves exactly as it did before this field existed.
+   */
+  preference?: { small: string[]; strong: string[] };
   onSwitch?: (event: SwitchEvent) => void;
 }
 
@@ -62,13 +105,25 @@ function noBrain(cls: ModelClass, tried: string[]): ProviderError {
 
 export class ModelRouter {
   private readonly providers = new Map<string, ModelProvider>();
-  private readonly preference: { small: string[]; strong: string[] };
+  private readonly preference?: { small: string[]; strong: string[] };
   private readonly onSwitch?: (event: SwitchEvent) => void;
+  /** One catalogue read per provider per router. A router is built per run, so this stays fresh. */
+  private readonly classCache = new Map<string, Promise<Set<ModelClass>>>();
 
   constructor(options: ModelRouterOptions) {
     for (const provider of options.providers) this.providers.set(provider.id, provider);
     this.preference = options.preference;
     this.onSwitch = options.onSwitch;
+  }
+
+  /** What this provider can answer in, asked once. */
+  classesOf(provider: ModelProvider): Promise<Set<ModelClass>> {
+    let pending = this.classCache.get(provider.id);
+    if (!pending) {
+      pending = providerClasses(provider);
+      this.classCache.set(provider.id, pending);
+    }
+    return pending;
   }
 
   /**
@@ -85,14 +140,38 @@ export class ModelRouter {
     await Promise.all([...this.providers.values()].map(async (p) => p.unload?.().catch(() => undefined)));
   }
 
-  /** The providers named for a class, in order, that this router actually holds. */
+  /**
+   * The providers named for a class, in order, that this router actually holds.
+   *
+   * With no preference list the answer is every provider in the caller's order — the class ranking
+   * of `ordered()` needs a catalogue read and this stays synchronous, because it is what a caller
+   * asks to find out WHO is behind this router, not who will answer next.
+   */
   candidates(cls: ModelClass): ModelProvider[] {
+    if (!this.preference) return [...this.providers.values()];
     const out: ModelProvider[] = [];
     for (const id of this.preference[cls] ?? []) {
       const provider = this.providers.get(id);
       if (provider) out.push(provider);
     }
     return out;
+  }
+
+  /**
+   * The walk order for one class.
+   *
+   * An explicit preference list is TRUSTED as written: the caller already said which peers serve
+   * which class, and second-guessing that against a catalogue would make a deliberate list silently
+   * wrong. Without one, the caller's provider order is ranked by class — offers-it first, the rest
+   * behind — so nothing is ever removed and the fallback needs no separate branch.
+   */
+  private async ordered(cls: ModelClass): Promise<ModelProvider[]> {
+    const all = this.candidates(cls);
+    if (this.preference) return all;
+    const offers: ModelProvider[] = [];
+    const rest: ModelProvider[] = [];
+    for (const provider of all) ((await this.classesOf(provider)).has(cls) ? offers : rest).push(provider);
+    return [...offers, ...rest];
   }
 
   private emit(event: SwitchEvent): void {
@@ -105,7 +184,7 @@ export class ModelRouter {
   }
 
   /**
-   * The first ready provider for a class.
+   * The first ready provider for a class, in the walk order `ordered()` settled.
    *
    * Readiness is asked for one at a time rather than in parallel: the answers are cheap, and asking
    * the local model whether it is loaded is free while asking a sponsored device store is a read.
@@ -114,7 +193,7 @@ export class ModelRouter {
   async pick(cls: ModelClass): Promise<ModelProvider> {
     const tried: string[] = [];
     let previous: string | undefined;
-    for (const provider of this.candidates(cls)) {
+    for (const provider of await this.ordered(cls)) {
       const readiness = await provider.readiness().catch(() => ({ ready: false as const, reason: "offline" as const }));
       if (readiness.ready) {
         this.emit({ cls, from: previous, to: provider.id, reason: previous ? "readiness" : "initial" });
@@ -129,7 +208,7 @@ export class ModelRouter {
   async chat(req: ChatRequest, cls: ModelClass = "strong"): Promise<ChatResponse> {
     const tried: string[] = [];
     let previous: string | undefined;
-    for (const provider of this.candidates(cls)) {
+    for (const provider of await this.ordered(cls)) {
       const readiness = await provider.readiness().catch(() => ({ ready: false as const, reason: "offline" as const }));
       if (!readiness.ready) {
         tried.push(`${provider.id} (${readiness.reason})`);
@@ -158,7 +237,7 @@ export class ModelRouter {
   async *stream(req: ChatRequest, cls: ModelClass = "strong"): AsyncIterable<ChatChunk> {
     const tried: string[] = [];
     let previous: string | undefined;
-    for (const provider of this.candidates(cls)) {
+    for (const provider of await this.ordered(cls)) {
       const readiness = await provider.readiness().catch(() => ({ ready: false as const, reason: "offline" as const }));
       if (!readiness.ready) {
         tried.push(`${provider.id} (${readiness.reason})`);

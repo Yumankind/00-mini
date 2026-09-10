@@ -101,6 +101,9 @@ const EXPECTED = [
   // the router
   "ModelRouter",
   "localProviders",
+  // class-aware routing (§6, 2026-09-10)
+  "providerClasses",
+  "classActuallyUsed",
 ] as const;
 
 describe("the package's public API", () => {

@@ -36,6 +36,7 @@ import type {
   Tool,
   ToolContext,
 } from "./api.js";
+import { classifyCall } from "./brain-class.js";
 import { ContextManager, type ContextManagerOptions } from "./context.js";
 import { EventBus } from "./events.js";
 import { ModelRouter } from "./model-router.js";
@@ -199,9 +200,25 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
         if (signal.aborted) return finish("aborted");
         steps++;
 
-        const { provider, model } = await router.pick(run.model);
+        /**
+         * The class is derived PER CALL, not per run (§6, class-aware routing 2026-09-10). The two
+         * facts the rule needs that only the loop holds are here: `step` counts the calls of THIS
+         * run, and "did this follow a tool result" is read off the transcript rather than inferred
+         * from the step number, so a resumed session cannot fool it. `run.brain` forces.
+         */
+        const wanted =
+          run.brain && run.brain !== "auto"
+            ? run.brain
+            : classifyCall({
+                step: steps,
+                afterToolResult: messages[messages.length - 1]?.role === "tool",
+                toolNames,
+                promptChars: run.prompt.length,
+                trust: opts.trust,
+              });
+        const { provider, model, brainClass } = await router.pick(run.model, wanted);
         answeredBy = { providerId: provider.id, model };
-        emit({ type: "model_started", providerId: provider.id, model });
+        emit({ type: "model_started", providerId: provider.id, model, brainClass });
         let response: ChatResponse;
         try {
           response = await provider.chat({

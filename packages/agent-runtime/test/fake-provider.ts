@@ -9,6 +9,7 @@ import type {
   ChatChunk,
   ChatRequest,
   ChatResponse,
+  ModelClass,
   ModelInfo,
   ModelProvider,
   ToolCall,
@@ -28,12 +29,22 @@ export interface ScriptedTurn {
 
 export class FakeProvider implements ModelProvider {
   readonly requests: ChatRequest[] = [];
+  /** How often the catalogue was read — the class-aware picker is supposed to ask once per run. */
+  modelsCalls = 0;
   private index = 0;
 
   constructor(
     readonly id: string,
     private script: ScriptedTurn[] = [],
-    private readonly opts: { ready?: boolean; reason?: "download" | "credential" | "offline" | "unsupported" } = {},
+    private readonly opts: {
+      ready?: boolean;
+      reason?: "download" | "credential" | "offline" | "unsupported";
+      /** What class its catalogue offers; `strong` is the default a cloud brain has. */
+      classes?: ModelClass[];
+      /** An empty catalogue, the shape a BYOK provider built without one has. */
+      emptyCatalog?: boolean;
+      modelsThrows?: boolean;
+    } = {},
   ) {}
 
   /** Replace the script mid-test (a second run with different turns). */
@@ -44,7 +55,16 @@ export class FakeProvider implements ModelProvider {
   }
 
   async models(): Promise<ModelInfo[]> {
-    return [{ id: `${this.id}-model`, label: this.id, class: "strong", local: true, supportsTools: true }];
+    this.modelsCalls++;
+    if (this.opts.modelsThrows) throw new Error(`${this.id} cannot list its models`);
+    if (this.opts.emptyCatalog) return [];
+    return (this.opts.classes ?? ["strong"]).map((cls) => ({
+      id: `${this.id}-${cls}`,
+      label: `${this.id} ${cls}`,
+      class: cls,
+      local: true,
+      supportsTools: true,
+    }));
   }
 
   async readiness(): Promise<{ ready: true } | { ready: false; reason: "download" | "credential" | "offline" | "unsupported" }> {

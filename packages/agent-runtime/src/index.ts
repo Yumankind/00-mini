@@ -13,6 +13,7 @@ export type {
   ChatMessage,
   ChatRequest,
   ChatResponse,
+  ModelClass,
   ModelInfo,
   ModelProvider,
   Readiness,
@@ -34,6 +35,9 @@ export type { AgentEventListener, RecordedEvent } from "./events.js";
 
 export { ModelRouter } from "./model-router.js";
 export type { RoutedModel } from "./model-router.js";
+
+export { READ_ONLY_TOOL_NAMES, SHORT_PROMPT_CHARS, classifyCall, isReadOnlyTool } from "./brain-class.js";
+export type { BrainCallContext } from "./brain-class.js";
 
 export { PermissionManager, PERMISSIONS_PATH } from "./permissions.js";
 export type { PermissionOutcome, PermissionScope, PermissionSource, StoredAnswer } from "./permissions.js";

@@ -57,7 +57,9 @@ folder from its own origin and pass a `modelBaseUrl` (decision §12.7).
    shipped additively; see *Contract revision 2026-09-10* at the end of this file.
 5. Runtime divergences from the engine, all documented in-module: `grep`/`find` ignore no
    `.gitignore`; git tools have no engine twin (a Mac agent uses `bash`); no `git_push` by design;
-   the router's class-aware routing of §6 is not implemented (`auto` = first ready provider).
+   ~~the router's class-aware routing of §6 is not implemented (`auto` = first ready provider)~~
+   **DONE 2026-09-10** — `auto` now derives a class per model call and the picker honours it; the
+   rule is under §6.1 and the surface under *Contract revision 2026-09-10 (g)*.
 6. Argon2id at 64 MiB / t=3 makes an unlock cost a visible second or two on a laptop. Intended;
    the UI should say "unlocking…".
 7. The embed relies on `createAgentRuntime` spreading `opts.context` per turn so the site map stays
@@ -592,6 +594,20 @@ same invariant as containers.
 | 2 | Overblast workspace credits | Overblast sign-in; mints an `sk-obd` device token for *browser on <name>* | base `<worker>/ai/v1`; revocable per browser like a laptop; credits stream feeds the chip |
 | 3 | BYOK (OpenAI / Anthropic / OpenRouter / custom) | the key, sealed in the vault (§4.5) under password or passkey | travels only password-wrapped and only when the person ticks *carry my secrets*; otherwise re-entered on the far side |
 
+**The class per call (2026-09-10).** `auto` derives a class from the SHAPE of each model call, never
+from the words in the message: `small` for a tool-less short single-turn question and for the whole
+of a light-trust exchange whose tools only read, search or navigate; `strong` for the first call when
+tools are registered or the prompt runs past 280 characters, and for every call that follows a tool
+result (planning over observations). `classifyCall` in `packages/agent-runtime/src/brain-class.ts` is
+that rule and nothing else.
+
+**What the picker does with it.** It walks the providers in the caller's order — which is what
+`setProviders` means — skips the ones that are not ready, and takes the first ready one whose
+catalogue offers that class; when none does, it takes the first ready one anyway and reports the
+class actually used in `model_started.brainClass`. A class is a preference, never a cap: no strong
+brain means the small one answers, and `small` asked of a cloud-only setup uses the cloud. With one
+ready provider nothing changes at all. `RunOptions.brain: "small" | "strong"` forces the class.
+
 Price presentation rules from the credits work apply: final price only, never the markup.
 
 ### 6.2 Embedded agent
@@ -1067,6 +1083,25 @@ it — this is the caller's receipt, not the model's context.
 `api.ts` re-exports `Vault`, `VaultErrorCode`, `VaultFile`, `VaultOptions`, `VaultStore` (types only;
 `createVault` stays in `index.ts`). The PWA holds a vault for the life of a session and could not name
 its type without reaching past the contract.
+
+### (g) Class-aware routing — `RunOptions.brain`, `model_started.brainClass`, `ModelRouterOptions.preference`
+
+Finding 5's router item, shipped, additively. The rule itself is under §6.1; the surface is three
+optional fields:
+
+```ts
+RunOptions.brain?: "auto" | "small" | "strong"        // default "auto": a class PER MODEL CALL
+AgentEvent  { type: "model_started"; providerId; model?; brainClass?: ModelClass }  // the class USED
+ModelRouterOptions.preference?                        // now optional: absent = the provider order
+```
+
+`brainClass` is the class that ANSWERED, not the one that was asked for — a run that wanted `strong`
+where only the local brain is ready says `small`. `@00/agent-models` gained `providerClasses()` and
+`classActuallyUsed()`, one place where a catalogue is read for its class, including the rule that an
+EMPTY catalogue means `strong` (a BYOK provider built without rows, or Overblast before the mint call
+answers, is a cloud brain). `ModelRouter` without a `preference` ranks the caller's order by class
+rather than filtering it, so nothing is ever dropped for being the wrong class; a preference list
+that IS given stays trusted as written and no catalogue is read. The PWA needed no edit.
 
 ### The local brain picker (§12.7, §12.6), same day
 

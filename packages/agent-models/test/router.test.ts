@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { ProviderError } from "../src/errors.js";
 import { LiteRtProvider } from "../src/litert.js";
-import { localProviders, ModelRouter } from "../src/router.js";
-import type { SwitchEvent } from "../src/router.js";
+import { classActuallyUsed, localProviders, ModelRouter, providerClasses } from "../src/router.js";
+import type { ModelClass, SwitchEvent } from "../src/router.js";
 import type { ChatChunk, ChatRequest, ChatResponse, ModelInfo, ModelProvider } from "../src/types.js";
 import { WebLLMProvider } from "../src/webllm.js";
 import { collect } from "./helpers.js";
@@ -17,16 +17,30 @@ interface FakeOptions {
   chunks?: ChatChunk[];
   /** Emits one chunk, then fails — the case a stream may NOT fall through on. */
   failAfterChunk?: () => never;
+  /** What its catalogue offers. Absent means an EMPTY catalogue, which reads as `strong`. */
+  classes?: ModelClass[];
+  /** A `models()` that throws — also `strong`, since a catalogue read is not a second door. */
+  modelsThrows?: boolean;
 }
 
-function fake(options: FakeOptions): ModelProvider & { seen: ChatRequest[] } {
+function fake(options: FakeOptions): ModelProvider & { seen: ChatRequest[]; modelsCalls: () => number } {
   const seen: ChatRequest[] = [];
+  let modelsCalls = 0;
   const response = (): ChatResponse => ({ message: { role: "assistant", content: options.answer ?? options.id }, finishReason: "stop" });
   return {
     id: options.id,
     seen,
+    modelsCalls: () => modelsCalls,
     async models(): Promise<ModelInfo[]> {
-      return [];
+      modelsCalls++;
+      if (options.modelsThrows) throw new Error(`${options.id} cannot list its models`);
+      return (options.classes ?? []).map((cls) => ({
+        id: `${options.id}-${cls}`,
+        label: options.id,
+        class: cls,
+        local: false,
+        supportsTools: true,
+      }));
     },
     async readiness() {
       const r = options.readiness ?? { ready: true as const };
@@ -383,5 +397,126 @@ describe("unloadAll (contract revision 2026-09-10)", () => {
     });
     await expect(router.unloadAll()).resolves.toBeUndefined();
     expect(unloaded).toEqual(["calm"]);
+  });
+});
+
+// ── Class-aware routing (§6, 2026-09-10) ────────────────────────────────────────────────────────
+
+describe("providerClasses", () => {
+  it("answers with the classes the catalogue's rows carry", async () => {
+    expect([...(await providerClasses(fake({ id: "a", classes: ["small"] })))]).toEqual(["small"]);
+    expect([...(await providerClasses(fake({ id: "b", classes: ["strong", "small"] })))].sort()).toEqual(["small", "strong"]);
+  });
+
+  it("reads an EMPTY catalogue as strong — that is what a cloud brain with no rows is", async () => {
+    expect([...(await providerClasses(fake({ id: "byok:openai" })))]).toEqual(["strong"]);
+  });
+
+  it("reads a `models()` that throws as strong rather than dropping the provider", async () => {
+    expect([...(await providerClasses(fake({ id: "overblast", modelsThrows: true })))]).toEqual(["strong"]);
+  });
+});
+
+describe("classActuallyUsed", () => {
+  const both = new Set<ModelClass>(["small", "strong"]);
+  it("is the asked class when the provider offers it", () => {
+    expect(classActuallyUsed(both, "small")).toBe("small");
+    expect(classActuallyUsed(both, "strong")).toBe("strong");
+    expect(classActuallyUsed(new Set<ModelClass>(["small"]), "small")).toBe("small");
+  });
+
+  it("is the class the provider does offer when it does not offer the asked one", () => {
+    expect(classActuallyUsed(new Set<ModelClass>(["small"]), "strong")).toBe("small");
+    expect(classActuallyUsed(new Set<ModelClass>(["strong"]), "small")).toBe("strong");
+  });
+
+  it("falls back to the asked class when the provider offers nothing at all", () => {
+    expect(classActuallyUsed(new Set<ModelClass>(), "small")).toBe("small");
+  });
+});
+
+describe("no preference list: the provider order IS the preference", () => {
+  it("ranks the providers that offer the class first, keeping the caller's order", async () => {
+    const cloud = fake({ id: "overblast", classes: ["strong"] });
+    const local = fake({ id: "local-litert", classes: ["small"] });
+    const router = new ModelRouter({ providers: [cloud, local] });
+    expect((await router.pick("small")).id).toBe("local-litert");
+    expect((await router.pick("strong")).id).toBe("overblast");
+  });
+
+  it("ranks rather than filters, so the wrong class still answers when nothing else can", async () => {
+    const local = fake({ id: "local-litert", classes: ["small"] });
+    const router = new ModelRouter({ providers: [local] });
+    expect((await router.pick("strong")).id).toBe("local-litert");
+    expect((await router.chat({ messages: [] }, "strong")).message.content).toBe("local-litert");
+  });
+
+  it("keeps the caller's order among equals, both ways round", async () => {
+    const a = fake({ id: "local-litert", classes: ["small"] });
+    const b = fake({ id: "local", classes: ["small"] });
+    expect((await new ModelRouter({ providers: [a, b] }).pick("small")).id).toBe("local-litert");
+    expect((await new ModelRouter({ providers: [b, a] }).pick("small")).id).toBe("local");
+  });
+
+  it("still skips a provider that is not ready, whatever class it offers", async () => {
+    const sleeping = fake({ id: "local-litert", classes: ["small"], readiness: { ready: false, reason: "download" } });
+    const awake = fake({ id: "local", classes: ["small"] });
+    expect((await new ModelRouter({ providers: [sleeping, awake] }).pick("small")).id).toBe("local");
+  });
+
+  it("reads each catalogue once, however many picks a router serves", async () => {
+    const cloud = fake({ id: "overblast", classes: ["strong"] });
+    const local = fake({ id: "local-litert", classes: ["small"] });
+    const router = new ModelRouter({ providers: [cloud, local] });
+    await router.pick("small");
+    await router.pick("strong");
+    await router.pick("small");
+    expect(cloud.modelsCalls()).toBe(1);
+    expect(local.modelsCalls()).toBe(1);
+  });
+
+  it("`candidates` answers with everyone, in the caller's order — it says who is behind the door", () => {
+    const cloud = fake({ id: "overblast", classes: ["strong"] });
+    const local = fake({ id: "local-litert", classes: ["small"] });
+    const router = new ModelRouter({ providers: [cloud, local] });
+    expect(router.candidates("small").map((p) => p.id)).toEqual(["overblast", "local-litert"]);
+    expect(router.candidates("strong").map((p) => p.id)).toEqual(["overblast", "local-litert"]);
+  });
+
+  it("streams from the class it was asked for", async () => {
+    const cloud = fake({ id: "overblast", classes: ["strong"], answer: "cloud" });
+    const local = fake({ id: "local-litert", classes: ["small"], answer: "local" });
+    const router = new ModelRouter({ providers: [cloud, local] });
+    const chunks = await collect(router.stream({ messages: [] }, "small"));
+    expect(chunks[0]).toEqual({ type: "text", delta: "local" });
+  });
+
+  it("behaves exactly as before with ONE provider, whatever class is asked", async () => {
+    const only = fake({ id: "local-litert", classes: ["small"] });
+    const router = new ModelRouter({ providers: [only] });
+    expect((await router.pick("small")).id).toBe("local-litert");
+    expect((await router.pick("strong")).id).toBe("local-litert");
+    expect((await router.chat({ messages: [] })).message.content).toBe("local-litert");
+  });
+});
+
+describe("an explicit preference list is trusted as written", () => {
+  it("does not re-rank a named list against the catalogues", async () => {
+    // `overblast` is a STRONG brain and the caller nonetheless named it first for small work — a
+    // deliberate list stays deliberate, or naming one stops meaning anything.
+    const cloud = fake({ id: "overblast", classes: ["strong"] });
+    const local = fake({ id: "local-litert", classes: ["small"] });
+    const router = new ModelRouter({
+      providers: [cloud, local],
+      preference: { small: ["overblast", "local-litert"], strong: ["overblast"] },
+    });
+    expect((await router.pick("small")).id).toBe("overblast");
+  });
+
+  it("does not read a catalogue at all when it was given a list", async () => {
+    const cloud = fake({ id: "overblast", classes: ["strong"] });
+    const router = new ModelRouter({ providers: [cloud], preference: { small: ["overblast"], strong: ["overblast"] } });
+    await router.pick("small");
+    expect(cloud.modelsCalls()).toBe(0);
   });
 });

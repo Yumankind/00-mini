@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { AnthropicProvider } from "../src/anthropic.js";
+import { LITERT_CATALOG } from "../src/litert.js";
 import { BYOK_BASE_URLS, byokProvider, overblastProvider } from "../src/providers.js";
+import { providerClasses } from "../src/router.js";
+import { WEBLLM_CATALOG } from "../src/webllm.js";
 import type { ModelInfo } from "../src/types.js";
 import { jsonResponse, recordingFetch } from "./helpers.js";
 
@@ -92,5 +95,30 @@ describe("byokProvider", () => {
   it("ships no catalog of its own — the vocabulary is configuration, not code", async () => {
     const provider = byokProvider({ vendor: "openai", apiKey: "k" });
     await expect(provider.models()).resolves.toEqual([]);
+  });
+});
+
+describe("what class the cloud factories answer in (§6, 2026-09-10)", () => {
+  it("carries the class of every catalogue row it was given", async () => {
+    const provider = overblastProvider({ baseUrl: "https://worker.example/ai/v1", catalog: CATALOG });
+    expect((await provider.models()).map((m) => m.class)).toEqual(["strong", "small"]);
+    expect([...(await providerClasses(provider))].sort()).toEqual(["small", "strong"]);
+  });
+
+  it("is STRONG when the caller passed no catalogue at all — a cloud brain is the strong one", async () => {
+    for (const provider of [
+      byokProvider({ vendor: "openai", apiKey: "sk-test" }),
+      byokProvider({ vendor: "anthropic", apiKey: "sk-ant-test" }),
+      byokProvider({ vendor: "openrouter", apiKey: "sk-or-test" }),
+      overblastProvider({ baseUrl: "https://worker.example/ai/v1", catalog: [] }),
+    ]) {
+      expect(await provider.models()).toEqual([]);
+      expect([...(await providerClasses(provider))]).toEqual(["strong"]);
+    }
+  });
+
+  it("leaves the local catalogues where they already were: LiteRT and WebLLM label every row", async () => {
+    for (const row of [...LITERT_CATALOG, ...WEBLLM_CATALOG]) expect(["small", "strong"]).toContain(row.class);
+    expect(WEBLLM_CATALOG.every((r) => r.class === "small")).toBe(true);
   });
 });
