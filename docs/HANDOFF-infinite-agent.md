@@ -26,15 +26,24 @@ them all. What exists:
 | The PWA (simple shell) | `apps/infinite/src` | live: OPFS scaffold, brain cards with real readiness, vault create/unlock gate, 375 px layout |
 | The embed at level 0 + `apps/infinite-site` | `apps/infinite/embed` | live on a fake shop: depth-2 crawl via sitemap, `/logout` guarded, links-out recorded, "where is the basket" outlined the button, closed shadow root; `e.js` 32 KB gz |
 
-**What Phase 0's proof still lacks:** the browser → Mac → browser round trip through the running
-engine. Each side is proven against the format independently (tar CLI + node:crypto); a test that
-exports with `@00/agent-fs` and imports through the engine door needs `apps/00d` to depend on the
-package, which is a deliberate install — do it in the next round.
+**Phase 0's proof is closed (later the same day):** `apps/00d/test/bundle-roundtrip.test.ts`
+scaffolds with `@00/agent-fs`, exports as the browser does, imports through the engine's JSON door
+(`{ path, secret }` inside `<dataRoot>/imports/`), exports through
+`POST /api/agents/:id/export-bundle`, imports that with the browser's reader, and compares every
+travelled byte both ways. The Mac app opens `.00agent` as a document type and answers the two
+`zerozero://agent/…` links (§7.2); the web UI carries the import prompt and the "move to a browser"
+card. Live on a real Mac (double-click → prompt → agent) is still a manual check to run.
+
+**Local brains (later the same day):** the installed MediaPipe package names the **Gemma 4 E2B and
+E4B web assets**, so LiteRT covers Gemma 4 and no third runtime is needed; `LiteRtProvider` is
+preferred, WebLLM is the fallback. MediaPipe 0.10.29 exposes **no function calling** either, so
+every local brain uses the shared prompt fallback for tools. The PWA must serve MediaPipe's `wasm/`
+folder from its own origin and pass a `modelBaseUrl` (decision §12.7).
 
 **Findings the builders reported, to act on (not yet in the contracts):**
-1. No web-llm small model has native function calling (only 7B–8B Hermes builds do): every level-0
-   tool call goes through the marked prompt fallback. Treat local tool use as best-effort; a
-   twin-guard test flags the day a small model joins the list.
+1. No local runtime has native function calling today (web-llm: only 7B–8B Hermes builds;
+   MediaPipe 0.10.29: none at all): every level-0 tool call goes through the shared prompt
+   fallback. Treat local tool use as best-effort; twin-guard tests flag the day either changes.
 2. The sponsor footer's wire shape is inferred from `attribution.ts` (text after `— sponsored by `),
    not observed; the CORS-exposed `Sponsored-By` headers may be the better source. Capture live
    traffic once `APPS_ENABLED` is on and decide.
