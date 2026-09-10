@@ -17,7 +17,9 @@ import { askForReceive, forgetMoveReceipt, moveReceipt, twoLiveCopies } from "..
 import { receiptLine } from "../lib/move.js";
 
 // The Move flow is a pane of its own (App.vue owns the switch); this pane is one of its two doors.
-defineEmits<{ (e: "move"): void }>();
+// `website` is §5's door, and a pane for the same reason Move is one: the snippet, the claim and the
+// owner's controls are a trip, not a card.
+defineEmits<{ (e: "move"): void; (e: "website"): void }>();
 </script>
 
 <template>
@@ -71,6 +73,24 @@ defineEmits<{ (e: "move"): void }>();
           >
             <TablerIcon name="download" :size="13" />
             Receive an agent
+          </button>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Your website</h2>
+        <div class="panel px-3 py-3 space-y-2">
+          <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+            One line of HTML puts your agent on your site as a guide for visitors — no account, and
+            nothing of ours running until you ask for it.
+          </p>
+          <button
+            type="button"
+            class="ia-btn w-full h-8 text-[11px] flex items-center justify-center gap-1.5"
+            @click="$emit('website')"
+          >
+            <TablerIcon name="world" :size="13" />
+            Add to my website
           </button>
         </div>
       </section>

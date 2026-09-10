@@ -75,3 +75,7 @@ export const CREDENTIAL_KEY = "vaultCredentialId";
 export const MOVE_RECEIPT_KEY = "moveReceipt";
 /** The mirror's model catalogue, with the stamp its five-minute freshness is measured from (§12.7). */
 export const LITERT_CATALOG_KEY = "litertCatalog";
+/** §5.1's public ref, minted offline and never minted twice — it is in the page source of every site. */
+export const REGISTRY_REF_KEY = "agentRef";
+/** What a site's registration turned that ref into: the app id, its status, its origin (§5.3–5.4). */
+export const REGISTRY_APP_KEY = "registryApp";

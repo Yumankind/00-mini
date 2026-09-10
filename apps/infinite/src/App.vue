@@ -13,6 +13,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import ApprovalsModal from "./components/ApprovalsModal.vue";
 import BootScreen from "./components/BootScreen.vue";
+import ClaimPane from "./components/ClaimPane.vue";
 import ConnectionsPane from "./components/ConnectionsPane.vue";
 import ConversationPane from "./components/ConversationPane.vue";
 import FilesPane from "./components/FilesPane.vue";
@@ -23,6 +24,7 @@ import OfflineBanner from "./components/OfflineBanner.vue";
 import SessionsList from "./components/SessionsList.vue";
 import TablerIcon from "./components/TablerIcon.vue";
 import VaultGate from "./components/VaultGate.vue";
+import WebsitePanel from "./components/WebsitePanel.vue";
 import { agent, boot, profile, ready } from "./state/agent.js";
 import { refuseAll } from "./state/approvals.js";
 import { listen } from "./state/conversation.js";
@@ -30,13 +32,19 @@ import { refreshFiles } from "./state/files.js";
 import { nextTheme, startInstallWatch, startTheme, applyTheme, themeChoice } from "./state/install.js";
 import { loadMoveReceipt, movedAway } from "./state/move.js";
 import { startOffline } from "./state/offline.js";
+import { claimRequestFromQuery, type ClaimRequest } from "./state/registry.js";
 import { lockNow, needsUnlock, refreshVault, startVaultClock, touchVault, vaultState } from "./state/vault.js";
 
 // `move` is a destination, not a tab: it is reached from the header menu and from Connections, and a
 // fourth icon in a bottom bar sized for a thumb would cost more than it is worth (§7 is a rare trip).
-type Pane = "chat" | "files" | "settings" | "move";
+type Pane = "chat" | "files" | "settings" | "move" | "website";
 
 const pane = ref<Pane>("chat");
+/**
+ * §5.4's one-time link: `/?claim=<appId>&nonce=…&origin=…`, opened by the admin flow ON THE SITE.
+ * It takes the screen ahead of every pane, because it is a grant and not a destination.
+ */
+const claimRequest = ref<ClaimRequest | null>(null);
 const drawer = ref(false);
 const menu = ref(false);
 const teardown: (() => void)[] = [];
@@ -53,6 +61,15 @@ const themeIcon = computed(() =>
 
 onMounted(async () => {
   startTheme();
+  claimRequest.value = claimRequestFromQuery(location.search);
+  if (claimRequest.value) {
+    // STRIPPED ONCE READ, the way the Mac web UI strips `installModel` and `import-bundle`: a claim
+    // nonce is single-use, so a query that survived its own answer would re-open the pane on the
+    // next reload and show a refusal for a claim that had already worked.
+    const clean = new URL(window.location.href);
+    for (const key of ["claim", "nonce", "origin"]) clean.searchParams.delete(key);
+    window.history.replaceState(window.history.state, "", clean);
+  }
   teardown.push(startOffline(), startInstallWatch(), startVaultClock());
   // Before the agent, because a moved-away agent must never flash its shell on the way to its receipt.
   await loadMoveReceipt();
@@ -186,10 +203,17 @@ watch(pane, (next) => {
         </div>
 
         <main class="flex-1 min-w-0 min-h-0">
-          <ConversationPane v-if="pane === 'chat'" />
+          <ClaimPane
+            v-if="claimRequest"
+            :request="claimRequest"
+            @done="claimRequest = null; pane = 'website'"
+            @cancel="claimRequest = null"
+          />
+          <ConversationPane v-else-if="pane === 'chat'" />
           <FilesPane v-else-if="pane === 'files'" />
           <MovePanel v-else-if="pane === 'move'" @close="pane = 'settings'" />
-          <ConnectionsPane v-else @move="pane = 'move'" />
+          <WebsitePanel v-else-if="pane === 'website'" @close="pane = 'settings'" />
+          <ConnectionsPane v-else @move="pane = 'move'" @website="pane = 'website'" />
         </main>
       </div>
 
