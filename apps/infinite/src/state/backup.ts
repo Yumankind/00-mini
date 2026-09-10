@@ -11,6 +11,7 @@
  */
 import { computed, ref } from "vue";
 import { backupFilename, passphraseMismatch, passphraseProblem } from "../lib/backup.js";
+import { arrivedLine, carriedLine } from "../lib/vault-policy.js";
 import { agent, forgetAgent } from "./agent.js";
 import { releaseAfterRestore } from "./move.js";
 
@@ -26,14 +27,20 @@ export function validateNewPassphrase(a: string, b: string): string | null {
   return passphraseProblem(a) ?? passphraseMismatch(a, b);
 }
 
-export async function exportBackup(passphrase: string, at = new Date()): Promise<boolean> {
+/**
+ * §4.5's tick, threaded through (gap audit A2). `carrySecrets` is a REQUIRED-BY-DEFAULT false rather
+ * than an option object here because there is exactly one choice and the caller is one screen; the
+ * bundle door beneath it (`OwnedAgent.exportBundleFile`) takes the object, where the next choice
+ * will go.
+ */
+export async function exportBackup(passphrase: string, carrySecrets = false, at = new Date()): Promise<boolean> {
   const owned = agent.value;
   if (!owned) return false;
   busy.value = true;
   error.value = null;
   note.value = null;
   try {
-    const blob = await owned.exportBundleFile(passphrase);
+    const blob = await owned.exportBundleFile(passphrase, { carrySecrets });
     const name = backupFilename(owned.profile, at);
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -41,7 +48,7 @@ export async function exportBackup(passphrase: string, at = new Date()): Promise
     link.download = name;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 0);
-    note.value = `Saved ${name}. Without that passphrase the file is noise — keep it somewhere else.`;
+    note.value = `Saved ${name}. Without that passphrase the file is noise — keep it somewhere else. ${carriedLine(carrySecrets)}`;
     return true;
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
@@ -63,12 +70,12 @@ export async function importBackup(file: File, passphrase: string): Promise<stri
   error.value = null;
   note.value = null;
   try {
-    const { agentId } = await owned.importBundleFile(file, passphrase);
+    const { agentId, vaultTravelled } = await owned.importBundleFile(file, passphrase);
     // §7: a restore is how a moved agent comes home, so it is also what takes the lock off the
     // receipt. Released BEFORE the reload the caller does, or the shell would paint the receipt over
     // the agent that has just arrived.
     await releaseAfterRestore();
-    note.value = `Restored ${agentId}. Reopening…`;
+    note.value = `Restored ${agentId}. ${arrivedLine(vaultTravelled)} Reopening…`;
     forgetAgent();
     return agentId;
   } catch (err) {

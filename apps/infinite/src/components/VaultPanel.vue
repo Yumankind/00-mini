@@ -8,6 +8,7 @@
  * are standing in front of a download.
  */
 import TablerIcon from "./TablerIcon.vue";
+import { exportDefaultLine } from "../lib/vault-policy.js";
 import { agent } from "../state/agent.js";
 import {
   createVaultWith,
@@ -55,6 +56,11 @@ const showCreate = ref(false);
 
       <p v-if="vaultIdleLine" class="text-[11px] text-[var(--color-amber)]">{{ vaultIdleLine }}</p>
       <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">{{ vaultTravelNote }}</p>
+      <!-- The DEFAULT, said here because this is where a person decides how to seal a vault and not
+           only when they are standing in front of a download (§4.5, gap audit A2). -->
+      <p v-if="vaultState.exists" class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+        {{ exportDefaultLine() }}
+      </p>
 
       <div v-if="secretNames.length" class="space-y-1">
         <div

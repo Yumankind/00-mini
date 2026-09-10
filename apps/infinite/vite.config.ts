@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync, cpSync, readdirSync } from "no
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, transformWithEsbuild, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -17,7 +17,40 @@ import tailwindcss from "@tailwindcss/vite";
  * page after a deploy. So the build substitutes them: this plugin reads the emitted bundle, writes the
  * real file list and a build id into the copy that lands in `dist/`, and leaves the source alone. The
  * build id is what makes an update actually replace the old cache instead of joining it.
+ *
+ * IT ALSO INLINES ONE MODULE. A service worker has no module graph a node test can import, so the two
+ * decisions a push actually makes live in `src/lib/push-notification.ts` and are tested there; this
+ * plugin transpiles that file (esbuild, types stripped, `export` keywords removed) and drops it in at
+ * the `//__PUSH_LIB__` marker. Inlining rather than `importScripts` because the worker must keep
+ * working offline from cache with no second request, and rather than a duplicated copy in sw.js
+ * because two copies of a rule are one copy of a rule and one bug. Missing marker or missing function
+ * = the build FAILS: a shipped worker whose push handler references an undefined name shows nothing,
+ * and a browser revokes a subscription that shows nothing (§4.6, gap audit B15).
  */
+/** The names sw.js calls; each must survive the transpile or the worker is silently broken.
+ *  Exported with `inlinePushLib` so test/push-notification.test.ts can run the REAL substitution and
+ *  then run the REAL handlers — the alternative was a second copy of this logic in a test, which is
+ *  the one thing that could pass while the build shipped something else. */
+const PUSH_LIB_EXPORTS = ["notificationFor", "clickTarget", "clientToFocus"] as const;
+const PUSH_LIB_MARKER = "//__PUSH_LIB__";
+
+export async function inlinePushLib(source: string, moduleFile: string): Promise<string> {
+  if (!source.includes(PUSH_LIB_MARKER)) {
+    throw new Error(`public/sw.js has no ${PUSH_LIB_MARKER} marker — the push handlers would ship undefined`);
+  }
+  const ts = readFileSync(moduleFile, "utf8");
+  const { code } = await transformWithEsbuild(ts, moduleFile, { loader: "ts", format: "esm", target: "es2022" });
+  // A worker is a classic script here (`register("/sw.js")` with no `type: "module"`), so the module's
+  // `export` keywords have to go; the declarations they were attached to stay exactly as they are.
+  const inlined = code.replace(/^export\s*\{[^}]*\};?$/gm, "").replace(/^export\s+/gm, "");
+  for (const name of PUSH_LIB_EXPORTS) {
+    if (!new RegExp(`function ${name}\\b`).test(inlined)) {
+      throw new Error(`src/lib/push-notification.ts no longer defines ${name}(), which public/sw.js calls`);
+    }
+  }
+  return source.replace(PUSH_LIB_MARKER, inlined);
+}
+
 function serviceWorkerPrecache(): Plugin {
   const assets: string[] = [];
   let outDir = "dist";
@@ -40,7 +73,7 @@ function serviceWorkerPrecache(): Plugin {
         if (isEntryChunk || isStylesheet) assets.push(`/${file}`);
       }
     },
-    closeBundle() {
+    async closeBundle() {
       const src = resolve(root, "public/sw.js");
       const dest = resolve(root, outDir, "sw.js");
       if (!existsSync(src)) return;
@@ -55,7 +88,7 @@ function serviceWorkerPrecache(): Plugin {
       const out = readFileSync(src, "utf8")
         .replace('"__PRECACHE__"', JSON.stringify(precache, null, 2))
         .replace('"__BUILD_ID__"', JSON.stringify(buildId));
-      writeFileSync(dest, out);
+      writeFileSync(dest, await inlinePushLib(out, resolve(root, "src/lib/push-notification.ts")));
     },
   };
 }

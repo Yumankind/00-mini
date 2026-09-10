@@ -1,3 +1,9 @@
+// isomorphic-git's browser build reads a global `Buffer` (122 references) that browsers do not have.
+// The shim is installed once, first thing, before any module can touch git; the power shell's
+// `gitUsable()` checks for exactly this global and refuses by name when it is absent.
+import { Buffer } from "buffer";
+if (!(globalThis as { Buffer?: unknown }).Buffer) (globalThis as { Buffer?: unknown }).Buffer = Buffer;
+
 /**
  * The owned agent PWA — docs/HANDOFF-infinite-agent.md §4.
  *

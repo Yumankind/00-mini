@@ -12,8 +12,13 @@
  * those names are the whole reason a person can be told what to go and fix. A transport that threw
  * would flatten all of them into "network error", so an unreachable relay is `{ ok: false, status: 0 }`
  * and the caller decides.
+ *
+ * A BUILD WITH NO RELAY IS ONE OF THOSE NAMES. `relayConfigured()` is false when this build has no
+ * usable origin, and then nothing is fetched at all: a request against `""` would go to the PWA's own
+ * host, 404, and read exactly like a sleeping Mac. `relay_not_configured` is the honest answer and it
+ * is the one the card turns into "not connected yet" (gap audit A1).
  */
-import { relayOrigin } from "./config.js";
+import { RELAY_NOT_CONFIGURED, RELAY_NOT_CONFIGURED_LINE, relayOrigin } from "./config.js";
 
 export interface RelayResponse {
   ok: boolean;
@@ -40,6 +45,9 @@ export function createRelay(opts: RelayOptions): Relay {
   const origin = opts.origin ?? relayOrigin();
   const doFetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
   return async (method, path, body) => {
+    if (!origin) {
+      return { ok: false, status: 0, json: { error: RELAY_NOT_CONFIGURED_LINE, code: RELAY_NOT_CONFIGURED } };
+    }
     const token = opts.token();
     if (!token) {
       return { ok: false, status: 401, json: { error: "No account credential for the relay.", code: "unauthorized" } };

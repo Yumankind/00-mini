@@ -121,7 +121,9 @@ describe("moving live, as state", () => {
 
     expect(ok).toBe(true);
     expect(landed).toBe(true);
-    expect(fakeAgent.exportBundleFile).toHaveBeenCalledWith(keys.secret);
+    // The second argument is §4.5's tick (gap audit A2): the live road passes it too, and `false` is
+    // what an untouched panel means — see test/vault-travel.test.ts for the rest of that rule.
+    expect(fakeAgent.exportBundleFile).toHaveBeenCalledWith(keys.secret, { carrySecrets: false });
     expect(moveReceipt.value).toMatchObject({
       agentId: "ag_1",
       displayName: "Zero",

@@ -9,6 +9,7 @@
 import { computed, ref } from "vue";
 import {
   IDLE_LOCK_MS,
+  carryOffer,
   emptyVaultState,
   idleLine,
   kindLabel,
@@ -35,6 +36,14 @@ export const vaultKindLabel = computed(() => kindLabel(state.value.kind));
 export const vaultUnlockPrompt = computed(() => unlockPrompt(state.value.kind));
 export const vaultTravelNote = computed(() => travelNote(state.value.kind));
 export const vaultIdleLine = computed(() => idleLine(state.value, now.value));
+/**
+ * Whether an export may offer *carry my secrets*, and why not when it may not (§4.5, gap audit A2).
+ *
+ * It lives here rather than in the two export stores because it is a property of the VAULT — the two
+ * screens that ask the question must not be able to answer it differently, and a passkey vault has to
+ * show the same one-line reason in Backup and in Move.
+ */
+export const vaultCarryOffer = computed(() => carryOffer(state.value.kind, names.value.length));
 /** The shell blocks on this: a vault that exists is asked for on every entry (§4.5). */
 export const needsUnlock = computed(() => state.value.exists && !state.value.unlocked);
 

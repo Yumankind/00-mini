@@ -10,6 +10,14 @@
  *
  * PRECACHE and BUILD_ID are substituted at build time by the plugin in vite.config.ts, which knows
  * the hashed asset names. In the source they are the placeholders below, so this file stays readable.
+ *
+ * SO IS `__PUSH_LIB__`: the two pure decisions a push makes (a payload becomes a notification; a click
+ * becomes a url) live in `src/lib/push-notification.ts`, where a node test can reach them, and the
+ * same plugin transpiles that module and inlines it at the marker below. THIS FILE IS NEVER RUN AS
+ * IT STANDS — `main.ts` registers `/sw.js` only in a production build, and the copy served there is
+ * the substituted one in `dist/`. The build fails loudly if the marker or either function goes
+ * missing, because a service worker that takes a push and shows nothing gets its subscription REVOKED
+ * by the browser (§4.6, gap audit B15).
  */
 
 const BUILD_ID = "__BUILD_ID__";
@@ -89,6 +97,53 @@ self.addEventListener("fetch", (event) => {
         void cache.put(request, fresh.clone());
       }
       return fresh;
+    })(),
+  );
+});
+
+// ── Notifications (§4.6, §5.7) ──────────────────────────────────────────────────────────────────
+//
+// The payload the sender writes is `{ kind, appId, count, title, body, url }`, sealed under this
+// browser's own subscription keys (moltworker `worker/src/infinite/push-send.ts`). Both handlers here
+// are plumbing only; every judgement they make comes from the inlined module.
+
+//__PUSH_LIB__
+
+self.addEventListener("push", (event) => {
+  // `event.data` is null for an empty push, and `text()` can throw on a payload that failed to
+  // decrypt. Either way something MUST be shown: `userVisibleOnly: true` was a promise, and a browser
+  // that catches us breaking it drops the subscription.
+  let raw = "";
+  try {
+    raw = event.data ? event.data.text() : "";
+  } catch (err) {
+    console.warn("[sw] push payload unreadable", err);
+  }
+  const plan = notificationFor(raw);
+  event.waitUntil(self.registration.showNotification(plan.title, plan.options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = clickTarget(event.notification.data, self.location.origin);
+  event.waitUntil(
+    (async () => {
+      // `includeUncontrolled` matters on the first load after an update: a page controlled by the
+      // PREVIOUS worker is still the person's open tab, and opening a second one on top of it is the
+      // behaviour everyone complains about.
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const index = clientToFocus(windows.map((c) => c.url), target);
+      if (index < 0) {
+        await self.clients.openWindow(target);
+        return;
+      }
+      const client = windows[index];
+      await client.focus();
+      // Same origin, different page: the shell routes client-side, so navigating an already-open tab
+      // is what "focus an open client" means for a single-page app.
+      if (client.url !== target && typeof client.navigate === "function") {
+        await client.navigate(target).catch(() => undefined);
+      }
     })(),
   );
 });

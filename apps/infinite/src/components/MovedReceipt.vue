@@ -12,6 +12,7 @@
 import { computed, ref } from "vue";
 import TablerIcon from "./TablerIcon.vue";
 import { receiptLine } from "../lib/move.js";
+import { carriedLine } from "../lib/vault-policy.js";
 import { isBundleFilename } from "../lib/backup.js";
 import { backupBusy, backupError, importBackup } from "../state/backup.js";
 import {
@@ -42,6 +43,14 @@ const line = computed(() =>
       : receiptLine(receipt.value),
 );
 const looksWrong = computed(() => chosen.value !== null && !isBundleFilename(chosen.value.name));
+/**
+ * What the move did with the vault (§4.5, gap audit A2). Undefined on a receipt written before the
+ * tick existed, and then nothing is said — inventing "your secrets stayed here" for a bundle that may
+ * well have carried them is the one answer worse than silence.
+ */
+const secretsLine = computed(() =>
+  receipt.value?.carried === undefined ? null : carriedLine(receipt.value.carried),
+);
 
 function pickFile(event: Event): void {
   chosen.value = (event.target as HTMLInputElement).files?.[0] ?? null;
@@ -76,6 +85,9 @@ async function doRestore(): Promise<void> {
         <div v-if="receipt?.fileName" class="text-[11px] font-mono text-[var(--color-ink-dim)] break-all">
           <span v-if="wentLive">it travelled as </span>{{ receipt.fileName }}
         </div>
+        <p v-if="secretsLine" class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed max-w-sm">
+          {{ secretsLine }}
+        </p>
       </div>
 
       <section class="panel px-3 py-3 space-y-2">

@@ -20,8 +20,16 @@ import {
   importBackup,
   validateNewPassphrase,
 } from "../state/backup.js";
+import { vaultCarryOffer } from "../state/vault.js";
 
 const pass = ref("");
+/**
+ * §4.5's tick (gap audit A2). It is OFF on every visit and never remembered: a backup is taken
+ * repeatedly, often onto a machine that is not the person's, and a remembered "yes" is exactly how a
+ * vault ends up in a file nobody meant to carry. `vaultCarryOffer` decides whether it is shown at all
+ * — a passkey vault gets the reason instead, because there is nothing this screen could do for it.
+ */
+const carry = ref(false);
 const again = ref("");
 const restorePass = ref("");
 const chosen = ref<File | null>(null);
@@ -39,9 +47,10 @@ function pickFile(event: Event): void {
 
 async function doExport(): Promise<void> {
   if (problem.value) return;
-  if (await exportBackup(pass.value)) {
+  if (await exportBackup(pass.value, carry.value && vaultCarryOffer.value.offered)) {
     pass.value = "";
     again.value = "";
+    carry.value = false;
   }
 }
 
@@ -87,6 +96,18 @@ async function doRestore(): Promise<void> {
         <input v-model="pass" type="password" class="ia-input text-[12px]" placeholder="Passphrase" />
         <input v-model="again" type="password" class="ia-input text-[12px]" placeholder="Again" />
         <p v-if="problem" class="text-[11px] text-[var(--color-amber)]">{{ problem }}</p>
+        <label v-if="vaultCarryOffer.offered" class="flex items-start gap-2 text-[11px] leading-relaxed">
+          <input v-model="carry" type="checkbox" class="mt-0.5 shrink-0" />
+          <span>
+            {{ vaultCarryOffer.label }}
+            <span class="block text-[10px] text-[var(--color-ink-dim)]">
+              Off by default: your sealed keys stay in this browser unless you say otherwise.
+            </span>
+          </span>
+        </label>
+        <p v-else-if="vaultCarryOffer.reason" class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+          {{ vaultCarryOffer.reason }}
+        </p>
         <button
           type="button"
           class="ia-btn ia-btn-primary w-full h-8 text-[11px] flex items-center justify-center gap-1.5"

@@ -13,7 +13,9 @@
  *   `@00/agent-runtime` createAgentRuntime, fullTools, createVault
  * Nothing in this app is stubbed any more; `agent.stubs` stays, empty, because the Settings pane
  * prints it and a screen that can say "everything here is real" should be able to say so from the
- * same source that would have said otherwise.
+ * same source that would have said otherwise. It fills up again the moment a capability another
+ * builder owns is not there yet — see the wiring block in `createOwnedAgent` (git ops, the workspace
+ * index, the WASM shell, the network policy), which is written now and comes alive on its own.
  *
  * THE FAÇADE IS GONE (contract revision 2026-09-10). `createAgentRuntime` used to take its providers
  * at construction, so switching brains mid-session (§4.1's proof) meant rebuilding the runtime under
@@ -22,9 +24,38 @@
  * tested. This file just calls it.
  */
 import type { AgentFs, FsStat } from "@00/agent-fs";
-import { MemoryFs, OpfsFs, exportBundle, importBundleInto, scaffoldAgent } from "@00/agent-fs";
-import type { AgentRuntime, PermissionDecision, PermissionTier, Tool, Vault } from "@00/agent-runtime";
-import { createAgentRuntime, createVault, fullTools } from "@00/agent-runtime";
+// Namespace imports beside the named ones, and only for the capabilities the parallel builders own:
+// `typeof ns.thing === "function"` is a question a missing export can answer, where an import of it
+// is a build failure. See the wiring block in `createOwnedAgent`.
+import * as agentFsExports from "@00/agent-fs";
+import * as agentRuntimeExports from "@00/agent-runtime";
+// `src/power/` is another agent's folder and landed while this wiring was being written; the rest of
+// the app imports it statically (PreviewPane, state/terminal), so this file does too — a lazy glob
+// bought nothing once the module existed and cost a chunking warning on every build. The GUARD stays
+// where it matters: which door that module offers is still asked, never assumed.
+import * as powerExports from "../power/index.js";
+import {
+  MemoryFs,
+  OpfsFs,
+  exportBundle,
+  fullModeInclude,
+  ignoreMatcherFor,
+  importBundleInto,
+  scaffoldAgent,
+} from "@00/agent-fs";
+import type {
+  AgentRuntime,
+  GitOps,
+  PermissionDecision,
+  NetworkPolicy,
+  PermissionTier,
+  SecretsAccess,
+  Shell,
+  Tool,
+  Vault,
+  WorkspaceIndex,
+} from "@00/agent-runtime";
+import { DEFAULT_WORKSPACE, createAgentRuntime, createVault, fullTools } from "@00/agent-runtime";
 import type { ModelInfo, ModelProvider } from "@00/agent-models";
 import {
   BYOK_BASE_URLS,
@@ -49,7 +80,7 @@ import { byokSecretName } from "../lib/brains.js";
 import { newAgentId } from "../lib/id.js";
 import { isPhone, loadLiteRtCatalog, phoneRow, type CatalogResult } from "../lib/litert-catalog.js";
 import type { Readiness } from "../lib/readiness.js";
-import type { VaultKind } from "../lib/vault-policy.js";
+import { VAULT_FILE, includeForExport, type VaultKind } from "../lib/vault-policy.js";
 import { createPrfCredential, getPrfSecret, webauthnAvailable } from "../lib/webauthn-prf.js";
 
 /** Where the LiteRT Gemma weights are served from unless the environment says otherwise (§12.7). */
@@ -95,6 +126,55 @@ export interface ConnectionSettings {
   sponsored?: { appId: string; deviceId?: string };
   overblast?: { baseUrl: string; model: string };
   byok?: { vendor: ByokVendor; baseUrl?: string; model: string };
+  /** §4.6's network policy, as the person's list of hosts a tool may reach. Empty = nothing. */
+  network?: { allow: string[] };
+}
+
+/**
+ * Call a factory a package may or may not export yet, or answer `null`.
+ *
+ * A CLASS AND A FACTORY ARE BOTH `typeof === "function"`, and which of the two a builder chose is not
+ * settled — so `new` is tried first and a plain call second. Either throwing means the export is not
+ * what this file assumed, and `null` (a named stub, not a crash) is the right answer to that during a
+ * boot: the agent opens without the capability rather than not opening.
+ */
+function callIfExported<T>(mod: Record<string, unknown>, name: string, args: unknown[]): T | null {
+  const factory = mod[name];
+  if (typeof factory !== "function") return null;
+  try {
+    return (factory as (...a: unknown[]) => T)(...args);
+  } catch {
+    // A CLASS throws when called without `new` ("Class constructor X cannot be invoked…"), and which
+    // of the two a builder chose is not something this file gets to insist on. A plain call first,
+    // because a factory called with `new` silently returns the wrong thing rather than throwing.
+    try {
+      return new (factory as new (...a: unknown[]) => T)(...args);
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * The shell the agent's `bash` runs in.
+ *
+ * `createBrowserShell(fs)` is the door `src/power/index.ts` documents for exactly this call (it hangs
+ * git off the shell's `git` subcommand); the bare class is the fallback for the day that factory is
+ * renamed, and `null` — `NoShell`, "wakes on your Mac" — is the answer if both are gone.
+ */
+function loadPowerShell(fs: AgentFs): Shell | null {
+  const mod = powerExports as unknown as Record<string, unknown>;
+  return callIfExported<Shell>(mod, "createBrowserShell", [fs]) ?? callIfExported<Shell>(mod, "BuiltinShell", [fs]);
+}
+
+/**
+ * What an export was asked to include beyond the default travel rules — §4.5's tick, and so far only
+ * that. An options OBJECT rather than a boolean argument because the next thing anyone chooses here
+ * (a work folder, a session cut-off) has to be addable without touching four call sites.
+ */
+export interface ExportChoices {
+  /** The vault rides along. Only ever true for a password-wrapped vault; see lib/vault-policy.ts. */
+  carrySecrets?: boolean;
 }
 
 export interface CreateOwnedAgentOptions {
@@ -128,8 +208,13 @@ export interface OwnedAgent {
   createVaultWithPasskey(): Promise<void>;
   unlockVault(password?: string): Promise<boolean>;
   passkeyPossible(): boolean;
-  exportBundleFile(passphrase: string): Promise<Blob>;
-  importBundleFile(file: Blob, passphrase: string): Promise<{ agentId: string }>;
+  /**
+   * The `.00agent`, with §4.5's tick as its only option (gap audit A2). `carrySecrets` defaults to
+   * FALSE everywhere: an export that was not asked for the vault does not take it.
+   */
+  exportBundleFile(passphrase: string, opts?: ExportChoices): Promise<Blob>;
+  /** `vaultTravelled` is what the far side reports back, read off the files actually written. */
+  importBundleFile(file: Blob, passphrase: string): Promise<{ agentId: string; vaultTravelled: boolean }>;
   /** Progress of the local model download, 0..100, or null while nothing is downloading. */
   localProgress(): number | null;
 
@@ -144,6 +229,12 @@ export interface OwnedAgent {
   chooseLocalModel(row: LiteRtCatalogRow, base?: string): Promise<void>;
   /** Give the GPU back (`unload()` on both local providers). The next turn loads again. */
   unloadLocal(): Promise<void>;
+  /**
+   * §4.1's retrieval with no model at all (gap audit B14). The SAME index the `search_workspace` tool
+   * was built with, kept here so a pane that searches without a brain does not build a second one over
+   * the same files. `null` only if the package stops exporting `createWorkspaceIndex`.
+   */
+  workspaceIndex: WorkspaceIndex | null;
   /** True when this very load created the agent — drives the persist call and the install nag (§3.3). */
   freshlyCreated: boolean;
   /** Empty when nothing is standing in for a real implementation. Printed in Settings regardless. */
@@ -323,8 +414,73 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
   const deviceStore = new IndexedDbDeviceKeyStore();
 
   opts.onStep("runtime", "active", "starting");
-  const tools: Tool[] = fullTools();
+
+  // ── WHAT THE OTHER BUILDERS ARE MAKING, WIRED AS SOON AS IT EXISTS ──────────────────────────────
+  //
+  // Five capabilities were written in parallel with this file (gap audit A5, B7, B8, B12, B14, B17)
+  // and this is the one place they are joined to the agent. All five had landed by the end of the day;
+  // the two that come from another package are still asked for with `typeof x === "function"` rather
+  // than imported by name, because that is what makes this file survive the next rename: an import of
+  // an export that is not there does not fail at runtime, it fails the BUILD, and this file is the
+  // boot of the whole app. Anything that goes missing is NAMED in `stubs`, which the Settings pane
+  // prints — "this agent has no git tools" is a sentence a person can read, an absent tool is a
+  // silence, and `test/bootstrap-wiring.test.ts` holds that the list is empty today.
+  const fsExports = agentFsExports as unknown as Record<string, unknown>;
+  const runtimeExports = agentRuntimeExports as unknown as Record<string, unknown>;
+
+  /** B8: the git tools, over isomorphic-git on this same filesystem. */
+  const git = callIfExported<GitOps>(fsExports, "createGitOps", [fs, DEFAULT_WORKSPACE]);
+  if (!git) stubs.push("no git tools — @00/agent-fs does not export createGitOps yet (gap audit B8)");
+
+  /**
+   * B14 / §4.1's "retrieval works with no model at all". Built HERE and kept on the agent rather than
+   * left to `fullTools` to build its own, so the pane that searches without a brain and the
+   * `search_workspace` tool walk one index instead of two. It arrived in @00/agent-runtime's
+   * retrieval/; @00/agent-fs is asked as well, because which package owns it was not settled.
+   */
+  const workspaceIndex =
+    callIfExported<WorkspaceIndex>(runtimeExports, "createWorkspaceIndex", [fs]) ??
+    callIfExported<WorkspaceIndex>(fsExports, "createWorkspaceIndex", [fs]);
+  if (!workspaceIndex) stubs.push("no offline retrieval — no package exports createWorkspaceIndex yet (gap audit B14)");
+
+  // A5 / B7: with a real shell, `bash` stops answering 127 on every call while the prompt claims the
+  // agent can run commands.
+  const shell = loadPowerShell(fs) ?? undefined;
+  if (!shell) stubs.push("bash answers 127 — src/power exports no shell yet (gap audit A5, B7)");
+
+  /**
+   * B17: hosts a tool may reach without asking. The list is the person's (settings); the enforcement
+   * is the package's. An EMPTY list is still a policy — it is what makes `http_get` exist at all, with
+   * every host a `confirm` — and it is the only safe default for an agent in someone's browser.
+   */
+  const network: NetworkPolicy = { allow: settings.network?.allow ?? [] };
   const secretNames = await vault.list().catch(() => [] as string[]);
+
+  /**
+   * B12: the vault, reachable from tools at last — as the two-method view the contract asks for
+   * (`SecretsAccess`), not as the vault itself. The adapter is the interesting part: a LOCKED vault
+   * answers `null` rather than throwing, because "the key is sealed" is an observation a loop can act
+   * on and an exception is a run that ends. Names stay readable either way; that is §4.5's whole rule
+   * — the agent sees names, values resolve at use.
+   */
+  const secrets: SecretsAccess = {
+    names: () => vault.list().catch(() => [] as string[]),
+    get: async (name) => (vault.unlocked ? await vault.get(name).catch(() => null) : null),
+  };
+
+  // One options object, one place. `fullTools` grew every one of these fields the same day this
+  // wiring did (`index` → search_workspace, `secrets` → list_secrets, `network` → http_get), so what
+  // is passed here is exactly what the agent can do.
+  const tools: Tool[] = fullTools({
+    fs,
+    workspace: DEFAULT_WORKSPACE,
+    secrets,
+    network,
+    ...(git ? { git } : {}),
+    ...(shell ? { shell } : {}),
+    ...(workspaceIndex ? { index: workspaceIndex } : {}),
+  });
+
   const runtime: AgentRuntime = createAgentRuntime({
     fs,
     providers: chain(),
@@ -333,6 +489,11 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
     trust: "full",
     origin: typeof location === "undefined" ? "local" : location.origin,
     context: { secretNames },
+    // The loop's half of the same two facts: `${secret:NAME}` is resolved (and redacted back out of
+    // every output) by the one place that sees every call, and the policy the network tool enforces
+    // is the one the runtime was built with.
+    secrets,
+    network,
   });
   opts.onStep("runtime", "done", `${tools.length} tools`);
 
@@ -501,15 +662,22 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
       return { deviceId: device.deviceId };
     },
 
-    async exportBundleFile(passphrase) {
-      const bytes = await exportBundle(fs, { secret: passphrase, host: "browser" });
+    async exportBundleFile(passphrase, choices) {
+      // The default rules first (the four classes plus the person's own `.00ignore`), then the one
+      // exception this app adds. Building the matcher here rather than inside the predicate keeps the
+      // `.00ignore` read to once per export instead of once per path.
+      const base = fullModeInclude(await ignoreMatcherFor(fs));
+      const include = includeForExport(base, choices?.carrySecrets === true);
+      const bytes = await exportBundle(fs, { secret: passphrase, host: "browser", include });
       return new Blob([bytes.slice().buffer as ArrayBuffer], { type: "application/octet-stream" });
     },
     async importBundleFile(file, passphrase) {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const result = await importBundleInto(fs, bytes, { secret: passphrase });
       await kvSet(AGENT_ID_KEY, result.manifest.agentId);
-      return { agentId: result.manifest.agentId };
+      // Reported from what was WRITTEN, never from what the sender believed it sent: a bundle made
+      // before the tick existed, or by an engine, is answered honestly either way.
+      return { agentId: result.manifest.agentId, vaultTravelled: result.written.includes(VAULT_FILE) };
     },
 
     localProgress: () => localPct,
@@ -547,6 +715,7 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
       localPct = null;
     },
 
+    workspaceIndex,
     freshlyCreated,
     stubs,
   };

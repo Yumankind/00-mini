@@ -43,11 +43,19 @@ import {
   stopAnswering,
 } from "../mac/state.js";
 import { ed25519Available } from "../mac/wire.js";
+import { RELAY_NOT_CONFIGURED_LINE, relayConfigured } from "../mac/config.js";
 
 const open = ref(false);
 const tokenField = ref("");
 const draft = ref("");
 const supported = ed25519Available();
+/**
+ * §12.1 has not named the production origin, and a build may point at none at all. Read once, at
+ * setup: it is a build-time constant, so a computed would recompute a value that cannot change. The
+ * card then says the same thing the live-transfer card says when its rooms are unbuilt — "not
+ * connected yet" — instead of offering two doors whose every call is a network error (gap audit A1).
+ */
+const relayReady = relayConfigured();
 
 /** The wiring call. Done here rather than in the boot so `runtime/bootstrap.ts` stays the file that
  *  constructs packages and nothing else; the line that belongs there is in the handoff note. */
@@ -85,6 +93,11 @@ async function send(): Promise<void> {
         This browser has no WebCrypto Ed25519, so it cannot sign a command to your Mac. There is no
         fallback on purpose — signing with anything else would be worse than saying so.
       </p>
+    </div>
+
+    <div v-else-if="!relayReady" class="panel px-3 py-3 flex items-start gap-2">
+      <TablerIcon name="plug-connected" :size="15" class="mt-0.5 shrink-0 text-[var(--color-ink-dim)]" />
+      <p class="text-[11px] leading-relaxed text-[var(--color-ink-dim)]">{{ RELAY_NOT_CONFIGURED_LINE }}</p>
     </div>
 
     <div v-else class="panel px-3 py-3 space-y-3">

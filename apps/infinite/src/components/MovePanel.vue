@@ -23,7 +23,9 @@ import { computed, onMounted, ref } from "vue";
 import TablerIcon from "./TablerIcon.vue";
 import {
   answerReplace,
+  arrivedVaultLine,
   cancelLive,
+  carrySecrets,
   clearReceiveWanted,
   confirmMoved,
   downloadMove,
@@ -46,11 +48,14 @@ import {
   receiveWanted,
   resetLive,
   resetMove,
+  setCarrySecrets,
   startLiveMove,
   startLiveReceive,
   toCodeStep,
 } from "../state/move.js";
 import { isMoveCode } from "../lib/move.js";
+import { carriedLine } from "../lib/vault-policy.js";
+import { vaultCarryOffer } from "../state/vault.js";
 import { profile } from "../state/agent.js";
 
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -62,6 +67,15 @@ const typedCode = ref("");
 const words = computed(() => moveCode.value.split("-").filter(Boolean));
 const liveWords = computed(() => liveCode.value.split("-").filter(Boolean));
 const typedLooksRight = computed(() => isMoveCode(typedCode.value.trim().toLowerCase()));
+/**
+ * §4.5's tick, asked ONCE on the first screen because it is a property of the move and not of the
+ * road it takes (gap audit A2). The store refuses it outright when the vault cannot travel, so a
+ * passkey vault cannot be ticked into a bundle by a stale checkbox.
+ */
+const carryOffer = computed(() => vaultCarryOffer.value);
+function tickCarry(event: Event): void {
+  setCarrySecrets((event.target as HTMLInputElement).checked, carryOffer.value.offered);
+}
 const liveDone = computed(() => livePhase.value === "done");
 
 // Connections' "Receive an agent" card opens this pane already on the receiving road.
@@ -151,6 +165,18 @@ async function receiveLive(): Promise<void> {
         <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
           Everything comes with it — files, memory, sessions, standing answers — encrypted end to
           end. You can bring it back here whenever you like.
+        </p>
+        <label v-if="carryOffer.offered" class="flex items-start gap-2 text-[11px] leading-relaxed">
+          <input type="checkbox" class="mt-0.5 shrink-0" :checked="carrySecrets" @change="tickCarry" />
+          <span>
+            {{ carryOffer.label }}
+            <span class="block text-[10px] text-[var(--color-ink-dim)]">
+              They travel sealed as they are — the same password opens them on the other device.
+            </span>
+          </span>
+        </label>
+        <p v-else-if="carryOffer.reason" class="text-[11px] text-[var(--color-amber)] leading-relaxed">
+          {{ carryOffer.reason }}
         </p>
         <button
           type="button"
@@ -281,6 +307,9 @@ async function receiveLive(): Promise<void> {
             </div>
             <div class="font-mono text-[22px] tracking-[0.3em] text-[var(--color-phosphor)]">{{ liveConfirmation }}</div>
           </div>
+          <p v-if="arrivedVaultLine" class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+            {{ arrivedVaultLine }}
+          </p>
           <p v-if="liveIncoming" class="text-[11px] font-mono text-[var(--color-ink-dim)] break-all">
             {{ liveIncoming.name }} · {{ Math.max(1, Math.round(liveIncoming.bytes / 1024)) }} KB
           </p>
@@ -342,6 +371,7 @@ async function receiveLive(): Promise<void> {
         <p class="text-[11px] text-[var(--color-amber)] leading-relaxed">
           Nobody can recover these words — not your Mac, not us. Without them the file is noise.
         </p>
+        <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">{{ carriedLine(carrySecrets) }}</p>
         <button
           type="button"
           class="ia-btn ia-btn-primary w-full h-9 text-[11px] flex items-center justify-center gap-1.5"

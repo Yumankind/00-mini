@@ -26,6 +26,7 @@ import {
   type MoveStep,
 } from "../lib/move.js";
 import { MOVE_RECEIPT_KEY, kvDelete, kvGet, kvSet } from "../lib/kv.js";
+import { arrivedLine } from "../lib/vault-policy.js";
 import { agent } from "./agent.js";
 import type { OwnedAgent } from "../runtime/bootstrap.js";
 import {
@@ -43,6 +44,17 @@ const busy = ref(false);
 const error = ref<string | null>(null);
 const receipt = ref<LiveMoveReceipt | null>(null);
 const restoring = ref(false);
+/**
+ * §4.5's *carry my secrets*, for BOTH roads (gap audit A2).
+ *
+ * One flag, not two, because it is one decision the person makes about one move — and because the two
+ * roads share `transferDeps` below, so a second flag would be a second thing to forget. It is memory
+ * only and `resetMove()` clears it: a tick left standing from a move a week ago must not put a vault
+ * into a file somebody exports without looking.
+ */
+const carry = ref(false);
+/** What the last received bundle actually brought, read off the files written on this side. */
+const arrivedVault = ref<boolean | null>(null);
 
 /**
  * §7 has two roads and one receipt. `via` says which road the agent left by — the file (the default,
@@ -52,7 +64,13 @@ const restoring = ref(false);
  * reader keeps working.
  */
 export type MoveVia = "file" | "live";
-export type LiveMoveReceipt = MoveReceipt & { via?: MoveVia };
+/**
+ * `carried` is §4.5's tick as it was answered for THIS move (gap audit A2), additive for the same
+ * reason `via` is: a receipt written before the field existed simply does not say, and the screen
+ * then says nothing rather than guessing. It matters after the fact — "did my API keys leave this
+ * browser" is a question a person asks the day after, not during the flow.
+ */
+export type LiveMoveReceipt = MoveReceipt & { via?: MoveVia; carried?: boolean };
 
 export const moveStep = computed(() => step.value);
 export const moveCode = computed(() => code.value);
@@ -60,6 +78,10 @@ export const moveFileName = computed(() => fileName.value);
 export const moveBusy = computed(() => busy.value);
 export const moveError = computed(() => error.value);
 export const moveReceipt = computed(() => receipt.value);
+/** The tick's current position; the panels bind it through `setCarrySecrets`. */
+export const carrySecrets = computed(() => carry.value);
+/** One line about the vault an incoming bundle did or did not bring; null until one has landed. */
+export const arrivedVaultLine = computed(() => (arrivedVault.value === null ? null : arrivedLine(arrivedVault.value)));
 /** The shell paints the receipt instead of the agent exactly while this is true. */
 export const movedAway = computed(() => isLocked(receipt.value));
 /** An override happened: this browser and the Mac may both be live, and the screen says so. */
@@ -88,6 +110,12 @@ export function resetMove(): void {
   fileName.value = "";
   error.value = null;
   busy.value = false;
+  carry.value = false;
+}
+
+/** The tick, from either road's screen. Refused outright unless the vault can travel at all (§4.5). */
+export function setCarrySecrets(on: boolean, allowed = true): void {
+  carry.value = on && allowed;
 }
 
 export function toCodeStep(random?: Parameters<typeof newMoveCode>[0]): string {
@@ -110,7 +138,7 @@ export async function downloadMove(at = new Date()): Promise<string | null> {
   busy.value = true;
   error.value = null;
   try {
-    const blob = await owned.exportBundleFile(code.value);
+    const blob = await owned.exportBundleFile(code.value, { carrySecrets: carry.value });
     const name = moveFilename(owned.profile.displayName, at);
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -144,9 +172,13 @@ export function openIn00(): void {
 export async function confirmMoved(at = new Date()): Promise<void> {
   const owned = agent.value;
   if (!owned || !fileName.value) return;
-  await persist(
-    moveReceiptReducer(receipt.value, { type: "moved", profile: owned.profile, fileName: fileName.value, at }),
-  );
+  const moved = moveReceiptReducer(receipt.value, {
+    type: "moved",
+    profile: owned.profile,
+    fileName: fileName.value,
+    at,
+  });
+  await persist(moved ? { ...moved, via: "file", carried: carry.value } : null);
   resetMove();
 }
 
@@ -221,6 +253,7 @@ export const liveAvailable = computed(() => roomsConfigured());
 
 export function resetLive(): void {
   liveRole.value = null;
+  arrivedVault.value = null;
   livePhaseRef.value = "idle";
   liveCodeRef.value = "";
   liveConfirmRef.value = "";
@@ -255,9 +288,18 @@ export function answerReplace(allowed: boolean): void {
  */
 function transferDeps(owned: OwnedAgent): TransferDeps {
   return {
-    exportBundle: async (secret) => new Uint8Array(await (await owned.exportBundleFile(secret)).arrayBuffer()),
-    importBundle: (bytes, secret) =>
-      owned.importBundleFile(new Blob([bytes.slice().buffer as ArrayBuffer], { type: "application/octet-stream" }), secret),
+    exportBundle: async (secret) =>
+      new Uint8Array(await (await owned.exportBundleFile(secret, { carrySecrets: carry.value })).arrayBuffer()),
+    importBundle: async (bytes, secret) => {
+      const landed = await owned.importBundleFile(
+        new Blob([bytes.slice().buffer as ArrayBuffer], { type: "application/octet-stream" }),
+        secret,
+      );
+      // Reported, not assumed: the sending device chose whether its vault came, and this side is the
+      // only one that can say what actually arrived.
+      arrivedVault.value = landed.vaultTravelled;
+      return landed;
+    },
     profile: () => owned.profile,
     // The PWA scaffolds an agent on first visit (§4.1), so there is always one here and replacing it
     // is always a decision.
@@ -304,7 +346,7 @@ export async function startLiveMove(overrides: Partial<TransferDeps> = {}): Prom
       fileName: result.fileName,
       at: result.movedAt,
     });
-    await persist(moved ? { ...moved, via: "live" } : null);
+    await persist(moved ? { ...moved, via: "live", carried: carry.value } : null);
     // The code dies with the flow; the receipt keeps the name and the date, and nothing that opens
     // the bundle.
     liveCodeRef.value = "";
