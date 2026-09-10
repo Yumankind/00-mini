@@ -14,6 +14,10 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       reporter: ["text-summary"],
+      // Floors from the first commit (docs/HANDOFF-infinite-agent.md §10), set just under the
+      // measured numbers: a new module under src/ with no test lands in the denominator at 0% and
+      // fails the gate, which is the whole job they do.
+      thresholds: { statements: 96, branches: 91, functions: 97, lines: 96 },
     },
   },
 });
