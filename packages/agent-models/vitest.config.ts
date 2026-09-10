@@ -22,8 +22,11 @@ export default defineConfig({
       // src/tool-fallback.ts): statements 98.7 · branches 90.8 · functions 98.1 · lines 98.7 —
       // branches went UP, so their floor goes up with them; the other three keep their slack, since
       // the two real dynamic imports (web-llm, MediaPipe) are code no Node run can reach.
+      // Re-measured 2026-09-10 with vision (src/image-parts.ts, the prompt segments, the vision rank
+      // in the router): statements 98.9 · branches 91.7 · functions 98.0 · lines 98.9 — branches went
+      // up again, so their floor goes to 89 and keeps the slack the Linux leg needs.
       // Never lower one to make a change pass: fix or delete the change that dropped it.
-      thresholds: { statements: 96, branches: 87, functions: 95, lines: 96 },
+      thresholds: { statements: 96, branches: 89, functions: 95, lines: 96 },
     },
   },
 });

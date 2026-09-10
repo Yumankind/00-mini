@@ -18,9 +18,18 @@
  *
  * Gemma has NO system role. A system turn is folded into the first user turn — the same compromise
  * every Gemma chat template makes — rather than invented as a fourth role the model never saw.
+ *
+ * PICTURES (2026-09-10, gap B10). `Prompt` in MediaPipe's own typings is `PromptPart | PromptPart[]`
+ * and a `PromptPart` is `string | Image | Audio`, so a multi-modal prompt is this same transcript cut
+ * into pieces with the images sitting where they were attached. That is why the renderer's real
+ * output is a SEGMENT LIST (`renderPromptSegments`) and the string form is that list with its text
+ * joined: one implementation of the turn format, two shapes of it, instead of a second renderer that
+ * drifts. A picture goes AFTER its turn's header and BEFORE that turn's text, which is the order
+ * Gemma's own multi-modal examples use and the only order in which the words can refer to it.
  */
 
-import type { ChatMessage } from "./types.js";
+import { withoutImages } from "./image-parts.js";
+import type { ChatMessage, ImagePart } from "./types.js";
 
 /** The families this package knows how to prompt. `plain` is the honest fallback for anything else. */
 export type PromptFamily = "gemma" | "plain";
@@ -56,11 +65,26 @@ function assistantTurnText(message: ChatMessage): string {
   return message.content ? `${message.content}\n${calls}` : calls;
 }
 
+/** A piece of a prompt: text, or a picture that sits at this point in the transcript. */
+export type PromptSegment = { kind: "text"; text: string } | { kind: "image"; image: ImagePart };
+
+/** Adjacent text is one segment, so a prompt with no pictures is a list of exactly one. */
+function mergeSegments(parts: PromptSegment[]): PromptSegment[] {
+  const out: PromptSegment[] = [];
+  for (const part of parts) {
+    if (part.kind === "text" && !part.text) continue;
+    const last = out[out.length - 1];
+    if (part.kind === "text" && last?.kind === "text") out[out.length - 1] = { kind: "text", text: last.text + part.text };
+    else out.push(part);
+  }
+  return out;
+}
+
 /**
- * The transcript as one string in the family's turn format, ending with the OPEN model turn — the
- * model is meant to continue the string, so the last thing in it is the header of its own answer.
+ * The transcript in the family's turn format, ending with the OPEN model turn — the model is meant
+ * to continue the string, so the last thing in it is the header of its own answer.
  */
-function renderMarked(messages: ChatMessage[], markers: TurnMarkers): string {
+function renderMarked(messages: ChatMessage[], markers: TurnMarkers): PromptSegment[] {
   // Every system turn is collected first and prefixed to the first user turn: Gemma has no system
   // role, and a system instruction placed after the first user turn is one the model reads late.
   const system = messages
@@ -69,7 +93,7 @@ function renderMarked(messages: ChatMessage[], markers: TurnMarkers): string {
     .filter(Boolean)
     .join("\n\n");
 
-  const out: string[] = [];
+  const out: PromptSegment[] = [];
   let systemPending = system;
   for (const message of messages) {
     if (message.role === "system") continue;
@@ -79,32 +103,60 @@ function renderMarked(messages: ChatMessage[], markers: TurnMarkers): string {
       text = `${systemPending}\n\n${text}`;
       systemPending = "";
     }
-    out.push(`${markers.start}${role}\n${text}${markers.end}\n`);
+    out.push({ kind: "text", text: `${markers.start}${role}\n` });
+    for (const image of message.images ?? []) out.push({ kind: "image", image });
+    out.push({ kind: "text", text: `${text}${markers.end}\n` });
   }
   // A conversation that is nothing but a system prompt still has to reach the model somehow.
-  if (systemPending) out.push(`${markers.start}${markers.userRole}\n${systemPending}${markers.end}\n`);
-  out.push(`${markers.start}${markers.assistantRole}\n`);
-  return out.join("");
+  if (systemPending) out.push({ kind: "text", text: `${markers.start}${markers.userRole}\n${systemPending}${markers.end}\n` });
+  out.push({ kind: "text", text: `${markers.start}${markers.assistantRole}\n` });
+  return mergeSegments(out);
 }
 
 /** No markers at all: a labelled transcript. Wrong for Gemma, right for a model whose format we do not know. */
-function renderPlain(messages: ChatMessage[]): string {
+function renderPlain(messages: ChatMessage[]): PromptSegment[] {
   const label: Record<ChatMessage["role"], string> = { system: "System", user: "User", assistant: "Assistant", tool: "Tool" };
-  const lines = messages.map((m) => {
+  const out: PromptSegment[] = [];
+  for (const [i, m] of messages.entries()) {
     const text = m.role === "assistant" ? assistantTurnText(m) : m.role === "tool" ? toolTurnText(m) : m.content;
-    return `${label[m.role]}: ${text}`;
-  });
-  return `${lines.join("\n\n")}\n\nAssistant:`;
+    if (i) out.push({ kind: "text", text: "\n\n" });
+    out.push({ kind: "text", text: `${label[m.role]}: ` });
+    for (const image of m.images ?? []) out.push({ kind: "image", image });
+    out.push({ kind: "text", text });
+  }
+  out.push({ kind: "text", text: "\n\nAssistant:" });
+  return mergeSegments(out);
 }
 
-export const PROMPT_TEMPLATES: Record<PromptFamily, (messages: ChatMessage[]) => string> = {
+export const PROMPT_SEGMENT_TEMPLATES: Record<PromptFamily, (messages: ChatMessage[]) => PromptSegment[]> = {
   gemma: (messages) => renderMarked(messages, GEMMA_MARKERS),
   plain: renderPlain,
 };
 
-/** The transcript, in the family's format. Unknown families get `plain` rather than Gemma's markers. */
+export const PROMPT_TEMPLATES: Record<PromptFamily, (messages: ChatMessage[]) => string> = {
+  gemma: (messages) => renderPrompt(messages, "gemma"),
+  plain: (messages) => renderPrompt(messages, "plain"),
+};
+
+/**
+ * The transcript in the family's format, cut at its pictures. Unknown families get `plain` rather
+ * than Gemma's markers by accident.
+ */
+export function renderPromptSegments(messages: ChatMessage[], family: PromptFamily = "plain"): PromptSegment[] {
+  return (PROMPT_SEGMENT_TEMPLATES[family] ?? renderPlain)(messages);
+}
+
+/**
+ * The transcript as ONE STRING — for a task that takes no pictures.
+ *
+ * It drops the images through `withoutImages` first, which is what makes the drop audible: a
+ * text-only caller that forgot to do it still gets the note in the prompt rather than a silently
+ * picture-less turn (rule 3 of image-parts.ts). Calling it twice is harmless — the second call finds
+ * nothing left to drop.
+ */
 export function renderPrompt(messages: ChatMessage[], family: PromptFamily = "plain"): string {
-  return (PROMPT_TEMPLATES[family] ?? renderPlain)(messages);
+  const segments = renderPromptSegments(withoutImages(messages), family);
+  return segments.map((s) => (s.kind === "text" ? s.text : "")).join("");
 }
 
 /**

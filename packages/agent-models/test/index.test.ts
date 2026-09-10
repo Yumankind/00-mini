@@ -22,8 +22,25 @@ const EXPECTED = [
   "readSse",
   "sseSplitter",
   "SSE_DONE",
+  // pictures (gap B10)
+  "IMAGE_MAX_BYTES",
+  "IMAGE_MIME_TYPES",
+  "IMAGE_FALLBACK_MIME",
+  "NO_VISION_REASON",
+  "NON_USER_IMAGE_REASON",
+  "sniffImageMime",
+  "imageTooLarge",
+  "fromBase64",
+  "decodeImage",
+  "imageBase64",
+  "imageDataUrl",
+  "hasImages",
+  "droppedImagesNote",
+  "withoutImages",
+  "rowVision",
   // the OpenAI-compatible peer
   "OpenAICompatibleProvider",
+  "TOOL_RESULT_IMAGE_REASON",
   "parseToolArguments",
   "mapFinishReason",
   "mapUsage",
@@ -81,6 +98,7 @@ const EXPECTED = [
   "LITERT_DEFAULT_WASM_PATH",
   "LITERT_CATALOG",
   "LITERT_DEFAULT_MODEL_ID",
+  "LITERT_MAX_IMAGES",
   "LITERT_UNVERIFIED_ASSETS",
   "GEMMA_TERMS",
   "APACHE_2",
@@ -94,6 +112,8 @@ const EXPECTED = [
   "parseFallbackToolCalls",
   "GEMMA_MARKERS",
   "PROMPT_TEMPLATES",
+  "PROMPT_SEGMENT_TEMPLATES",
+  "renderPromptSegments",
   "TURN_MARKER_MAX_LENGTH",
   "renderPrompt",
   "turnMarkerIndex",
@@ -104,6 +124,9 @@ const EXPECTED = [
   // class-aware routing (§6, 2026-09-10)
   "providerClasses",
   "classActuallyUsed",
+  // vision-aware routing (gap B10, 2026-09-10)
+  "providerVision",
+  "visionActuallyUsed",
 ] as const;
 
 describe("the package's public API", () => {

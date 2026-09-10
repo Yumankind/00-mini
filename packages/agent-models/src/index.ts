@@ -28,6 +28,7 @@
 export * from "./types.js";
 export * from "./errors.js";
 export * from "./sse.js";
+export * from "./image-parts.js";
 export * from "./openai-compatible.js";
 export * from "./device-key.js";
 export * from "./sponsored.js";

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ANTHROPIC_DEFAULT_MAX_TOKENS, ANTHROPIC_VERSION, AnthropicProvider, readAnthropicContent, toAnthropicMessages } from "../src/anthropic.js";
-import type { ModelInfo } from "../src/types.js";
+import { NON_USER_IMAGE_REASON } from "../src/image-parts.js";
+import type { ImagePart, ModelInfo } from "../src/types.js";
 import { collect, jsonResponse, recordingFetch, sseResponse } from "./helpers.js";
 
 const CATALOG: ModelInfo[] = [{ id: "claude-x", label: "Claude X", class: "strong", local: false, supportsTools: true }];
@@ -196,5 +197,94 @@ describe("malformed answers", () => {
     ]);
     const out = await collect(provider(fetch).stream({ messages: [] }));
     expect(out.filter((c) => c.type === "text")).toHaveLength(1);
+  });
+});
+
+// ── Pictures (gap B10) ──────────────────────────────────────────────────────────────────────────
+
+describe("images as content blocks", () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7]);
+  const shot: ImagePart = { mime: "image/png", data: png, source: "shot.png" };
+  const BLOCK = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoH" } };
+
+  /** A catalogue row that CLAIMS vision: `ModelInfo` says an absent flag means text-only, here too. */
+  const SEEING: ModelInfo[] = [{ id: "claude-x", label: "Claude X", class: "strong", local: false, supportsTools: true, vision: true }];
+  const seeing = (fetchImpl: (input: string, init?: RequestInit) => Promise<Response>) =>
+    new AnthropicProvider({ apiKey: "sk-ant-test", catalog: SEEING, defaultModel: "claude-x", fetch: fetchImpl });
+
+  it("puts the picture before the words of its own turn, as the vendor's examples do", () => {
+    const { messages } = toAnthropicMessages([{ role: "user", content: "what is this?", images: [shot] }]);
+    expect(messages).toEqual([{ role: "user", content: [BLOCK, { type: "text", text: "what is this?" }] }]);
+  });
+
+  it("sends a picture with no words as a lone block", () => {
+    const { messages } = toAnthropicMessages([{ role: "user", content: "", images: [shot] }]);
+    expect(messages).toEqual([{ role: "user", content: [BLOCK] }]);
+  });
+
+  it("keeps a tool result's picture INSIDE the tool_result, which this wire allows", () => {
+    const { messages } = toAnthropicMessages([
+      { role: "tool", content: "screenshot taken", toolCallId: "tu_1", images: [shot] },
+      { role: "tool", content: "and one more", toolCallId: "tu_2" },
+    ]);
+    // Both results still merge into ONE user turn, exactly as they did before pictures existed.
+    expect(messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "tu_1", content: [BLOCK, { type: "text", text: "screenshot taken" }] },
+          { type: "tool_result", tool_use_id: "tu_2", content: "and one more" },
+        ],
+      },
+    ]);
+  });
+
+  it("posts the blocks, base64 and media type apart, on a real call", async () => {
+    const { fetch, calls } = recordingFetch([jsonResponse({ content: [{ type: "text", text: "a cat" }], stop_reason: "end_turn" })]);
+    await seeing(fetch).chat({ messages: [{ role: "user", content: "?", images: [shot] }] });
+    const body = JSON.parse(String(calls[0]?.init?.body)) as { messages: { content: unknown[] }[] };
+    expect(body.messages[0]?.content?.[0]).toEqual(BLOCK);
+  });
+
+  it("assumes this vendor can see for a model NO ROW mentions, and obeys a row that does", async () => {
+    const { fetch, calls } = recordingFetch([
+      jsonResponse({ content: [{ type: "text", text: "ok" }] }),
+      jsonResponse({ content: [{ type: "text", text: "ok" }] }),
+    ]);
+    // An empty catalogue is what `byokProvider` hands this class by default.
+    const blank = new AnthropicProvider({ apiKey: "k", catalog: [], defaultModel: "claude-x", fetch });
+    expect(blank.seesImages()).toBe(true);
+    await blank.chat({ messages: [{ role: "user", content: "?", images: [shot] }] });
+    expect(JSON.parse(String(calls[0]?.init?.body)).messages[0].content[0]).toEqual(BLOCK);
+
+    // The row is the catalogue speaking, and `ModelInfo` says an absent `vision` means text-only.
+    const denied = new AnthropicProvider({
+      apiKey: "k",
+      catalog: [{ id: "claude-text", label: "Text", class: "strong", local: false, supportsTools: true }],
+      defaultModel: "claude-text",
+      fetch,
+    });
+    expect(denied.seesImages()).toBe(false);
+    await denied.chat({ messages: [{ role: "user", content: "?", images: [shot] }] });
+    expect(JSON.parse(String(calls[1]?.init?.body)).messages[0].content).toBe("?\n\n[A picture was attached (shot.png), but this model cannot see pictures.]");
+  });
+
+  it("names a picture an assistant turn carried rather than inventing a block for it", () => {
+    const { messages } = toAnthropicMessages(
+      // What the provider hands the mapper: the drop already happened, with its reason in the text.
+      [{ role: "assistant", content: `here\n\n[A picture was attached, but ${NON_USER_IMAGE_REASON}.]` }],
+    );
+    expect(messages[0]).toEqual({ role: "assistant", content: `here\n\n[A picture was attached, but ${NON_USER_IMAGE_REASON}.]` });
+  });
+
+  it("refuses a picture over the cap by name, before anything is posted", async () => {
+    const huge = new Uint8Array(4 * 1024 * 1024 + 1);
+    huge.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const { fetch, calls } = recordingFetch([jsonResponse({ content: [] })]);
+    await expect(seeing(fetch).chat({ messages: [{ role: "user", content: "big", images: [{ mime: "image/png", data: huge }] }] })).rejects.toMatchObject({
+      vendorCode: "image_too_large",
+      providerId: "byok:anthropic",
+    });
+    expect(calls).toEqual([]);
   });
 });

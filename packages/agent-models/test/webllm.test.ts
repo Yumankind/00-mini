@@ -323,3 +323,41 @@ describe("stream", () => {
     await expect(collect(provider.stream({ messages: [] }))).rejects.toMatchObject({ code: "server_error" });
   });
 });
+
+// ── Pictures (gap B10) ──────────────────────────────────────────────────────────────────────────
+
+describe("a picture handed to the text-only fallback brain", () => {
+  const shot = { mime: "image/png", data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), source: "shot.png" };
+
+  it("says every row is blind, rather than leaving the flag absent", () => {
+    for (const model of WEBLLM_CATALOG) expect(model.vision).toBe(false);
+    // TWIN GUARD: the two vision builds the installed package DOES carry, and why neither is offered
+    // — both want ~4 GB of VRAM, twice §12.6's phone cap, and the local vision brain is LiteRT's 3n.
+    const vision = prebuiltAppConfig.model_list.filter((m) => m.model_id.toLowerCase().includes("vision"));
+    expect(vision.map((m) => m.model_id)).toEqual(["Phi-3.5-vision-instruct-q4f16_1-MLC", "Phi-3.5-vision-instruct-q4f32_1-MLC"]);
+    for (const m of vision) {
+      expect(WEBLLM_CATALOG.some((row) => row.id === m.model_id)).toBe(false);
+      expect(m.vram_required_MB ?? 0).toBeGreaterThan(2000);
+    }
+  });
+
+  it("drops it and tells the model so, so the answer is 'I cannot see' and not 'there is no image'", async () => {
+    withWebGpu();
+    const engine = mockEngine({ choices: [{ message: { content: "I cannot see pictures." }, finish_reason: "stop" }] });
+    const provider = new WebLLMProvider({ createEngine: async () => engine });
+    await provider.chat({ messages: [{ role: "user", content: "what is this?", images: [shot] }] });
+    expect(engine.requests[0]?.messages).toEqual([
+      { role: "user", content: "what is this?\n\n[A picture was attached (shot.png), but this model cannot see pictures.]" },
+    ]);
+  });
+
+  it("does the same on a stream, and leaves a picture-less turn untouched", async () => {
+    withWebGpu();
+    const engine = mockEngine(() => chunks({ choices: [{ delta: { content: "no" }, finish_reason: "stop" }] }));
+    const provider = new WebLLMProvider({ createEngine: async () => engine });
+    await collect(provider.stream({ messages: [{ role: "user", content: "?", images: [shot] }] }));
+    await collect(provider.stream({ messages: [{ role: "user", content: "plain" }] }));
+    expect(String((engine.requests[0]?.messages as { content: string }[])[0]?.content)).toContain("but this model cannot see pictures");
+    expect(engine.requests[1]?.messages).toEqual([{ role: "user", content: "plain" }]);
+  });
+});

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { ProviderError } from "../src/errors.js";
 import { LiteRtProvider } from "../src/litert.js";
-import { classActuallyUsed, localProviders, ModelRouter, providerClasses } from "../src/router.js";
+import { classActuallyUsed, localProviders, ModelRouter, providerClasses, providerVision, visionActuallyUsed } from "../src/router.js";
 import type { ModelClass, SwitchEvent } from "../src/router.js";
-import type { ChatChunk, ChatRequest, ChatResponse, ModelInfo, ModelProvider } from "../src/types.js";
+import type { ChatChunk, ChatMessage, ChatRequest, ChatResponse, ModelInfo, ModelProvider } from "../src/types.js";
 import { WebLLMProvider } from "../src/webllm.js";
 import { collect } from "./helpers.js";
 
@@ -21,6 +21,8 @@ interface FakeOptions {
   classes?: ModelClass[];
   /** A `models()` that throws — also `strong`, since a catalogue read is not a second door. */
   modelsThrows?: boolean;
+  /** Whether its catalogue rows carry `vision: true` (gap B10). */
+  vision?: boolean;
 }
 
 function fake(options: FakeOptions): ModelProvider & { seen: ChatRequest[]; modelsCalls: () => number } {
@@ -40,6 +42,7 @@ function fake(options: FakeOptions): ModelProvider & { seen: ChatRequest[]; mode
         class: cls,
         local: false,
         supportsTools: true,
+        ...(options.vision === undefined ? {} : { vision: options.vision }),
       }));
     },
     async readiness() {
@@ -518,5 +521,97 @@ describe("an explicit preference list is trusted as written", () => {
     const router = new ModelRouter({ providers: [cloud], preference: { small: ["overblast"], strong: ["overblast"] } });
     await router.pick("small");
     expect(cloud.modelsCalls()).toBe(0);
+  });
+});
+
+// ── Pictures (gap B10) ──────────────────────────────────────────────────────────────────────────
+
+describe("routing a turn that carries a picture", () => {
+  const withPicture: ChatMessage[] = [{ role: "user", content: "what is this?", images: [{ mime: "image/png", data: new Uint8Array([1, 2]) }] }];
+
+  it("reads a catalogue for vision, and reads silence as NO", async () => {
+    expect(await providerVision(fake({ id: "sees", classes: ["small"], vision: true }))).toBe(true);
+    expect(await providerVision(fake({ id: "blind", classes: ["small"], vision: false }))).toBe(false);
+    // An empty catalogue is `strong` for the class question and NOT-SEEING for this one: the two
+    // guesses fail in opposite ways, and only one of them fails the turn.
+    expect(await providerVision(fake({ id: "cloud" }))).toBe(false);
+    expect(await providerVision(fake({ id: "broken", modelsThrows: true }))).toBe(false);
+  });
+
+  it("states what became of the pictures", () => {
+    expect(visionActuallyUsed(true, true)).toEqual({ needed: true, seen: true, dropped: false });
+    expect(visionActuallyUsed(false, true)).toEqual({ needed: true, seen: false, dropped: true });
+    // No picture in the turn: nothing was needed, nothing was seen, nothing was dropped.
+    expect(visionActuallyUsed(true, false)).toEqual({ needed: false, seen: false, dropped: false });
+  });
+
+  it("prefers a brain that can see, without dropping the one that cannot", async () => {
+    const events: SwitchEvent[] = [];
+    const router = new ModelRouter({
+      providers: [fake({ id: "local", classes: ["small"], vision: false }), fake({ id: "vision-local", classes: ["small"], vision: true })],
+      onSwitch: (e) => events.push(e),
+    });
+    // Same router, same order, same class — the picture is the only difference.
+    expect((await router.pick("small")).id).toBe("local");
+    expect((await router.pick("small", { needsVision: true })).id).toBe("vision-local");
+    expect(events[0]?.vision).toBeUndefined();
+    expect(events[1]?.vision).toEqual({ needed: true, seen: true, dropped: false });
+  });
+
+  it("falls through to a brain that cannot see rather than refusing the turn, and says so", async () => {
+    const events: SwitchEvent[] = [];
+    const router = new ModelRouter({
+      providers: [
+        fake({ id: "vision-local", classes: ["small"], vision: true, readiness: { ready: false, reason: "download" } }),
+        fake({ id: "overblast", classes: ["strong"], vision: false }),
+      ],
+      onSwitch: (e) => events.push(e),
+    });
+    const picked = await router.pick("strong", { needsVision: true });
+    expect(picked.id).toBe("overblast");
+    // `dropped` is the field the UI draws "this brain cannot see it" from.
+    expect(events[0]).toMatchObject({ to: "overblast", reason: "readiness", vision: { needed: true, seen: false, dropped: true } });
+  });
+
+  it("needs no caller to say so on chat: the request carries the fact", async () => {
+    const events: SwitchEvent[] = [];
+    const blind = fake({ id: "local", classes: ["strong"], vision: false });
+    const sighted = fake({ id: "vision-local", classes: ["strong"], vision: true });
+    const router = new ModelRouter({ providers: [blind, sighted], onSwitch: (e) => events.push(e) });
+    await router.chat({ messages: withPicture }, "strong");
+    expect(sighted.seen).toHaveLength(1);
+    expect(blind.seen).toHaveLength(0);
+    expect(events[0]?.vision).toEqual({ needed: true, seen: true, dropped: false });
+  });
+
+  it("does the same for a stream, and stays out of the way when there is no picture", async () => {
+    const events: SwitchEvent[] = [];
+    const blind = fake({ id: "local", classes: ["strong"], vision: false });
+    const sighted = fake({ id: "vision-local", classes: ["strong"], vision: true });
+    const router = new ModelRouter({ providers: [blind, sighted], onSwitch: (e) => events.push(e) });
+    await collect(router.stream({ messages: withPicture }, "strong"));
+    expect(sighted.seen).toHaveLength(1);
+    await collect(router.stream({ messages: [{ role: "user", content: "no picture" }] }, "strong"));
+    expect(blind.seen).toHaveLength(1);
+    expect(events.map((e) => e.to)).toEqual(["vision-local", "local"]);
+    expect(events[1]?.vision).toBeUndefined();
+  });
+
+  it("ranks vision INSIDE an explicit preference list, since a list is about classes", async () => {
+    const router = new ModelRouter({
+      providers: [fake({ id: "a", vision: false, classes: ["strong"] }), fake({ id: "b", vision: true, classes: ["strong"] })],
+      preference: { small: ["a", "b"], strong: ["a", "b"] },
+    });
+    expect((await router.pick("strong")).id).toBe("a");
+    expect((await router.pick("strong", { needsVision: true })).id).toBe("b");
+  });
+
+  it("asks each provider's catalogue once, however many turns carry pictures", async () => {
+    const sighted = fake({ id: "vision-local", classes: ["strong"], vision: true });
+    const router = new ModelRouter({ providers: [sighted] });
+    await router.pick("strong", { needsVision: true });
+    await router.pick("strong", { needsVision: true });
+    // One read for the class ranking and one for the vision ranking, both cached per router.
+    expect(sighted.modelsCalls()).toBe(2);
   });
 });

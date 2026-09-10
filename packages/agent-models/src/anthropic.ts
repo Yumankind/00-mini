@@ -13,6 +13,19 @@
  *     needs parsing — except while streaming, where it arrives as `input_json_delta` text.
  *   · `max_tokens` IS REQUIRED. A request without one is refused, so this file has a default rather
  *     than letting a caller who omitted it discover that on the wire.
+ *   · A PICTURE IS A BLOCK TOO. `{ type: "image", source: { type: "base64", media_type, data } }`,
+ *     which is why the images are decoded rather than forwarded as a data URL: the base64 goes in
+ *     the `data` field and the MIME type in a field of its own. Blocks come BEFORE the text of their
+ *     turn, the order the vendor's own examples use, so the words can refer to the picture. A tool
+ *     result keeps its pictures — `tool_result.content` takes blocks here, unlike the OpenAI wire's
+ *     string — and everything else (an assistant turn, a system turn) drops them out loud.
+ *
+ * VISION IS ASSUMED FOR A MODEL NO ROW MENTIONS, the opposite default to the OpenAI-compatible
+ * peer's, and for a reason that is about the deployment rather than taste: this file talks to ONE
+ * vendor whose current models all read images, and its callers hand it a catalogue that is often
+ * empty (`byokProvider` defaults it to `[]`). A row that DOES mention the model is obeyed either
+ * way — `vision: true` sends, anything else does not, because the frozen `ModelInfo` says an absent
+ * flag means text-only.
  *
  * `anthropic-dangerous-direct-browser-access: true` is what makes the call answerable from a page at
  * all: without it the API sends no CORS headers and the browser refuses the response before we see
@@ -22,6 +35,7 @@
  */
 
 import { ProviderError, providerErrorFromResponse, providerErrorFromThrow, throwIfAborted } from "./errors.js";
+import { hasImages, imageBase64, NON_USER_IMAGE_REASON, rowVision, withoutImages } from "./image-parts.js";
 import { mapFinishReason, parseToolArguments } from "./openai-compatible.js";
 import type { FetchLike, Readiness } from "./openai-compatible.js";
 import { readSse } from "./sse.js";
@@ -43,6 +57,8 @@ export interface AnthropicProviderOptions {
   catalog: ModelInfo[];
   defaultModel: string;
   maxTokens?: number;
+  /** Whether pictures may be sent when the catalogue does not say. Defaults to TRUE here; see the header. */
+  vision?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -51,13 +67,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 type Block = Record<string, unknown>;
 
+/** `{type:"image", source:{type:"base64", media_type, data}}` per picture, in the turn's order. */
+function imageBlocks(m: ChatMessage, providerId?: string): Block[] {
+  return (m.images ?? []).map((image) => {
+    const { data, mime } = imageBase64(image, { providerId });
+    return { type: "image", source: { type: "base64", media_type: mime, data } };
+  });
+}
+
 /**
  * The neutral history → Anthropic's `{ system, messages }`.
  *
  * Consecutive tool results are merged into ONE user turn: the API refuses two user turns in a row,
  * and a planner that ran three tools in a turn produces exactly that shape.
  */
-export function toAnthropicMessages(messages: ChatMessage[]): { system?: string; messages: Record<string, unknown>[] } {
+export function toAnthropicMessages(messages: ChatMessage[], providerId?: string): { system?: string; messages: Record<string, unknown>[] } {
   const systems: string[] = [];
   const out: Record<string, unknown>[] = [];
   for (const m of messages) {
@@ -66,7 +90,11 @@ export function toAnthropicMessages(messages: ChatMessage[]): { system?: string;
       continue;
     }
     if (m.role === "tool") {
-      const block: Block = { type: "tool_result", tool_use_id: m.toolCallId ?? "", content: m.content };
+      // A tool result's own content is blocks when it carries a picture, and stays the plain string
+      // it always was when it does not — the shape every existing transcript already has.
+      const pictures = imageBlocks(m, providerId);
+      const inner: unknown = pictures.length ? [...pictures, ...(m.content ? [{ type: "text", text: m.content }] : [])] : m.content;
+      const block: Block = { type: "tool_result", tool_use_id: m.toolCallId ?? "", content: inner };
       const last = out[out.length - 1];
       if (last && last.role === "user" && Array.isArray(last.content)) (last.content as Block[]).push(block);
       else out.push({ role: "user", content: [block] });
@@ -77,6 +105,11 @@ export function toAnthropicMessages(messages: ChatMessage[]): { system?: string;
       if (m.content) blocks.push({ type: "text", text: m.content });
       for (const call of m.toolCalls) blocks.push({ type: "tool_use", id: call.id, name: call.name, input: call.arguments ?? {} });
       out.push({ role: "assistant", content: blocks });
+      continue;
+    }
+    const pictures = imageBlocks(m, providerId);
+    if (pictures.length) {
+      out.push({ role: m.role, content: [...pictures, ...(m.content ? [{ type: "text", text: m.content }] : [])] });
       continue;
     }
     out.push({ role: m.role, content: m.content });
@@ -145,9 +178,23 @@ export class AnthropicProvider implements ModelProvider {
     };
   }
 
+  /** The row's own `vision`, then the option, then yes — the opposite default to the OpenAI peer's. */
+  seesImages(modelId?: string): boolean {
+    return rowVision(this.opts.catalog, modelId ?? this.opts.defaultModel) ?? this.opts.vision ?? true;
+  }
+
+  /** Pictures a `user` or `tool` turn carries stay; the rest are dropped with the reason that is true. */
+  private historyFor(req: ChatRequest): ChatMessage[] {
+    if (!hasImages(req.messages)) return req.messages;
+    if (!this.seesImages(req.model)) return withoutImages(req.messages);
+    return req.messages.map((m) =>
+      m.images?.length && m.role !== "user" && m.role !== "tool" ? (withoutImages([m], NON_USER_IMAGE_REASON)[0] as ChatMessage) : m,
+    );
+  }
+
   private async send(req: ChatRequest, stream: boolean): Promise<Response> {
     throwIfAborted(this.id, req);
-    const { system, messages } = toAnthropicMessages(req.messages);
+    const { system, messages } = toAnthropicMessages(this.historyFor(req), this.id);
     const body: Record<string, unknown> = {
       model: req.model ?? this.opts.defaultModel,
       messages,

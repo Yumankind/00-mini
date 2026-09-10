@@ -28,6 +28,16 @@
  *    weights, so whoever redistributes them must carry them too. This package ships the mechanism
  *    and the asset FILE NAMES; the host is configuration (the house rule in CLAUDE.md).
  *
+ * 4a. PICTURES ONLY WHERE THE ROW SAYS SO. The installed README is explicit — "For Gemma 3n models,
+ *    it can process input images and audio as well" — and the runtime is explicit about the price:
+ *    `LlmInferenceOptions.maxNumImages` "when set > 0, will enable vision modality usage. Will also
+ *    enable streaming loading, and therefore is not compatible with 'converted' models". So it is
+ *    set at CREATION and only for a catalogue row flagged `vision`; a text row created with it would
+ *    be a text row that stops loading. The images themselves ride as `PromptPart`s
+ *    (`Prompt = PromptPart | PromptPart[]`, `PromptPart = string | Image | Audio`, `Image` being
+ *    `{ imageSource: ImageSource }`), which is why `templates.ts` renders segments. A row WITHOUT
+ *    vision drops the pictures and says so in the text — never silently (image-parts.ts, rule 3).
+ *
  * 4. TOOL CALLS ALWAYS TAKE THE PROMPT FALLBACK. `@mediapipe/tasks-genai@0.10.29` exposes NO
  *    function-calling and NO constrained-decoding surface in the web build: the whole generation
  *    door is `generateResponse(query: Prompt, progressListener?)` → `Promise<string>`, and the
@@ -38,9 +48,10 @@
  */
 
 import { ProviderError, providerErrorFromThrow, throwIfAborted } from "./errors.js";
+import { decodeImage, hasImages, imageDataUrl } from "./image-parts.js";
 import { mapFinishReason } from "./openai-compatible.js";
 import type { FetchLike, Readiness } from "./openai-compatible.js";
-import { renderPrompt, stopAtTurnEnd, TURN_MARKER_MAX_LENGTH, turnMarkerIndex } from "./templates.js";
+import { renderPrompt, renderPromptSegments, stopAtTurnEnd, TURN_MARKER_MAX_LENGTH, turnMarkerIndex } from "./templates.js";
 import type { PromptFamily } from "./templates.js";
 import { fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
 import type {
@@ -48,6 +59,7 @@ import type {
   ChatMessage,
   ChatRequest,
   ChatResponse,
+  ImagePart,
   ModelInfo,
   ModelProvider,
   ReadinessProgress,
@@ -443,11 +455,54 @@ export interface LiteRtProgress {
   text: string;
 }
 
+/**
+ * A picture, as MediaPipe takes one: `ImageSource` is `Exclude<CanvasImageSource, SVGElement> | string`
+ * in the installed `genai.d.ts`, i.e. a decoded bitmap or element — or a URL, which is what makes a
+ * `data:` URL a legal fallback on a host with no `createImageBitmap`.
+ */
+export type LiteRtImageSource = Exclude<CanvasImageSource, SVGElement> | string;
+
+/** `Image` in the installed typings. Named here so nothing in this package imports MediaPipe for a type. */
+export interface LiteRtImage {
+  imageSource: LiteRtImageSource;
+}
+
+/** `PromptPart` minus audio, which this package does not send: `string | Image`. */
+export type LiteRtPromptPart = string | LiteRtImage;
+
+/** `Prompt` in the installed typings: one part, or a list of them. */
+export type LiteRtPrompt = LiteRtPromptPart | LiteRtPromptPart[];
+
+/**
+ * Bytes → something the wasm runtime can read, ISOLATED so a Node test can fake it.
+ *
+ * The real conversion is `createImageBitmap`, which exists in a window and in a worker and in
+ * neither Node nor a test. Everything either side of it — the cap, the sniff, the position of the
+ * picture in the turn — is ordinary logic that must be testable, so the one browser-only line lives
+ * behind this function and `createImageSource` replaces it in the tests.
+ */
+export type LiteRtImageSourceFactory = (image: ImagePart, providerId: string) => Promise<LiteRtImageSource>;
+
+/** The number of pictures a vision task is created to accept in one prompt (`maxNumImages`). */
+export const LITERT_MAX_IMAGES = 4;
+
+const importImageSource: LiteRtImageSourceFactory = async (image, providerId) => {
+  const maker = (globalThis as { createImageBitmap?: (source: Blob) => Promise<ImageBitmap> }).createImageBitmap;
+  if (!maker) {
+    // No decoder on this host: hand the runtime the URL form, which its own `ImageSource` allows.
+    return imageDataUrl(image, { providerId });
+  }
+  const { bytes, mime } = decodeImage(image, { providerId });
+  // `.slice()` rather than the view itself: TS types a `Uint8Array`'s buffer as possibly SHARED, and
+  // a `Blob` takes an `ArrayBuffer`. The copy is a few hundred kilobytes and happens once per picture.
+  return maker(new Blob([bytes.slice().buffer as ArrayBuffer], { type: mime }));
+};
+
 /** The sliver of `LlmInference` this provider uses. Everything else would be untestable in Node. */
 export interface LiteRtTaskLike {
-  generateResponse(query: string, progressListener?: (partial: string, done: boolean) => unknown): Promise<string>;
+  generateResponse(query: LiteRtPrompt, progressListener?: (partial: string, done: boolean) => unknown): Promise<string>;
   /** Synchronous in the real task, and only legal between generations. */
-  sizeInTokens?(query: string): number | undefined;
+  sizeInTokens?(query: LiteRtPrompt): number | undefined;
   /** "Sends a signal to cancel any current decoding when the engine is able to." */
   cancelProcessing?(): void;
   setOptions?(options: Record<string, unknown>): Promise<void>;
@@ -461,6 +516,8 @@ export interface LiteRtTaskOptions {
   topK?: number;
   temperature?: number;
   randomSeed?: number;
+  /** Set only for a `vision` row: > 0 turns the vision modality on, and streaming loading with it. */
+  maxNumImages?: number;
 }
 
 export type LiteRtTaskFactory = (options: LiteRtTaskOptions) => Promise<LiteRtTaskLike>;
@@ -485,6 +542,9 @@ const importTask: LiteRtTaskFactory = async (options) => {
     topK: options.topK,
     temperature: options.temperature,
     randomSeed: options.randomSeed,
+    // Omitted entirely for a text row: the option is not "how many pictures at most", it is the
+    // switch that turns the vision modality (and streaming loading) on.
+    ...(options.maxNumImages ? { maxNumImages: options.maxNumImages } : {}),
   });
 };
 
@@ -516,6 +576,12 @@ export interface LiteRtProviderOptions {
   cacheName?: string;
   /** Injected by tests; in a browser the dynamic import above is what runs. */
   createTask?: LiteRtTaskFactory;
+  /** Injected by tests; in a browser `createImageBitmap` is what runs. */
+  createImageSource?: LiteRtImageSourceFactory;
+  /** Overrides the catalogue row's `vision` — for a model that is not in any catalogue. */
+  vision?: boolean;
+  /** How many pictures the task is created to accept. Defaults to `LITERT_MAX_IMAGES`. */
+  maxNumImages?: number;
   catalog?: LiteRtModelInfo[];
   /** For a model that is not in the catalogue. */
   assetFile?: string;
@@ -528,7 +594,7 @@ export interface LiteRtProviderOptions {
 }
 
 /** The neutral usage shape, from the only counter the task offers. Estimated, and only when it answers. */
-function countUsage(task: LiteRtTaskLike, prompt: string, answer: string): Usage | undefined {
+function countUsage(task: LiteRtTaskLike, prompt: LiteRtPrompt, answer: string): Usage | undefined {
   const input = task.sizeInTokens?.(prompt);
   const output = task.sizeInTokens?.(answer);
   if (typeof input !== "number" || typeof output !== "number") return undefined;
@@ -542,8 +608,11 @@ export class LiteRtProvider implements ModelProvider {
   readonly assetUrl: string;
   readonly wasmBaseUrl: string;
   readonly family: PromptFamily;
+  /** Whether this row takes pictures at all — the catalogue's `vision`, or the caller's override. */
+  readonly seesImages: boolean;
   private readonly opts: LiteRtProviderOptions;
   private readonly createTask: LiteRtTaskFactory;
+  private readonly createImageSource: LiteRtImageSourceFactory;
   private readonly cacheName: string;
   private task: LiteRtTaskLike | null = null;
   private loading: Promise<LiteRtTaskLike> | null = null;
@@ -574,6 +643,8 @@ export class LiteRtProvider implements ModelProvider {
     this.wasmBaseUrl = opts.wasmBaseUrl ?? LITERT_DEFAULT_WASM_PATH;
     this.family = opts.family ?? this.model?.family ?? "plain";
     this.createTask = opts.createTask ?? importTask;
+    this.createImageSource = opts.createImageSource ?? importImageSource;
+    this.seesImages = opts.vision ?? this.model?.vision === true;
     this.cacheName = opts.cacheName ?? LITERT_MODEL_CACHE;
     this.applied = { temperature: opts.temperature, maxTokens: opts.maxTokens ?? this.model?.contextTokens };
   }
@@ -744,6 +815,7 @@ export class LiteRtProvider implements ModelProvider {
         topK: this.opts.topK,
         temperature: this.applied.temperature,
         randomSeed: this.opts.randomSeed,
+        ...(this.seesImages ? { maxNumImages: this.opts.maxNumImages ?? LITERT_MAX_IMAGES } : {}),
       });
     })().then(
       (task) => {
@@ -804,10 +876,23 @@ export class LiteRtProvider implements ModelProvider {
     await task.setOptions(next);
   }
 
-  /** The transcript as one prompt, with the fallback instruction folded into the system turn. */
-  private buildPrompt(req: ChatRequest): string {
+  /**
+   * The transcript as one prompt, with the fallback instruction folded into the system turn.
+   *
+   * A text row gets the string it always got — `renderPrompt` drops any pictures and writes the note
+   * in their place. A vision row gets the part LIST, because that is the only shape a picture can
+   * travel in (`Prompt = PromptPart | PromptPart[]`), and the conversion of each one happens here so
+   * that a picture too big to send fails BEFORE the generation starts rather than half way through.
+   */
+  private async buildPrompt(req: ChatRequest): Promise<LiteRtPrompt> {
     const messages = req.tools?.length ? withToolInstruction(req.messages, fallbackToolPrompt(req.tools)) : req.messages;
-    return renderPrompt(messages, this.family);
+    if (!this.seesImages || !hasImages(messages)) return renderPrompt(messages, this.family);
+    const parts: LiteRtPromptPart[] = [];
+    for (const segment of renderPromptSegments(messages, this.family)) {
+      if (segment.kind === "text") parts.push(segment.text);
+      else parts.push({ imageSource: await this.createImageSource(segment.image, this.id) });
+    }
+    return parts;
   }
 
   private finish(raw: string, fallback: boolean): ChatResponse {
@@ -825,7 +910,7 @@ export class LiteRtProvider implements ModelProvider {
     // generation, and `addEventListener` on an already-aborted signal never fires.
     throwIfAborted(this.id, req);
     await this.applyRequestOptions(task, req);
-    const prompt = this.buildPrompt(req);
+    const prompt = await this.buildPrompt(req);
     const onAbort = () => task.cancelProcessing?.();
     req.signal?.addEventListener("abort", onAbort, { once: true });
     let raw: string;
@@ -859,7 +944,7 @@ export class LiteRtProvider implements ModelProvider {
     throwIfAborted(this.id, req);
     const task = await this.load(req.signal);
     await this.applyRequestOptions(task, req);
-    const prompt = this.buildPrompt(req);
+    const prompt = await this.buildPrompt(req);
     const fallback = Boolean(req.tools?.length);
 
     const queue: string[] = [];

@@ -11,11 +11,12 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LITERT_CATALOG,
   LITERT_DEFAULT_MODEL_ID,
   LITERT_DEFAULT_WASM_PATH,
+  LITERT_MAX_IMAGES,
   LITERT_MODEL_CACHE,
   LITERT_NATIVE_TOOLS,
   LITERT_UNVERIFIED_ASSETS,
@@ -27,9 +28,24 @@ import {
   mergeMirrorCatalog,
   parseMirrorCatalog,
 } from "../src/litert.js";
-import type { LiteRtCacheLike, LiteRtCacheStorageLike, LiteRtProgress, LiteRtTaskLike } from "../src/litert.js";
+import type {
+  LiteRtCacheLike,
+  LiteRtCacheStorageLike,
+  LiteRtImageSource,
+  LiteRtProgress,
+  LiteRtPrompt,
+  LiteRtTaskLike,
+  LiteRtTaskOptions,
+} from "../src/litert.js";
 import type { ReadinessProgress } from "../src/types.js";
+import type { ImagePart } from "../src/types.js";
 import { collect } from "./helpers.js";
+
+/** A prompt as one string, with each picture standing in as `<image>`. */
+function promptText(query: LiteRtPrompt): string {
+  const parts = Array.isArray(query) ? query : [query];
+  return parts.map((part) => (typeof part === "string" ? part : "<image>")).join("");
+}
 
 const require = createRequire(import.meta.url);
 const packageDir = dirname(require.resolve("@mediapipe/tasks-genai"));
@@ -108,7 +124,10 @@ function assetFetch(bytes: number[], init: { status?: number; length?: boolean; 
 }
 
 interface MockTask extends LiteRtTaskLike {
+  /** The prompt as TEXT — an image part renders as `<image>`, so every text assertion still reads. */
   prompts: string[];
+  /** The prompt as it was actually handed over: a string, or the `PromptPart[]` of a vision turn. */
+  parts: LiteRtPrompt[];
   options: Record<string, unknown>[];
   cancels: number;
   closes: number;
@@ -119,11 +138,13 @@ function mockTask(chunks: string[], opts: { fail?: unknown; tokens?: number; sil
   let cancelled = false;
   const task: MockTask = {
     prompts: [],
+    parts: [],
     options: [],
     cancels: 0,
     closes: 0,
-    async generateResponse(query: string, listener?: (partial: string, done: boolean) => unknown) {
-      task.prompts.push(query);
+    async generateResponse(query: LiteRtPrompt, listener?: (partial: string, done: boolean) => unknown) {
+      task.parts.push(query);
+      task.prompts.push(promptText(query));
       if (opts.fail) throw opts.fail;
       let out = "";
       for (const [i, chunk] of chunks.entries()) {
@@ -136,8 +157,8 @@ function mockTask(chunks: string[], opts: { fail?: unknown; tokens?: number; sil
       }
       return opts.whole ?? out;
     },
-    sizeInTokens(query: string) {
-      return opts.tokens === undefined ? undefined : query.length;
+    sizeInTokens(query: LiteRtPrompt) {
+      return opts.tokens === undefined ? undefined : promptText(query).length;
     },
     cancelProcessing() {
       cancelled = true;
@@ -823,5 +844,138 @@ describe("the mirror's catalogue", () => {
     const rows = mergeMirrorCatalog({ version: 1, base: "https://h", assets: [{ file: "gemma3-1b-it-int4-web.task" }] });
     expect(rows.map((r) => r.id)).toEqual(["gemma3-1b-it-int4-web"]);
     expect(rows[0].license).toEqual(GEMMA_TERMS);
+  });
+});
+
+// ── Pictures (gap B10) ──────────────────────────────────────────────────────────────────────────
+
+describe("showing a picture to a local model", () => {
+  const shot: ImagePart = { mime: "image/png", data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7]), source: "shot.png" };
+  const asked = { messages: [{ role: "user" as const, content: "what is this?", images: [shot] }] };
+
+  beforeEach(withWebGpu);
+
+  /** A provider whose task creation is recorded, and whose picture conversion is faked (rule 4a). */
+  function visionProvider(overrides: Partial<ConstructorParameters<typeof LiteRtProvider>[0]> = {}) {
+    const created: LiteRtTaskOptions[] = [];
+    const sources: ImagePart[] = [];
+    const task = mockTask(["ok"]);
+    const instance = new LiteRtProvider({
+      modelBaseUrl: BASE,
+      modelId: "gemma-3n-E2B-it-int4-Web",
+      caches: memoryCaches(),
+      fetch: assetFetch([1, 2, 3, 4]).fetch,
+      createTask: async (options) => {
+        created.push(options);
+        return task;
+      },
+      createImageSource: async (image): Promise<LiteRtImageSource> => {
+        sources.push(image);
+        return `bitmap:${image.source ?? "?"}`;
+      },
+      ...overrides,
+    });
+    return { instance, created, sources, task };
+  }
+
+  it("says which catalogue rows can see, from the flag the mirror publishes", () => {
+    const seeing = LITERT_CATALOG.filter((m) => m.vision).map((m) => m.id);
+    // The Gemma 3n web builds are the vision rows; the Gemma 4 web builds are text-only per their card.
+    expect(seeing).toEqual(["gemma-3n-E2B-it-int4-Web", "gemma-3n-E4B-it-int4-Web"]);
+    expect(LITERT_CATALOG.find((m) => m.id === "gemma-4-E2B-it-web")?.vision).toBeUndefined();
+    expect(new LiteRtProvider({ modelBaseUrl: BASE, modelId: "gemma-3n-E2B-it-int4-Web" }).seesImages).toBe(true);
+    expect(new LiteRtProvider({ modelBaseUrl: BASE }).seesImages).toBe(false);
+    // A row that is in no catalogue can still be told what it is.
+    expect(new LiteRtProvider({ modelBaseUrl: BASE, modelId: "x", assetFile: "x.task", vision: true }).seesImages).toBe(true);
+  });
+
+  it("takes the flag from a MERGED mirror row, which is what the picker builds a provider from", () => {
+    const rows = mergeMirrorCatalog(parseMirrorCatalog(JSON.parse(readFileSync(new URL("./fixtures/litert-mirror-catalog.json", import.meta.url), "utf8"))));
+    const from = (id: string) => new LiteRtProvider({ modelBaseUrl: BASE, modelId: id, catalog: rows }).seesImages;
+    expect(from("gemma-3n-E4B-it-int4-Web")).toBe(true);
+    expect(from("gemma3-270m-it-q4_0-web")).toBe(false);
+  });
+
+  it("creates the task with maxNumImages ONLY for a vision row, since the option is the modality switch", async () => {
+    const seeing = visionProvider();
+    await seeing.instance.chat(asked);
+    expect(seeing.created[0]?.maxNumImages).toBe(LITERT_MAX_IMAGES);
+    expect(LITERT_MAX_IMAGES).toBe(4);
+
+    const text = visionProvider({ modelId: LITERT_DEFAULT_MODEL_ID });
+    await text.instance.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(text.created[0]).not.toHaveProperty("maxNumImages");
+  });
+
+  it("hands the runtime a PromptPart list with the picture inside the turn", async () => {
+    const { instance, task, sources } = visionProvider();
+    await instance.chat(asked);
+    expect(task.parts[0]).toEqual([
+      "<start_of_turn>user\n",
+      { imageSource: "bitmap:shot.png" },
+      "what is this?<end_of_turn>\n<start_of_turn>model\n",
+    ]);
+    // The conversion happened once, on the part the caller passed, and nowhere else.
+    expect(sources).toEqual([shot]);
+  });
+
+  it("streams from the same part list, so a picture is not a second code path", async () => {
+    const { instance, task } = visionProvider();
+    const chunks = await collect(instance.stream(asked));
+    expect(chunks.some((c) => c.type === "done")).toBe(true);
+    expect(Array.isArray(task.parts[0])).toBe(true);
+  });
+
+  it("sends a plain string when a vision row is asked something with no picture in it", async () => {
+    const { instance, task } = visionProvider();
+    await instance.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(task.parts[0]).toBe("<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n");
+  });
+
+  it("keeps the tool-call instruction where it was, with the picture beside it", async () => {
+    const { instance, task } = visionProvider();
+    await instance.chat({ ...asked, tools: [{ name: "ls", description: "list", parameters: { type: "object" } }] });
+    expect(task.prompts[0]).toContain("- ls: list");
+    expect(task.prompts[0]).toContain("<image>");
+  });
+
+  it("tells a text-only row's model that a picture was attached, rather than dropping it in silence", async () => {
+    const { instance, task, sources } = visionProvider({ modelId: LITERT_DEFAULT_MODEL_ID });
+    await instance.chat(asked);
+    expect(typeof task.parts[0]).toBe("string");
+    expect(task.prompts[0]).toContain("[A picture was attached (shot.png), but this model cannot see pictures.]");
+    expect(task.prompts[0]).not.toContain("<image>");
+    expect(sources).toEqual([]);
+  });
+
+  it("refuses a picture over the cap BEFORE the generation starts, by name", async () => {
+    const huge = new Uint8Array(4 * 1024 * 1024 + 1);
+    huge.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const { instance, task } = visionProvider({ createImageSource: undefined });
+    await expect(instance.chat({ messages: [{ role: "user", content: "big", images: [{ mime: "image/png", data: huge }] }] })).rejects.toMatchObject({
+      code: "bad_request",
+      vendorCode: "image_too_large",
+      providerId: "local-litert",
+    });
+    expect(task.prompts).toEqual([]);
+  });
+
+  it("falls back to a data URL where the host has no createImageBitmap — which is every Node run", async () => {
+    const { instance, task } = visionProvider({ createImageSource: undefined });
+    await instance.chat(asked);
+    const parts = task.parts[0] as (string | { imageSource: LiteRtImageSource })[];
+    expect(parts[1]).toEqual({ imageSource: "data:image/png;base64,iVBORw0KGgoH" });
+  });
+
+  it("uses createImageBitmap when the host has one, so a browser sends a decoded bitmap", async () => {
+    const blobs: { type: string; size: number }[] = [];
+    vi.stubGlobal("createImageBitmap", async (blob: Blob) => {
+      blobs.push({ type: blob.type, size: blob.size });
+      return "an-image-bitmap" as unknown as ImageBitmap;
+    });
+    const { instance, task } = visionProvider({ createImageSource: undefined });
+    await instance.chat(asked);
+    expect(blobs).toEqual([{ type: "image/png", size: shot.data.length }]);
+    expect((task.parts[0] as { imageSource: LiteRtImageSource }[])[1]).toEqual({ imageSource: "an-image-bitmap" });
   });
 });

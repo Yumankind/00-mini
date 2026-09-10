@@ -7,9 +7,19 @@
  * `src/templates.ts` until someone reads a real answer.
  */
 import { describe, expect, it } from "vitest";
-import { GEMMA_MARKERS, PROMPT_TEMPLATES, renderPrompt, stopAtTurnEnd, TURN_MARKER_MAX_LENGTH, turnMarkerIndex } from "../src/templates.js";
+import { withoutImages } from "../src/image-parts.js";
+import {
+  GEMMA_MARKERS,
+  PROMPT_SEGMENT_TEMPLATES,
+  PROMPT_TEMPLATES,
+  renderPrompt,
+  renderPromptSegments,
+  stopAtTurnEnd,
+  TURN_MARKER_MAX_LENGTH,
+  turnMarkerIndex,
+} from "../src/templates.js";
 import type { PromptFamily } from "../src/templates.js";
-import type { ChatMessage } from "../src/types.js";
+import type { ChatMessage, ImagePart } from "../src/types.js";
 
 describe("the gemma turn format", () => {
   it("wraps every turn and leaves the model's own turn open at the end", () => {
@@ -108,5 +118,71 @@ describe("cutting the answer at the first marker", () => {
 
   it("says how much of a stream's tail could still be half a marker", () => {
     expect(TURN_MARKER_MAX_LENGTH).toBe(GEMMA_MARKERS.start.length);
+  });
+});
+
+// ── Pictures in a turn (gap B10) ────────────────────────────────────────────────────────────────
+
+describe("the segment form of a prompt", () => {
+  const shot: ImagePart = { mime: "image/png", data: new Uint8Array([1, 2, 3]), source: "shot.png" };
+
+  it("puts the picture inside its own turn, after the header and before the words", () => {
+    const segments = renderPromptSegments([{ role: "user", content: "what is this?", images: [shot] }], "gemma");
+    expect(segments).toEqual([
+      { kind: "text", text: "<start_of_turn>user\n" },
+      { kind: "image", image: shot },
+      { kind: "text", text: "what is this?<end_of_turn>\n<start_of_turn>model\n" },
+    ]);
+  });
+
+  it("keeps two pictures in the order they were attached, in the turn they came with", () => {
+    const second: ImagePart = { mime: "image/png", data: new Uint8Array([9]), source: "b.png" };
+    const segments = renderPromptSegments(
+      [
+        { role: "user", content: "one", images: [shot, second] },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: "two" },
+      ],
+      "gemma",
+    );
+    expect(segments.filter((s) => s.kind === "image")).toEqual([
+      { kind: "image", image: shot },
+      { kind: "image", image: second },
+    ]);
+    expect(segments[0]).toEqual({ kind: "text", text: "<start_of_turn>user\n" });
+    expect(segments[3]?.kind).toBe("text");
+  });
+
+  it("is one text segment and nothing else when nothing was attached", () => {
+    const segments = renderPromptSegments([{ role: "user", content: "hello" }], "gemma");
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toEqual({ kind: "text", text: renderPrompt([{ role: "user", content: "hello" }], "gemma") });
+  });
+
+  it("cuts the plain format the same way, and an unknown family falls back to it", () => {
+    const segments = renderPromptSegments([{ role: "user", content: "u", images: [shot] }], "martian" as PromptFamily);
+    expect(segments).toEqual([
+      { kind: "text", text: "User: " },
+      { kind: "image", image: shot },
+      { kind: "text", text: "u\n\nAssistant:" },
+    ]);
+    expect(Object.keys(PROMPT_SEGMENT_TEMPLATES).sort()).toEqual(["gemma", "plain"]);
+  });
+});
+
+describe("the string form, for a task that takes no pictures", () => {
+  const shot: ImagePart = { mime: "image/png", data: new Uint8Array([1]), source: "shot.png" };
+
+  it("never drops a picture in silence, even from a caller who forgot to", () => {
+    const prompt = renderPrompt([{ role: "user", content: "what is this?", images: [shot] }], "gemma");
+    expect(prompt).toContain("A picture was attached (shot.png), but this model cannot see pictures.");
+    expect(prompt).toBe("<start_of_turn>user\nwhat is this?\n\n[A picture was attached (shot.png), but this model cannot see pictures.]<end_of_turn>\n<start_of_turn>model\n");
+  });
+
+  it("says it once, however many times it is rendered", () => {
+    const messages: ChatMessage[] = [{ role: "user", content: "hi", images: [shot] }];
+    const once = renderPrompt(messages, "gemma");
+    expect(renderPrompt(withoutImages(messages), "gemma")).toBe(once);
+    expect(PROMPT_TEMPLATES.gemma(messages)).toBe(once);
   });
 });

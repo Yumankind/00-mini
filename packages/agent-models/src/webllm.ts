@@ -18,6 +18,15 @@
  *    a test that pins the list against the installed package so the day a small model joins it, the
  *    test says so rather than the behaviour silently changing.
  *
+ * 3. NOTHING HERE SEES A PICTURE, AND IT SAYS SO. The installed prebuilt list holds exactly two
+ *    vision builds — `Phi-3.5-vision-instruct-q4f16_1-MLC` (3952 MB of VRAM) and its q4f32_1 twin —
+ *    and neither is in this catalogue: both are past §12.6's phone cap by a factor of two, and the
+ *    local vision brain of §6.1 is LiteRT's Gemma 3n, which this provider is the FALLBACK behind. So
+ *    every row carries `vision: false` — stated rather than left absent, because absent means
+ *    "nobody said" everywhere else in this package — and a message that arrives with images loses
+ *    them and gains the one line of image-parts.ts rule 3. The day a small vision build joins the
+ *    catalogue, that row's flag is the only thing that changes.
+ *
  * The catalogue is curated, not the whole prebuilt list of 163: a picker with 163 rows is not a
  * choice, it is a wall. Every id here is copied from the installed package's `prebuiltAppConfig`
  * and pinned by `test/webllm.test.ts` against it, because an id that does not exist is a download
@@ -26,6 +35,7 @@
  */
 
 import { ProviderError, providerErrorFromThrow, throwIfAborted } from "./errors.js";
+import { withoutImages } from "./image-parts.js";
 import { mapFinishReason, mapUsage, parseToolArguments } from "./openai-compatible.js";
 import { fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
 import type { Readiness } from "./openai-compatible.js";
@@ -68,14 +78,14 @@ export interface WebLLMModelInfo extends ModelInfo {
  * config so a laptop integrated GPU can hold it.
  */
 export const WEBLLM_CATALOG: WebLLMModelInfo[] = [
-  { id: "Qwen3-0.6B-q4f16_1-MLC", label: "Qwen3 0.6B", class: "small", local: true, supportsTools: true, contextTokens: 4096, vramMb: 1403 },
-  { id: "Llama-3.2-1B-Instruct-q4f16_1-MLC", label: "Llama 3.2 1B", class: "small", local: true, supportsTools: true, contextTokens: 4096, vramMb: 879 },
-  { id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC", label: "Qwen2.5 1.5B", class: "small", local: true, supportsTools: true, contextTokens: 4096, vramMb: 1630 },
-  { id: "Qwen3-1.7B-q4f16_1-MLC", label: "Qwen3 1.7B", class: "small", local: true, supportsTools: true, contextTokens: 4096, vramMb: 2037 },
-  { id: "SmolLM2-1.7B-Instruct-q4f16_1-MLC", label: "SmolLM2 1.7B", class: "small", local: true, supportsTools: true, contextTokens: 4096, vramMb: 1774 },
-  { id: "gemma-2-2b-it-q4f16_1-MLC", label: "Gemma 2 2B", class: "small", local: true, supportsTools: true, contextTokens: 4096, vramMb: 1895 },
-  { id: "Llama-3.2-3B-Instruct-q4f16_1-MLC", label: "Llama 3.2 3B", class: "small", local: true, supportsTools: true, contextTokens: 4096, vramMb: 2264 },
-  { id: "Hermes-3-Llama-3.2-3B-q4f16_1-MLC", label: "Hermes 3 Llama 3.2 3B", class: "small", local: true, supportsTools: true, contextTokens: 4096, vramMb: 2264 },
+  { id: "Qwen3-0.6B-q4f16_1-MLC", label: "Qwen3 0.6B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1403 },
+  { id: "Llama-3.2-1B-Instruct-q4f16_1-MLC", label: "Llama 3.2 1B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 879 },
+  { id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC", label: "Qwen2.5 1.5B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1630 },
+  { id: "Qwen3-1.7B-q4f16_1-MLC", label: "Qwen3 1.7B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 2037 },
+  { id: "SmolLM2-1.7B-Instruct-q4f16_1-MLC", label: "SmolLM2 1.7B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1774 },
+  { id: "gemma-2-2b-it-q4f16_1-MLC", label: "Gemma 2 2B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1895 },
+  { id: "Llama-3.2-3B-Instruct-q4f16_1-MLC", label: "Llama 3.2 3B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 2264 },
+  { id: "Hermes-3-Llama-3.2-3B-q4f16_1-MLC", label: "Hermes 3 Llama 3.2 3B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 2264 },
 ];
 
 /** The one this package loads when the caller names none. Smallest that still follows instructions. */
@@ -234,9 +244,15 @@ export class WebLLMProvider implements ModelProvider {
     this.engine = null;
   }
 
-  /** The messages as the engine wants them, with the fallback instruction folded in when needed. */
+  /**
+   * The messages as the engine wants them, with the fallback instruction folded in when needed.
+   *
+   * `withoutImages` first, and unconditionally: every model in this catalogue is text-only (rule 3),
+   * so a picture cannot be sent — but it is named in the text, so the model answers "I cannot see
+   * pictures" instead of "I see no image" to a person who is looking at the one they attached.
+   */
   private buildMessages(req: ChatRequest, fallback: boolean): Record<string, unknown>[] {
-    const messages = req.messages.map((m) => {
+    const messages = withoutImages(req.messages).map((m) => {
       if (m.role === "tool") return { role: "tool", tool_call_id: m.toolCallId ?? "", content: m.content };
       const out: Record<string, unknown> = { role: m.role, content: m.content };
       if (m.role === "assistant" && m.toolCalls?.length) {

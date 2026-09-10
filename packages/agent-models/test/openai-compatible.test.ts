@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ProviderError } from "../src/errors.js";
-import { mapFinishReason, mapUsage, OpenAICompatibleProvider, parseToolArguments, splitFooter } from "../src/openai-compatible.js";
-import type { ChatChunk, ModelInfo } from "../src/types.js";
+import { NON_USER_IMAGE_REASON } from "../src/image-parts.js";
+import { mapFinishReason, mapUsage, OpenAICompatibleProvider, parseToolArguments, splitFooter, TOOL_RESULT_IMAGE_REASON } from "../src/openai-compatible.js";
+import type { ChatChunk, ImagePart, ModelInfo } from "../src/types.js";
 import { collect, frame, jsonResponse, recordingFetch, sseResponse } from "./helpers.js";
 
 const CATALOG: ModelInfo[] = [
@@ -292,5 +293,98 @@ describe("readiness and models", () => {
     const models = await p.models();
     models.pop();
     expect(await p.models()).toHaveLength(CATALOG.length);
+  });
+});
+
+// ── Pictures (gap B10) ──────────────────────────────────────────────────────────────────────────
+
+describe("images on the OpenAI wire", () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7]);
+  const shot: ImagePart = { mime: "image/jpeg", data: png, source: "shot.png" };
+  const DATA_URL = "data:image/png;base64,iVBORw0KGgoH";
+
+  const VISION: ModelInfo[] = [
+    { id: "m-sees", label: "Sees", class: "strong", local: false, supportsTools: true, vision: true },
+    { id: "m-blind", label: "Blind", class: "small", local: false, supportsTools: true },
+  ];
+
+  function sent(calls: { init?: RequestInit }[]): Record<string, unknown> {
+    return JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
+  }
+
+  it("makes the user turn multi-part, text first and the picture as an image_url", async () => {
+    const { fetch, calls } = recordingFetch([jsonResponse({ choices: [{ message: { content: "a cat" }, finish_reason: "stop" }] })]);
+    const p = provider(fetch, { catalog: VISION, defaultModel: "m-sees" });
+    await p.chat({ messages: [{ role: "user", content: "what is this?", images: [shot] }] });
+    expect(sent(calls).messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "what is this?" },
+          // The DECLARED `image/jpeg` loses to the PNG magic bytes — the vendor reads the bytes too.
+          { type: "image_url", image_url: { url: DATA_URL } },
+        ],
+      },
+    ]);
+  });
+
+  it("leaves a turn with no picture as the plain string it always was", async () => {
+    const { fetch, calls } = recordingFetch([jsonResponse({ choices: [{ message: { content: "hi" } }] })]);
+    await provider(fetch, { catalog: VISION, defaultModel: "m-sees" }).chat({ messages: [{ role: "user", content: "hello" }] });
+    expect(sent(calls).messages).toEqual([{ role: "user", content: "hello" }]);
+  });
+
+  it("drops the picture with a line of text when the catalogue row cannot see", async () => {
+    const { fetch, calls } = recordingFetch([jsonResponse({ choices: [{ message: { content: "…" } }] })]);
+    const p = provider(fetch, { catalog: VISION, defaultModel: "m-blind" });
+    await p.chat({ messages: [{ role: "user", content: "what is this?", images: [shot] }] });
+    expect(sent(calls).messages).toEqual([
+      { role: "user", content: "what is this?\n\n[A picture was attached (shot.png), but this model cannot see pictures.]" },
+    ]);
+    expect(p.seesImages("m-blind")).toBe(false);
+    expect(p.seesImages("m-sees")).toBe(true);
+  });
+
+  it("reads a catalogue's silence as text-only, and lets the caller say otherwise", () => {
+    // An id no row carries: this class is pointed at any host at all, so the safe reading is no.
+    expect(provider(recordingFetch([]).fetch, { catalog: [], defaultModel: "whatever" }).seesImages()).toBe(false);
+    expect(provider(recordingFetch([]).fetch, { catalog: [], defaultModel: "whatever", vision: true }).seesImages()).toBe(true);
+    // A row that DOES say still wins over the option.
+    expect(provider(recordingFetch([]).fetch, { catalog: VISION, defaultModel: "m-blind", vision: true }).seesImages()).toBe(false);
+  });
+
+  it("names a tool result's picture rather than putting it where the wire refuses it", async () => {
+    const { fetch, calls } = recordingFetch([jsonResponse({ choices: [{ message: { content: "ok" } }] })]);
+    await provider(fetch, { catalog: VISION, defaultModel: "m-sees" }).chat({
+      messages: [{ role: "tool", content: "screenshot taken", toolCallId: "c1", images: [shot] }],
+    });
+    expect(sent(calls).messages).toEqual([
+      { role: "tool", tool_call_id: "c1", content: `screenshot taken\n\n[A picture was attached (shot.png), but ${TOOL_RESULT_IMAGE_REASON}.]` },
+    ]);
+  });
+
+  it("says the same about an assistant turn, which is not a place a picture can go", async () => {
+    const { fetch, calls } = recordingFetch([jsonResponse({ choices: [{ message: { content: "ok" } }] })]);
+    await provider(fetch, { catalog: VISION, defaultModel: "m-sees" }).chat({
+      messages: [{ role: "assistant", content: "here it is", images: [shot] }],
+    });
+    expect(sent(calls).messages).toEqual([{ role: "assistant", content: `here it is\n\n[A picture was attached (shot.png), but ${NON_USER_IMAGE_REASON}.]` }]);
+  });
+
+  it("streams the same body it would have posted", async () => {
+    const { fetch, calls } = recordingFetch([sseResponse([frame({ choices: [{ delta: { content: "a cat" } }] }), "data: [DONE]\n\n"])]);
+    await collect(provider(fetch, { catalog: VISION, defaultModel: "m-sees" }).stream({ messages: [{ role: "user", content: "?", images: [shot] }] }));
+    const messages = sent(calls).messages as { content: unknown[] }[];
+    expect(messages[0]?.content).toContainEqual({ type: "image_url", image_url: { url: DATA_URL } });
+  });
+
+  it("refuses a picture over the cap by name, before anything is posted", async () => {
+    const huge = new Uint8Array(4 * 1024 * 1024 + 1);
+    huge.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const { fetch, calls } = recordingFetch([jsonResponse({ choices: [] })]);
+    await expect(
+      provider(fetch, { catalog: VISION, defaultModel: "m-sees" }).chat({ messages: [{ role: "user", content: "big", images: [{ mime: "image/png", data: huge }] }] }),
+    ).rejects.toMatchObject({ vendorCode: "image_too_large", providerId: "test" });
+    expect(calls).toEqual([]);
   });
 });

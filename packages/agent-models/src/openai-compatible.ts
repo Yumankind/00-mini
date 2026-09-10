@@ -19,6 +19,14 @@
  *     assistant's own text (`attribution.ts`), and every harness resends its history each turn — so
  *     a footer left in `message.content` would be re-sent forever and paid for in prompt tokens.
  *     `ChatResponse.footer` is where it goes: shown, never fed back.
+ *   · A PICTURE ONLY GOES WHERE THE CATALOGUE SAYS IT CAN. `content` becomes the multi-part array —
+ *     `[{type:"text"},{type:"image_url",image_url:{url:"data:…"}}]` — for a model whose row carries
+ *     `vision: true`, and stays a plain string otherwise, because a host that does not know the
+ *     multi-part shape answers 400 to every turn once one arrives. Silence in the catalogue (no row,
+ *     or a row from before `vision` existed) means TEXT-ONLY here: this one provider class is
+ *     pointed at four different deployments and any host at all behind `custom`, so the safe reading
+ *     of "nobody said" is the one that cannot break a working setup. The caller who knows better
+ *     passes `vision: true`. Dropped pictures are always announced in the text (image-parts.ts).
  */
 
 import {
@@ -27,6 +35,7 @@ import {
   providerErrorFromThrow,
   throwIfAborted,
 } from "./errors.js";
+import { hasImages, imageDataUrl, NON_USER_IMAGE_REASON, rowVision, withoutImages } from "./image-parts.js";
 import { readSse, SSE_DONE } from "./sse.js";
 import type { ChatChunk, ChatMessage, ChatRequest, ChatResponse, ModelInfo, ModelProvider, Readiness, ToolCall, Usage } from "./types.js";
 
@@ -72,6 +81,12 @@ export interface OpenAICompatibleOptions {
   streamUsage?: boolean;
   /** False when the credential is not an api key (the sponsored transport signs instead). */
   requiresApiKey?: boolean;
+  /**
+   * Whether pictures may be sent, when the CATALOGUE does not say for the model being called.
+   * A row's own `vision` always wins; this is the answer for an empty or silent catalogue, and it
+   * defaults to `false` (see the header).
+   */
+  vision?: boolean;
   /** Overrides the default readiness entirely — a device store answers `credential` from disk. */
   readiness?: () => Promise<Readiness>;
 }
@@ -85,12 +100,30 @@ interface WireToolCall {
   function?: { name?: string; arguments?: string };
 }
 
-function toWireMessages(messages: ChatMessage[]): Record<string, unknown>[] {
+/**
+ * Why a tool result's picture is dropped even when the model CAN see.
+ *
+ * The `tool` role's `content` is a string (or text parts) on this wire and nothing else: an
+ * `image_url` part in a tool message is a 400, and hoisting the picture into an invented extra user
+ * turn would put a message in the transcript that nobody sent. So it is named in the text and the
+ * runtime is the place that can decide to attach it to a real user turn instead.
+ */
+export const TOOL_RESULT_IMAGE_REASON = "a tool result on this wire carries text only";
+
+/** `[{type:"text"},{type:"image_url",image_url:{url}}]` — the multi-part user message. */
+function imageContentParts(m: ChatMessage, providerId: string): Record<string, unknown>[] {
+  const parts: Record<string, unknown>[] = [];
+  if (m.content) parts.push({ type: "text", text: m.content });
+  for (const image of m.images ?? []) parts.push({ type: "image_url", image_url: { url: imageDataUrl(image, { providerId }) } });
+  return parts;
+}
+
+function toWireMessages(messages: ChatMessage[], providerId: string): Record<string, unknown>[] {
   return messages.map((m) => {
     if (m.role === "tool") {
       return { role: "tool", tool_call_id: m.toolCallId ?? "", content: m.content };
     }
-    const out: Record<string, unknown> = { role: m.role, content: m.content };
+    const out: Record<string, unknown> = { role: m.role, content: m.images?.length ? imageContentParts(m, providerId) : m.content };
     if (m.name) out.name = m.name;
     if (m.role === "assistant" && m.toolCalls?.length) {
       out.tool_calls = m.toolCalls.map((c) => ({
@@ -237,10 +270,30 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
   }
 
+  /** Does the model this request will hit take pictures? The row first, then the option, then no. */
+  seesImages(modelId?: string): boolean {
+    return rowVision(this.opts.catalog, modelId ?? this.opts.defaultModel) ?? this.opts.vision ?? false;
+  }
+
+  /**
+   * The history this request will actually send. Two kinds of drop, each with its own sentence: a
+   * model that cannot see loses every picture, and a picture that is not in a person's own turn is
+   * lost even when it can — with the reason that is actually true of it.
+   */
+  private historyFor(req: ChatRequest): ChatMessage[] {
+    if (!hasImages(req.messages)) return req.messages;
+    if (!this.seesImages(req.model)) return withoutImages(req.messages);
+    return req.messages.map((m) => {
+      if (!m.images?.length || m.role === "user") return m;
+      const reason = m.role === "tool" ? TOOL_RESULT_IMAGE_REASON : NON_USER_IMAGE_REASON;
+      return withoutImages([m], reason)[0] as ChatMessage;
+    });
+  }
+
   private buildBody(req: ChatRequest, stream: boolean): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: req.model ?? this.opts.defaultModel,
-      messages: toWireMessages(req.messages),
+      messages: toWireMessages(this.historyFor(req), this.id),
       stream,
       ...toWireTools(req),
       ...(this.opts.extraBody ?? {}),
