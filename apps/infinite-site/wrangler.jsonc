@@ -10,10 +10,19 @@
   "workers_dev": true,
   "observability": { "enabled": true },
 
-  // NO bindings, on purpose. Phases 0–2 need no backend at all (§9.1): the loader and the PWA are
-  // static files, the crawl and the index live in the visitor's browser, and the owner's settings
-  // come from the owner's own site. D1, KV and R2 arrive with registration in Phase 3, or in a
-  // second Worker (§9.4) — not here.
+  // ONE binding, and it holds no state of ours. Phases 0–2 still need no backend (§9.1): the loader
+  // and the PWA are static files, the crawl and the index live in the visitor's browser, and the
+  // owner's settings come from the owner's own site. D1 and KV arrive with registration in Phase 3,
+  // or in a second Worker (§9.4) — not here.
+  //
+  // MODELS is READ-ONLY USE of the public download bucket (`00-downloads`, also served as
+  // dl.0-0.chat): MediaPipe's wasm under mediapipe/genai/<version>/wasm/ and the LiteRT weights
+  // under litert/, both published by scripts/publish-litert-models.sh (§12.7). The Worker only ever
+  // calls head() and get() on it. It is here because each wasm binary is ~27 MB and Cloudflare caps
+  // a static asset at 25 MiB, and because same-origin is what lets the PWA's service worker keep
+  // the runtime for offline (§4.4) — see src/index.ts and README.md.
+  "r2_buckets": [{ "binding": "MODELS", "bucket_name": "00-downloads" }],
+
   //
   // "none" matters, and for the same reason it matters in apps/skills-site: with SPA or 404-page
   // handling the asset layer would answer /e/<ref>.js with index.html before the Worker ever ran,

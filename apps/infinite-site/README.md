@@ -47,7 +47,8 @@ real file (served by the asset layer before the Worker runs) or an SPA route tha
 layer would answer `/e/<ref>.js` with `index.html` before this Worker ever ran, and every embed on
 the web would load an HTML page as a script.
 
-There are **no bindings** — no D1, no KV, no R2, no secrets. Phases 0–2 need no backend (§9.1);
+There is **one binding**, `MODELS` → the public bucket `00-downloads`, and the Worker only reads
+from it (the section below). No D1, no KV, no secrets. Phases 0–2 need no backend (§9.1);
 registration, the inbox and push arrive in Phase 3, in moltworker or in a second Worker (§9.4).
 
 ## The one thing the asset layer cannot carry: MediaPipe's wasm
@@ -58,32 +59,82 @@ Inference runtime from `/mediapipe/genai/wasm/*` on this origin, never from a CD
 deliberately leaves `dist/mediapipe/` out of `public/`. They live on the public bucket already
 (`00-downloads`, custom domain `dl.0-0.chat`, read-only CORS for any origin), under
 `mediapipe/genai/0.10.29/wasm/<file>`, beside the model weights under `litert/` — both published
-by `scripts/publish-litert-models.sh` and the plan's §12.7. Two ways to reach them from here, pick
-one when this site is first deployed:
+by `scripts/publish-litert-models.sh` and the plan's §12.7.
 
-- **Cross-origin, no binding:** build the PWA with
-  `VITE_LITERT_WASM_BASE=https://dl.0-0.chat/mediapipe/genai/0.10.29/wasm` (a `.env.local` in
-  `apps/infinite`). Simplest; the service worker does not cache cross-origin bytes, so the wasm is
-  re-fetched from Cloudflare's edge when the model loads, and offline depends on the browser's own
-  HTTP cache honouring the year-long `immutable` header it carries.
-- **Same-origin through the Worker:** give this Worker an R2 binding to `00-downloads` and answer
-  `/mediapipe/genai/wasm/*` from the `mediapipe/genai/0.10.29/wasm/` keys with the stored
-  content-type. Then the PWA's default (same origin) holds and the service worker caches it, which is
-  the offline promise of the plan's §4.4.
+**Decided: same-origin, through this Worker.** The alternative was to build the PWA with
+`VITE_LITERT_WASM_BASE=https://dl.0-0.chat/mediapipe/genai/0.10.29/wasm` and take the bytes
+cross-origin. That was rejected because `public/sw.js` caches only `response.type === "basic"` — a
+cross-origin wasm is never in the service worker's cache, and offline would rest on the browser's
+own HTTP cache honouring an `immutable` header. §4.4 promises the local model works with the
+network gone, so the runtime has to be same-origin.
 
-Dev and previews from `apps/infinite` (`vite dev` / `vite preview`) serve the folder themselves.
+So `wrangler.jsonc` carries `r2_buckets: [{ binding: "MODELS", bucket_name: "00-downloads" }]` and
+`src/index.ts` answers two prefixes from it, before the SPA fallback and never through the asset
+layer (nothing under them exists in `public/`):
+
+| Path | R2 key | Cache | Allow-list |
+|---|---|---|---|
+| `/mediapipe/genai/wasm/<name>` | `mediapipe/genai/<MEDIAPIPE_VERSION>/wasm/<name>` | `immutable`, a year | the six known files only; anything else 404 |
+| `/litert/<file>` | `litert/<file>` | `immutable`, a year | `*.task`, `*.litertlm`, `NOTICE.txt`, `GEMMA_TERMS.md` |
+| `/litert/catalog.json` | `litert/catalog.json` | 5 minutes | — |
+
+`MEDIAPIPE_VERSION` is one constant in `src/index.ts` and **must track `@mediapipe/tasks-genai` in
+`packages/agent-models`**: the loader `.js` and the `.wasm` are one build, and a mismatched pair
+fails at instantiation rather than at the fetch. The weights' names are deliberately *not* known
+here — the catalogue grows a row from a publish on the Mac without a deploy of this site, so the
+allow-list is a shape and R2's own miss is the answer for everything else.
+
+Both prefixes serve the stored content-type, `ETag` from R2, `Range` (206, and 416 for an
+unsatisfiable one — the provider streams multi-GB weights, so a resumable range matters),
+`If-None-Match` (304) and `HEAD` (which never reads a body: the size comes from `head()`).
+CORS is open, matching the bucket's own read-only policy, so a self-hosted PWA may point at this
+host too.
+
+### The env a hosted PWA build uses
+
+In `apps/infinite/.env.local` (or the deploy's environment), for a build served by this Worker:
+
+```sh
+# EMPTY / unset on purpose: the app then uses LITERT_DEFAULT_WASM_PATH = "/mediapipe/genai/wasm",
+# which is this Worker's R2 door on the app's own origin. Setting it would take the bytes
+# cross-origin and lose the service-worker cache.
+VITE_LITERT_WASM_BASE=
+
+# OPTIONAL. Unset means dl.0-0.chat, which stays the default home for the weights. Point it here
+# only when the weights should be same-origin too — the same-origin twin of the same bucket, which
+# the service worker can then keep across a reload.
+# VITE_LITERT_MODEL_BASE=https://<site>/litert
+```
+
+Dev and previews from `apps/infinite` (`vite dev` / `vite preview`) serve the wasm folder themselves,
+from `packages/agent-models/node_modules/@mediapipe/tasks-genai/wasm` — no bucket involved.
 
 ## Preview
 
+The R2 binding needs the real bucket, so the preview is remote:
+
 ```sh
-cd apps/infinite-site && wrangler dev --port 8794
+cd apps/infinite-site && wrangler dev --port 8794 --remote
 ```
 
-Then check the two things that matter:
+The loader, which needs no binding:
 
 ```sh
 curl -sI http://127.0.0.1:8794/e/ia_test_abcdefgh.js | grep -i "content-type\|cache-control"
 curl -s  http://127.0.0.1:8794/e/ia_test_abcdefgh.js | head -c 60    # the IIFE, not HTML
+```
+
+The mirror:
+
+```sh
+# 200, application/wasm, ~27 MB
+curl -sI http://127.0.0.1:8794/mediapipe/genai/wasm/genai_wasm_internal.wasm
+# 206 with content-range: bytes 0-1023/27220715
+curl -sI -H 'Range: bytes=0-1023' http://127.0.0.1:8794/mediapipe/genai/wasm/genai_wasm_internal.wasm
+# 404 — a name that is not one of the six
+curl -so /dev/null -w '%{http_code}\n' http://127.0.0.1:8794/mediapipe/genai/wasm/nope.wasm
+# the catalogue
+curl -s http://127.0.0.1:8794/litert/catalog.json | head -c 200
 ```
 
 ## Deploy

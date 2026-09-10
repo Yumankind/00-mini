@@ -57,3 +57,5 @@ echo "public/ now holds:"
 ls -la "$public"
 echo
 echo "the loader is $(wc -c < "$public/e.js" | tr -d ' ') bytes, $(gzip -9 -c "$public/e.js" | wc -c | tr -d ' ') gzipped"
+echo "mediapipe/ and litert/ are NOT here: the Worker serves them from R2 (00-downloads) at"
+echo "  /mediapipe/genai/wasm/*  and  /litert/*  — see src/index.ts and README.md"
