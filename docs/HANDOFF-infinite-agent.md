@@ -129,7 +129,8 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
 **Things I did NOT do, on purpose**
 - No deploy of the landing, the site Worker, or moltworker (your call each time).
 - No enabling of `INFINITE_ENABLED`, no D1 migration applied, no secrets created.
-- Web Push sending (needs a VAPID keypair decision), Turnstile on embed device registration.
+- Turning anything on: the Web Push sender is built (see §9.4) but sends nothing until you mint the
+  VAPID pair; Turnstile on embed device registration was left out by the worker builder's argument.
 
 ---
 
@@ -929,6 +930,14 @@ has no per-session credential and the app secret stays in the worker; then the f
 browser builders found (`If-None-Match` in CORS, `POST /apps/:id/claim-nonce` for a second browser,
 `since` against `replied_at`, the VAPID public key on the app card, the signed-request header
 corrected). Optional var `INFINITE_VAPID_PUBLIC_KEY` joins the enable list.
+A third round adds the **Web Push sender**: RFC 8292 VAPID and RFC 8291 `aes128gcm` in WebCrypto
+alone, proven against the RFC's own vector; one notification per app per 15-minute cron run, at
+most every ten minutes, `infinite_apps.last_push_at` (migration 0142) as both cursor and latch;
+the inbox retention sweep is wired beside it. Keys are the `web-push` CLI's format (public: the
+65-byte uncompressed point, private: the 32-byte scalar, both base64url); the mint one-liner is in
+moltworker's `docs/infinite/API.md` §5. Sending is on only when BOTH `INFINITE_VAPID_PUBLIC_KEY`
+(var) and `INFINITE_VAPID_PRIVATE_KEY` (secret) are set; rotating the pair invalidates every
+subscription.
 
 ---
 
