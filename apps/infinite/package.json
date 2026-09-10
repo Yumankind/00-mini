@@ -1,0 +1,33 @@
+{
+  "name": "@00/infinite",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Infinite Agent: the owned agent's PWA (Vue 3) and the embed loader (no framework). See docs/HANDOFF-infinite-agent.md.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && vite build --config vite.embed.config.ts",
+    "build:app": "vite build",
+    "build:embed": "vite build --config vite.embed.config.ts",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@00/agent-fs": "workspace:*",
+    "@00/agent-models": "workspace:*",
+    "@00/agent-runtime": "workspace:*",
+    "@00/shared": "workspace:*",
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@vitejs/plugin-vue": "^5.1.0",
+    "@vitest/coverage-v8": "2.1.9",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.0",
+    "vue-tsc": "^2.1.0"
+  }
+}

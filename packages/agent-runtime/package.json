@@ -1,0 +1,20 @@
+{
+  "name": "@00/agent-runtime",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Infinite Agent: the framework-free agent runtime — loop, tools, permissions, memory, events, sessions, vault.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": { "@00/shared": "workspace:*", "@00/agent-fs": "workspace:*", "@00/agent-models": "workspace:*", "hash-wasm": "^4.12.0" },
+  "devDependencies": {
+    "@vitest/coverage-v8": "2.1.9",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
