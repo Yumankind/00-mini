@@ -105,11 +105,13 @@ Cache Storage holds model weights and the app shell.
 
 ### 3.2 The `.00agent` file
 
-A burst bundle, manifest version 2, `mode: "full"`, plus one additive field:
+A burst bundle, `mode: "full"`, manifest **version 1** (the version number names the PAYLOAD LAYOUT the
+reader must expect, not a document revision: 2 is session mode with a baseline and a `home/` payload;
+full and paths stay at 1 so every engine keeps importing them), plus one additive field:
 
 ```ts
 interface BurstManifest {
-  version: 2;
+  version: 1 | 2;
   agentId: string;
   mode: "full" | "paths" | "session" | "wake";
   // …existing fields…
