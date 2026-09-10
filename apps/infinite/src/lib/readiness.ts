@@ -34,17 +34,55 @@ export function brainLabel(providerId: string): string {
 }
 
 /**
- * A percentage out of a provider's free-form `detail`. The contract does not type the download
- * progress, so this reads what a provider is likely to put there ("42%", "42", "loading 42.5%") and
- * refuses everything else rather than inventing a number.
+ * The download percentage, from the TYPED `progress` the contract revision of 2026-09-10 added.
+ *
+ * The sentence-parsing path is kept behind it, and is not dead code: `detail` is still free-form, a
+ * provider written against the older contract fills only that, and a percentage a person can see in
+ * the status line but not in the bar would be a UI arguing with itself. Typed first, words second,
+ * and nothing invented when neither says.
  */
-export function downloadPercent(detail?: string): number | null {
+export function downloadPercent(readiness?: Readiness | string): number | null {
+  if (typeof readiness === "object") {
+    if (readiness.ready) return null;
+    const p = readiness.progress;
+    if (p?.percent !== undefined) return clampPercent(p.percent);
+    // Bytes with no total is an honest "we do not know how far this is": no bar, and the byte count
+    // is what a card shows instead.
+    if (p && p.totalBytes) return clampPercent((p.loadedBytes / p.totalBytes) * 100);
+    return fromDetail(readiness.detail);
+  }
+  return fromDetail(readiness);
+}
+
+function clampPercent(value: number): number | null {
+  const n = Math.round(value);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+  return n;
+}
+
+/** "42%", "42", "loading 42.5%" — and a refusal for anything else. */
+function fromDetail(detail?: string): number | null {
   if (!detail) return null;
   const m = /(\d{1,3}(?:\.\d+)?)\s*%/.exec(detail) ?? /^\s*(\d{1,3}(?:\.\d+)?)\s*$/.exec(detail);
   if (!m) return null;
-  const n = Math.round(Number(m[1]));
-  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
-  return n;
+  return clampPercent(Number(m[1]));
+}
+
+/** `1.4 GB`, `250 MB` — the unit a two-gigabyte model download is honestly measured in. */
+export function formatBytes(bytes?: number): string | null {
+  if (bytes === undefined || !Number.isFinite(bytes) || bytes <= 0) return null;
+  const gb = bytes / 1_000_000_000;
+  if (gb >= 1) return `${gb >= 10 ? Math.round(gb) : gb.toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
+}
+
+/** `1.2 GB of 2.0 GB` while a download is running, or null when there is nothing to say. */
+export function progressLine(r: Readiness): string | null {
+  if (r.ready || !r.progress) return null;
+  const loaded = formatBytes(r.progress.loadedBytes);
+  if (!loaded) return null;
+  const total = formatBytes(r.progress.totalBytes);
+  return total ? `${loaded} of ${total}` : loaded;
 }
 
 /** The tail of the status line: what this provider needs before it can answer. */
@@ -52,7 +90,7 @@ export function readinessPhrase(r: Readiness): string {
   if (r.ready) return "ready";
   switch (r.reason) {
     case "download": {
-      const pct = downloadPercent(r.detail);
+      const pct = downloadPercent(r);
       return pct === null ? "downloading" : `downloading ${pct}%`;
     }
     case "unsupported":

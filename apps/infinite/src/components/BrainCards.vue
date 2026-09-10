@@ -24,6 +24,21 @@ import {
   selectedBrain,
   startBrainPolling,
 } from "../state/connections.js";
+import {
+  chooseLocalModel,
+  loadLocalRows,
+  localAvailable,
+  localCatalogSource,
+  localChoice,
+  localPicker,
+  localRows,
+  localRowsBusy,
+  localRowsError,
+  localRowsLoaded,
+  syncLocalBrain,
+  unloadLocal,
+} from "../state/local-models.js";
+import { downloadPercent, progressLine } from "../lib/readiness.js";
 import { vaultState } from "../state/vault.js";
 
 const ICONS: Record<BrainId, string> = {
@@ -73,6 +88,9 @@ onMounted(() => {
       byokModel.value = s.byok.model;
     }
   }
+  // The phone's one-line note (§12.6) is drawn from the bootstrap's answer, which is copied rather
+  // than computed — so it is read once here, before anything is opened.
+  syncLocalBrain();
   stopPolling = startBrainPolling();
 });
 onBeforeUnmount(() => stopPolling?.());
@@ -81,6 +99,27 @@ function toggle(id: BrainId): void {
   openCard.value = openCard.value === id ? null : id;
   notice.value = null;
   failure.value = null;
+  // The mirror's catalogue is fetched when the card is OPENED, never at boot: a first paint must not
+  // wait on a bucket, and a person who never opens Connections never asks it for anything.
+  if (openCard.value === "local" && !localRowsLoaded.value) void loadLocalRows();
+}
+
+const localCard = computed(() => cards.value.find((c) => c.peer.id === "local") ?? null);
+/** The download bar's percentage, out of the TYPED progress the 2026-09-10 revision added. */
+const downloadBar = computed(() => {
+  const readiness = localCard.value?.handle?.readiness;
+  return readiness ? downloadPercent(readiness) : null;
+});
+const downloadBytes = computed(() => {
+  const readiness = localCard.value?.handle?.readiness;
+  return readiness ? progressLine(readiness) : null;
+});
+/** The row the consent line is about: the chosen one, once the catalogue knows it. */
+const chosenRow = computed(() => localRows.value.find((r) => r.selected) ?? null);
+
+async function refreshRows(): Promise<string> {
+  await loadLocalRows(true);
+  return "Model list refreshed.";
 }
 
 async function run(work: () => Promise<string | void>): Promise<void> {
@@ -150,30 +189,126 @@ const keyProblem = computed(() =>
         <div v-if="openCard === card.peer.id" class="px-3 pb-3 space-y-2 border-t border-[var(--color-line)] pt-2.5">
           <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">{{ card.peer.blurb }}</p>
 
-          <!-- Local: nothing to configure. The download is what it needs, and it starts on first use. -->
+          <!-- Local: WHICH model, from the mirror (§12.7). A phone gets no picker at all (§12.6). -->
           <template v-if="card.peer.id === 'local'">
             <p v-if="card.tone === 'off'" class="text-[11px] text-[var(--color-amber)]">
               This browser has no WebGPU, so the local brain cannot run here. Everything else still works.
             </p>
             <template v-else>
-              <!-- Section 3.1 of the Gemma terms: the restrictions are named BEFORE the download, and the
-                   person gets the agreement itself. The fallback model has its own licence; it is named too. -->
-              <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
-                Local models run under their publishers' licences. Gemma models come under the
-                <a class="underline" href="https://ai.google.dev/gemma/terms" target="_blank" rel="noopener">Gemma Terms of Use</a>
-                and their
-                <a class="underline" href="https://ai.google.dev/gemma/prohibited_use_policy" target="_blank" rel="noopener">Prohibited Use Policy</a>
-                (<a class="underline" href="https://dl.0-0.chat/litert/GEMMA_TERMS.md" target="_blank" rel="noopener">copy</a>);
-                the fallback Llama 3.2 model under the
-                <a class="underline" href="https://www.llama.com/llama3_2/license/" target="_blank" rel="noopener">Llama 3.2 Community License</a>.
-                Using the local brain accepts them.
+              <!-- The download bar, from the TYPED progress of the contract revision: bytes when the
+                   host said how many there are, and nothing invented when it did not. -->
+              <div v-if="downloadBar !== null" class="space-y-1">
+                <div class="h-1 rounded-full bg-[var(--color-line)] overflow-hidden">
+                  <div class="h-full bg-[var(--color-cyan)]" :style="{ width: `${downloadBar}%` }"></div>
+                </div>
+                <p class="text-[11px] text-[var(--color-ink-dim)]">{{ downloadBytes ?? `${downloadBar}%` }}</p>
+              </div>
+
+              <p v-if="!localAvailable" class="text-[11px] text-[var(--color-amber)]">
+                This deployment serves no model weights, so the local brain is web-llm's Llama 3.2 only.
               </p>
+
+              <template v-else-if="!localPicker">
+                <!-- §12.6: "cap at 1.5B and ship one model, not a picker, on the mobile browser." -->
+                <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+                  On a phone your agent uses one small model —
+                  <span class="text-[var(--color-ink)]">{{ localChoice?.label ?? localChoice?.id ?? "the smallest one" }}</span
+                  >, chosen to fit the memory a phone has. Bigger models are offered on a computer.
+                </p>
+              </template>
+
+              <template v-else>
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Model</span>
+                  <button type="button" class="text-[10px] text-[var(--color-ink-dim)]" :disabled="localRowsBusy" @click="run(refreshRows)">
+                    {{ localRowsBusy ? "checking…" : "refresh" }}
+                  </button>
+                </div>
+                <p v-if="localRowsError" class="text-[11px] text-[var(--color-red)]">{{ localRowsError }}</p>
+                <p v-else-if="localCatalogSource === 'offline'" class="text-[11px] text-[var(--color-amber)]">
+                  The model list could not be reached, so these are the ones this app was built knowing.
+                </p>
+
+                <div class="space-y-1.5">
+                  <button
+                    v-for="entry in localRows"
+                    :key="entry.row.id"
+                    type="button"
+                    class="w-full text-left px-2.5 py-2 rounded-md border"
+                    :class="
+                      entry.selected
+                        ? 'border-[var(--color-phosphor)] bg-[color-mix(in_srgb,var(--color-phosphor)_8%,transparent)]'
+                        : 'border-[var(--color-line)]'
+                    "
+                    @click="run(() => chooseLocalModel(entry.row).then((name) => `${name} is your local brain.`))"
+                  >
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-[12px] font-medium">{{ entry.row.label }}</span>
+                      <TablerIcon v-if="entry.selected" name="check" :size="12" class="text-[var(--color-phosphor)]" />
+                      <span class="text-[11px] text-[var(--color-ink-dim)]">{{ entry.size }}</span>
+                      <span v-if="entry.vision" class="text-[10px] px-1 rounded bg-[var(--color-line)]">vision</span>
+                      <span v-if="entry.downloaded" class="text-[10px] text-[var(--color-phosphor)]">on this device</span>
+                    </div>
+                    <div class="text-[11px] text-[var(--color-ink-dim)] mt-0.5">
+                      <!-- Gemma §3.1: the licence and its use restrictions are named BEFORE the
+                           download, per row, because the rows do not all carry the same terms. -->
+                      <a
+                        class="underline"
+                        :href="entry.licenseUrl"
+                        target="_blank"
+                        rel="noopener"
+                        @click.stop
+                        >{{ entry.licenseName }}</a
+                      >
+                      <template v-if="entry.useRestrictionsUrl">
+                        ·
+                        <a class="underline" :href="entry.useRestrictionsUrl" target="_blank" rel="noopener" @click.stop>use restrictions</a>
+                      </template>
+                      <template v-if="entry.termsCopyUrl">
+                        ·
+                        <a class="underline" :href="entry.termsCopyUrl" target="_blank" rel="noopener" @click.stop>copy</a>
+                      </template>
+                      <span v-if="entry.estimated"> · size estimated</span>
+                    </div>
+                  </button>
+                </div>
+              </template>
+
+              <!-- The consent line, about the row that is actually chosen rather than about models
+                   in general. The fallback's own licence is named too: the router may reach it. -->
+              <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+                <template v-if="chosenRow">
+                  {{ chosenRow.row.label }} is published under the
+                  <a class="underline" :href="chosenRow.licenseUrl" target="_blank" rel="noopener">{{ chosenRow.licenseName }}</a>
+                  <template v-if="chosenRow.useRestrictionsUrl">
+                    and its
+                    <a class="underline" :href="chosenRow.useRestrictionsUrl" target="_blank" rel="noopener">Prohibited Use Policy</a>
+                  </template>
+                  <template v-if="chosenRow.termsCopyUrl">
+                    (<a class="underline" :href="chosenRow.termsCopyUrl" target="_blank" rel="noopener">copy</a>)</template
+                  >. Downloading it accepts them.
+                </template>
+                <template v-else>
+                  Local models run under their publishers' licences, named on each row before it downloads.
+                </template>
+                The fallback model is Llama 3.2, under the
+                <a class="underline" href="https://www.llama.com/llama3_2/license/" target="_blank" rel="noopener">Llama 3.2 Community License</a>.
+              </p>
+
               <button
                 type="button"
                 class="ia-btn w-full h-8 text-[11px]"
                 @click="run(() => chooseBrain('local').then(() => 'Local AI will answer.'))"
               >
                 Use the local brain
+              </button>
+              <button
+                type="button"
+                class="ia-btn w-full h-8 text-[11px]"
+                :disabled="card.tone !== 'ok'"
+                @click="run(unloadLocal)"
+              >
+                Unload — give the GPU back
               </button>
             </template>
           </template>

@@ -74,6 +74,34 @@ export interface ModelInfo {
   contextTokens?: number;
 }
 
+/**
+ * How far a download has got — TYPED, beside the free-form `detail` (contract revision 2026-09-10).
+ *
+ * WHY IT IS NOT JUST A NUMBER IN `detail`. The PWA was parsing a percentage out of an English
+ * sentence with a regular expression, which means every provider's wording became load-bearing and
+ * a rephrasing became a broken progress bar. Bytes are the honest unit for a two-gigabyte model, and
+ * `percent` is derived rather than the only field, because a host that sends no `Content-Length`
+ * knows how much has arrived and cannot know how much is left. `detail` stays as it was: it is the
+ * sentence a person reads, and this is the number a bar draws.
+ */
+export interface ReadinessProgress {
+  loadedBytes: number;
+  /** What the host said it would be, when it said. */
+  totalBytes?: number;
+  /** 0…100, present only when it can be computed honestly. */
+  percent?: number;
+}
+
+export type Readiness =
+  | { ready: true }
+  | {
+      ready: false;
+      reason: "download" | "credential" | "offline" | "unsupported";
+      detail?: string;
+      /** Set while `reason` is `download` and the provider is actually fetching. */
+      progress?: ReadinessProgress;
+    };
+
 export interface ModelProvider {
   /** Stable id for settings and the router: `local`, `sponsored`, `overblast`, `byok:<name>`. */
   readonly id: string;
@@ -82,5 +110,12 @@ export interface ModelProvider {
   chat(req: ChatRequest): Promise<ChatResponse>;
   stream(req: ChatRequest): AsyncIterable<ChatChunk>;
   /** What is missing to use it: nothing, a model download, a key, a sign-in, or offline. */
-  readiness(): Promise<{ ready: true } | { ready: false; reason: "download" | "credential" | "offline" | "unsupported"; detail?: string }>;
+  readiness(): Promise<Readiness>;
+  /**
+   * Give the machine back what this provider is holding — a compiled WebGPU model, mostly (contract
+   * revision 2026-09-10). OPTIONAL, because a provider that holds nothing has nothing to release, and
+   * a caller must therefore always call it as `provider.unload?.()`. It is not "close": the provider
+   * stays usable and the next request loads again.
+   */
+  unload?(): Promise<void>;
 }

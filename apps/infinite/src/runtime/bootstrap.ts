@@ -15,24 +15,15 @@
  * prints it and a screen that can say "everything here is real" should be able to say so from the
  * same source that would have said otherwise.
  *
- * ONE PIECE OF WIRING THAT IS NOT OBVIOUS: `createAgentRuntime` takes its providers at construction,
- * and the person changes brains mid-session (§4.1's "brain switching mid-session" proof). So the app
- * holds a FAÇADE — `runtime` below — whose listeners survive while the inner runtime is rebuilt under
- * it. Components subscribe once, at mount, and never learn that the brain changed.
+ * THE FAÇADE IS GONE (contract revision 2026-09-10). `createAgentRuntime` used to take its providers
+ * at construction, so switching brains mid-session (§4.1's proof) meant rebuilding the runtime under
+ * a wrapper that kept the listeners alive. `AgentRuntime.setProviders` now does it in the package,
+ * where the rule about WHEN a swap bites (at the next run, never mid-turn) can be stated once and
+ * tested. This file just calls it.
  */
 import type { AgentFs, FsStat } from "@00/agent-fs";
 import { MemoryFs, OpfsFs, exportBundle, importBundleInto, scaffoldAgent } from "@00/agent-fs";
-import type {
-  AgentEvent,
-  AgentRuntime,
-  ChatMessage as RuntimeChatMessage,
-  PermissionDecision,
-  PermissionTier,
-  RunOptions,
-  RunResult,
-  Tool,
-  Vault,
-} from "@00/agent-runtime";
+import type { AgentRuntime, PermissionDecision, PermissionTier, Tool, Vault } from "@00/agent-runtime";
 import { createAgentRuntime, createVault, fullTools } from "@00/agent-runtime";
 import type { ModelInfo, ModelProvider } from "@00/agent-models";
 import {
@@ -43,16 +34,20 @@ import {
   WebLLMProvider,
   byokProvider,
   localProviders,
+  mergeMirrorCatalog,
   overblastProvider,
   registerDevice,
   sponsoredProvider,
   type ByokVendor,
+  type LiteRtCatalogRow,
+  type PromptFamily,
 } from "@00/agent-models";
 import type { StepId, StepState } from "../lib/boot-steps.js";
 import { AGENT_ID_KEY, CREDENTIAL_KEY, SETTINGS_KEY, kvGet, kvSet } from "../lib/kv.js";
 import type { BrainId } from "../lib/brains.js";
 import { byokSecretName } from "../lib/brains.js";
 import { newAgentId } from "../lib/id.js";
+import { isPhone, loadLiteRtCatalog, phoneRow, type CatalogResult } from "../lib/litert-catalog.js";
 import type { Readiness } from "../lib/readiness.js";
 import type { VaultKind } from "../lib/vault-policy.js";
 import { createPrfCredential, getPrfSecret, webauthnAvailable } from "../lib/webauthn-prf.js";
@@ -78,9 +73,25 @@ export interface ProviderHandle {
   readiness: Readiness;
 }
 
+/**
+ * WHICH LOCAL MODEL, remembered. Everything a `LiteRtProvider` needs to be rebuilt after a reload is
+ * here — including the host, because the mirror's catalogue names its own `base` and a person who
+ * downloaded two gigabytes from it must not have that thrown away by an environment variable change.
+ * The label is carried only so a screen can name the choice before the catalogue has loaded.
+ */
+export interface LocalModelChoice {
+  id: string;
+  assetFile: string;
+  base: string;
+  family?: PromptFamily;
+  label?: string;
+}
+
 export interface ConnectionSettings {
   /** A provider id, or `auto` to let the first ready peer answer. */
   selected: string;
+  /** The row the LiteRT half of the local pair is pointed at (§12.7's picker). */
+  localModel?: LocalModelChoice;
   sponsored?: { appId: string; deviceId?: string };
   overblast?: { baseUrl: string; model: string };
   byok?: { vendor: ByokVendor; baseUrl?: string; model: string };
@@ -121,6 +132,18 @@ export interface OwnedAgent {
   importBundleFile(file: Blob, passphrase: string): Promise<{ agentId: string }>;
   /** Progress of the local model download, 0..100, or null while nothing is downloading. */
   localProgress(): number | null;
+
+  // ── The local brain picker (§12.7), fed by the mirror ──────────────────────────────────────────
+  /** What is chosen now, whether this device gets a picker at all, and where the weights come from. */
+  localBrain(): { choice: LocalModelChoice | null; picker: boolean; base: string; available: boolean };
+  /** The mirror's rows joined to the package's, cached for five minutes. Never called during boot. */
+  localCatalog(force?: boolean): Promise<CatalogResult>;
+  /** Is THIS row already on the device? A provider built for it, asked; nothing is downloaded. */
+  localRowReadiness(row: LiteRtCatalogRow): Promise<Readiness>;
+  /** Point the local brain at a row: a new provider, the old one released, the loop told, the choice saved. */
+  chooseLocalModel(row: LiteRtCatalogRow, base?: string): Promise<void>;
+  /** Give the GPU back (`unload()` on both local providers). The next turn loads again. */
+  unloadLocal(): Promise<void>;
   /** True when this very load created the agent — drives the persist call and the install nag (§3.3). */
   freshlyCreated: boolean;
   /** Empty when nothing is standing in for a real implementation. Printed in Settings regardless. */
@@ -154,41 +177,6 @@ async function readinessOf(provider: ModelProvider | null, whenMissing: Readines
   } catch (err) {
     return { ready: false, reason: "credential", detail: err instanceof Error ? err.message : "unavailable" };
   }
-}
-
-// ── The façade that lets the brain change mid-session ─────────────────────────────────────────────
-
-interface RuntimeHost extends AgentRuntime {
-  /** Swap the inner loop for one built on `providers`, keeping every listener. */
-  rebuild(providers: ModelProvider[]): void;
-}
-
-function runtimeHost(build: (providers: ModelProvider[]) => AgentRuntime, initial: ModelProvider[]): RuntimeHost {
-  const listeners = new Set<(event: AgentEvent) => void>();
-  let inner = build(initial);
-  let detach = inner.on((event) => {
-    for (const l of listeners) l(event);
-  });
-  return {
-    rebuild(providers) {
-      detach();
-      // A run in flight belongs to the old provider list; letting it finish under a new one would
-      // mean a turn half-answered by two brains.
-      inner.abort();
-      inner = build(providers);
-      detach = inner.on((event) => {
-        for (const l of listeners) l(event);
-      });
-    },
-    run: (opts: RunOptions): Promise<RunResult> => inner.run(opts),
-    on(listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    listSessions: () => inner.listSessions(),
-    loadSession: (id: string): Promise<RuntimeChatMessage[]> => inner.loadSession(id),
-    abort: () => inner.abort(),
-  };
 }
 
 // ── The one entry point ───────────────────────────────────────────────────────────────────────────
@@ -277,6 +265,12 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
   // LiteRT is built ONLY when the owner has named a host for the Gemma weights. The package refuses
   // to invent one (their terms travel with whoever serves them) and so does this app: with no
   // `VITE_LITERT_MODEL_BASE` there is one local brain, WebLLM, and nothing anywhere claims otherwise.
+  //
+  // WHICH GEMMA — the picker of §12.7, and the phone rule of §12.6. A `LiteRtProvider` is fixed to one
+  // asset at construction, so choosing a row means BUILDING A NEW ONE and handing the loop the new
+  // pair (`setProviders`, which the runtime now takes without a rebuild). The choice is remembered in
+  // the settings KV, so a reload does not start a second two-gigabyte download; nothing here fetches
+  // the catalogue, because a boot must not wait on the mirror to show a screen.
   let localPct: number | null = null;
   const onLocalProgress = (report: { progress?: number }): void => {
     localPct = Math.round((report.progress ?? 0) * 100);
@@ -291,12 +285,33 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
   // service worker keeps it offline). A hosted deploy whose asset layer cannot carry 27 MB files names
   // the R2 copy instead — CORS is open on that bucket for GET (apps/infinite-site/README.md).
   const litertWasm = (import.meta.env?.VITE_LITERT_WASM_BASE as string | undefined)?.trim() || undefined;
-  const litert = litertBase
-    ? new LiteRtProvider({ modelBaseUrl: litertBase, wasmBaseUrl: litertWasm, onProgress: onLocalProgress })
-    : null;
-  const localChain = localProviders({ litert: litert ?? undefined, webllm });
+
+  /** A provider for exactly one row. `null` when this deploy serves no weights at all. */
+  const makeLiteRt = (choice: LocalModelChoice | null): LiteRtProvider | null => {
+    if (!litertBase) return null;
+    return new LiteRtProvider({
+      modelBaseUrl: choice?.base || litertBase,
+      wasmBaseUrl: litertWasm,
+      onProgress: onLocalProgress,
+      ...(choice ? { modelId: choice.id, assetFile: choice.assetFile, family: choice.family } : {}),
+    });
+  };
+
+  // §12.6, decided WITHOUT the network: a phone that has never chosen gets the smallest row the
+  // package vouches for under the cap (the 270m), never the desktop default, which is 2 GB. The
+  // mirror's list refines the label later; it never changes which brain a first visit downloads.
+  const phoneDefault = (): LocalModelChoice | null => {
+    const row = phoneRow(mergeMirrorCatalog(null));
+    return row ? { id: row.id, assetFile: row.assetFile, base: litertBase, family: row.family, label: row.label } : null;
+  };
+  const onPhone = isPhone();
+  let localChoice: LocalModelChoice | null = settings.localModel ?? (onPhone ? phoneDefault() : null);
+  let litert = makeLiteRt(localChoice);
+  const chain = (): ModelProvider[] => localProviders({ litert: litert ?? undefined, webllm });
+
   /** What the ONE "Local AI" card shows: the leader, unless this browser cannot run it at all. */
   const preferredLocal = async (): Promise<{ provider: ModelProvider; readiness: Readiness }> => {
+    const localChain = chain();
     const first = localChain[0];
     const readiness = await readinessOf(first, { ready: false, reason: "unsupported" });
     const cannotRunHere = !readiness.ready && readiness.reason === "unsupported";
@@ -310,19 +325,15 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
   opts.onStep("runtime", "active", "starting");
   const tools: Tool[] = fullTools();
   const secretNames = await vault.list().catch(() => [] as string[]);
-  const runtime = runtimeHost(
-    (providers) =>
-      createAgentRuntime({
-        fs,
-        providers,
-        tools,
-        askPermission: opts.askPermission,
-        trust: "full",
-        origin: typeof location === "undefined" ? "local" : location.origin,
-        context: { secretNames },
-      }),
-    localChain,
-  );
+  const runtime: AgentRuntime = createAgentRuntime({
+    fs,
+    providers: chain(),
+    tools,
+    askPermission: opts.askPermission,
+    trust: "full",
+    origin: typeof location === "undefined" ? "local" : location.origin,
+    context: { secretNames },
+  });
   opts.onStep("runtime", "done", `${tools.length} tools`);
 
   const buildProviders = async (): Promise<ProviderHandle[]> => {
@@ -409,8 +420,11 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
         : usable.filter((h) => h.id === settings.selected || h.peer === settings.selected);
     // The local peer expands back into its ordered pair here: the CARD shows one brain, the router
     // gets both, so a LiteRT that turns out to be unusable mid-session falls through to WebLLM.
+    const localChain = chain();
     const providers = chosen.flatMap((h) => (h.peer === "local" ? localChain : h.provider ? [h.provider] : []));
-    runtime.rebuild(providers.length ? providers : localChain);
+    // `setProviders` rather than a rebuilt runtime (contract revision 2026-09-10): the listeners the
+    // panes took at mount survive, and a run in flight finishes on the brain it started with.
+    runtime.setProviders(providers.length ? providers : localChain);
     return handles;
   };
 
@@ -499,6 +513,40 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
     },
 
     localProgress: () => localPct,
+
+    localBrain: () => ({ choice: localChoice, picker: !onPhone, base: litertBase, available: Boolean(litert) }),
+    localCatalog: (force = false) => loadLiteRtCatalog({ modelBaseUrl: litertBase, force }),
+    async localRowReadiness(row) {
+      // A provider is a small object until something asks it to load — building one per row is how
+      // "is it already downloaded" is answered honestly, from the same Cache Storage key the real
+      // download would write. Lazily, at the caller's pace: seven of these on one screen is seven
+      // cache lookups, not seven requests.
+      if (!litertBase) return { ready: false, reason: "unsupported", detail: "no model host is configured" };
+      const probe = makeLiteRt({ id: row.id, assetFile: row.assetFile, base: litertBase, family: row.family });
+      return readinessOf(probe, { ready: false, reason: "unsupported" });
+    },
+    async chooseLocalModel(row, base) {
+      const next: LocalModelChoice = {
+        id: row.id,
+        assetFile: row.assetFile,
+        base: base || litertBase,
+        family: row.family,
+        label: row.label,
+      };
+      // The GPU first: the old model is compiled and holding memory, and the new one is about to ask
+      // for the same memory. `unload` is optional on the contract, so it is called as one.
+      await litert?.unload?.();
+      localChoice = next;
+      litert = makeLiteRt(next);
+      settings = { ...settings, localModel: next };
+      await kvSet(SETTINGS_KEY, settings);
+      await refreshBrains();
+    },
+    async unloadLocal() {
+      await Promise.all(chain().map(async (p) => p.unload?.()));
+      localPct = null;
+    },
+
     freshlyCreated,
     stubs,
   };

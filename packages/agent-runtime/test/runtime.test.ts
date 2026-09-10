@@ -454,3 +454,81 @@ describe("ToolRegistry and ModelRouter", () => {
     expect(() => new ModelRouter([])).toThrow(/at least one ModelProvider/);
   });
 });
+
+// ── The contract revision of 2026-09-10 ─────────────────────────────────────────────────────────
+
+describe("setProviders", () => {
+  it("hands the loop a new brain without rebuilding it — and the listeners never notice", async () => {
+    const { runtime, events } = harness({ script: [{ text: "from local" }] });
+    await runtime.run({ prompt: "one" });
+
+    const other = new FakeProvider("byok:openai", [{ text: "from your key" }]);
+    runtime.setProviders([other]);
+    const second = await runtime.run({ prompt: "two" });
+
+    expect(second.text).toBe("from your key");
+    expect(second.providerId).toBe("byok:openai");
+    // One subscription, taken before the swap, saw both runs.
+    expect(events.filter((e) => e.type === "model_started").map((e) => (e as { providerId: string }).providerId)).toEqual([
+      "local",
+      "byok:openai",
+    ]);
+  });
+
+  it("leaves a run in flight on the brain it started with", async () => {
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = new FakeProvider("local", [{ toolCalls: [call("ls")], delay: gate }, { text: "still local" }]);
+    const { runtime } = harness({ providers: [first] });
+    const running = runtime.run({ prompt: "go" });
+
+    runtime.setProviders([new FakeProvider("sponsored", [{ text: "from sponsored" }])]);
+    release();
+    const result = await running;
+
+    // Two turns, both answered by the provider the run began with: a turn planned by one model and
+    // finished by another is a corrupted turn, not a fallback.
+    expect(result).toMatchObject({ text: "still local", providerId: "local", steps: 2 });
+    expect(first.requests).toHaveLength(2);
+  });
+
+  it("refuses an empty list, where the caller can see it", () => {
+    const { runtime } = harness();
+    expect(() => runtime.setProviders([])).toThrow(/at least one ModelProvider/);
+  });
+});
+
+describe("the run's receipt", () => {
+  it("names the provider and the model that answered", async () => {
+    const { runtime } = harness({ script: [{ text: "done" }] });
+    const result = await runtime.run({ prompt: "x", model: "local/some-model" });
+    expect(result).toMatchObject({ providerId: "local", model: "some-model" });
+  });
+
+  it("has no provider when the run was aborted before a model was reached", async () => {
+    const { runtime } = harness();
+    const controller = new AbortController();
+    controller.abort();
+    const result = await runtime.run({ prompt: "x", signal: controller.signal });
+    expect(result.stopped).toBe("aborted");
+    expect(result.providerId).toBeUndefined();
+  });
+});
+
+describe("agent_message and agent_delta", () => {
+  it("emits ONE whole message per assistant turn, `final: true` on each", async () => {
+    const { runtime, events } = harness({
+      script: [{ text: "looking", toolCalls: [call("ls")] }, { text: "here it is" }],
+    });
+    await runtime.run({ prompt: "x" });
+    const messages = events.filter((e) => e.type === "agent_message") as { text: string; final: boolean }[];
+    expect(messages).toEqual([
+      { type: "agent_message", text: "looking", final: true },
+      { type: "agent_message", text: "here it is", final: true },
+    ]);
+    // The loop buffers (`chat()`, not `stream()`), so there is nothing to stream and it says nothing.
+    expect(events.some((e) => e.type === "agent_delta")).toBe(false);
+  });
+});

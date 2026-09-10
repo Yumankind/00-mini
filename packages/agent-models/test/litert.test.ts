@@ -21,10 +21,14 @@ import {
   LITERT_UNVERIFIED_ASSETS,
   LITERT_VERSION,
   LiteRtProvider,
+  GEMMA_TERMS,
   litertAssetUrl,
   litertCatalogFor,
+  mergeMirrorCatalog,
+  parseMirrorCatalog,
 } from "../src/litert.js";
 import type { LiteRtCacheLike, LiteRtCacheStorageLike, LiteRtProgress, LiteRtTaskLike } from "../src/litert.js";
+import type { ReadinessProgress } from "../src/types.js";
 import { collect } from "./helpers.js";
 
 const require = createRequire(import.meta.url);
@@ -643,5 +647,181 @@ describe("stream", () => {
     withWebGpu();
     const { instance } = provider({}, mockTask([], { fail: new Error("device lost") }));
     await expect(collect(instance.stream({ messages: [] }))).rejects.toMatchObject({ code: "network" });
+  });
+});
+
+// ── The typed progress, and the mirror's catalogue (contract revision 2026-09-10) ────────────────
+
+/**
+ * A fetch whose body the TEST drives: one chunk at a time, so readiness can be asked at a moment
+ * that genuinely is "half way down" rather than at whatever moment the microtask queue happened to
+ * reach. `push` resolves once the provider has consumed the chunk.
+ */
+function gatedFetch(total?: number): {
+  fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  push(byte: number): Promise<void>;
+  end(): void;
+} {
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  return {
+    async fetch() {
+      const headers: Record<string, string> = total === undefined ? {} : { "Content-Length": String(total) };
+      return new Response(stream, { status: 200, headers });
+    },
+    async push(byte: number) {
+      controller?.enqueue(new Uint8Array([byte]));
+      // Two turns of the microtask queue is enough for the reader to take it and report.
+      await Promise.resolve();
+      await Promise.resolve();
+    },
+    end() {
+      controller?.close();
+    },
+  };
+}
+
+describe("readiness carries a typed progress while the asset is coming down", () => {
+  it("has none before the download starts, bytes and a percentage during it, and none once ready", async () => {
+    withWebGpu();
+    const gate = gatedFetch(4);
+    const instance = new LiteRtProvider({
+      modelBaseUrl: BASE,
+      caches: memoryCaches(),
+      fetch: gate.fetch,
+      createTask: async () => mockTask(["ok"]),
+    });
+
+    const before = await instance.readiness();
+    expect(before).toMatchObject({ ready: false, reason: "download" });
+    expect(before.ready === false && before.progress).toBeUndefined();
+    expect(before.ready === false && before.detail).toContain("has not been downloaded");
+
+    const loading = instance.load();
+    await gate.push(1);
+    const quarter = await instance.readiness();
+    expect(quarter).toMatchObject({
+      ready: false,
+      reason: "download",
+      progress: { loadedBytes: 1, totalBytes: 4, percent: 25 },
+    });
+    expect(quarter.ready === false && quarter.detail).toContain("Downloading");
+
+    await gate.push(2);
+    await gate.push(3);
+    await gate.push(4);
+    gate.end();
+    await loading;
+    await expect(instance.readiness()).resolves.toEqual({ ready: true });
+  });
+
+  it("leaves the percentage out when the host sent no Content-Length", async () => {
+    withWebGpu();
+    const gate = gatedFetch();
+    const instance = new LiteRtProvider({
+      modelBaseUrl: BASE,
+      caches: memoryCaches(),
+      fetch: gate.fetch,
+      createTask: async () => mockTask(["ok"]),
+    });
+    const loading = instance.load();
+    await gate.push(1);
+    const mid = await instance.readiness();
+    // Bytes are known, the total is not, and nothing is invented in between.
+    expect(mid).toMatchObject({ ready: false, progress: { loadedBytes: 1 } });
+    const progress: ReadinessProgress | undefined = mid.ready === false ? mid.progress : undefined;
+    expect(progress?.totalBytes).toBeUndefined();
+    expect(progress?.percent).toBeUndefined();
+    gate.end();
+    await loading;
+  });
+});
+
+describe("the mirror's catalogue", () => {
+  const mirrorJson: unknown = JSON.parse(
+    readFileSync(new URL("./fixtures/litert-mirror-catalog.json", import.meta.url), "utf8"),
+  );
+
+  it("parses the document the publish script actually writes", () => {
+    const parsed = parseMirrorCatalog(mirrorJson);
+    expect(parsed?.base).toBe("https://dl.0-0.chat/litert");
+    expect(parsed?.assets).toHaveLength(7);
+    expect(parsed?.assets[0]).toMatchObject({ file: "gemma-4-E2B-it-web.task", license: "apache-2.0", vision: false });
+  });
+
+  it("refuses a document that is not one, rather than half a catalogue", () => {
+    expect(parseMirrorCatalog(null)).toBeNull();
+    expect(parseMirrorCatalog("nope")).toBeNull();
+    expect(parseMirrorCatalog({ base: "https://h", assets: "no" })).toBeNull();
+    expect(parseMirrorCatalog({ assets: [{ file: "a.task" }] })).toBeNull();
+    // Every row unusable ⇒ no catalogue at all, so the caller falls back to the package's.
+    expect(parseMirrorCatalog({ base: "https://h", assets: [{ file: "../etc/passwd" }, { file: "a/b.task" }, {}] })).toBeNull();
+  });
+
+  it("joins the mirror to the package on the file name, keeping the mirror's order and bytes", () => {
+    const rows = mergeMirrorCatalog(parseMirrorCatalog(mirrorJson));
+    expect(rows.map((r) => r.assetFile)).toEqual([
+      "gemma-4-E2B-it-web.task",
+      "gemma-4-E4B-it-web.task",
+      "gemma-4-12B-it-web.litertlm",
+      "gemma-3n-E2B-it-int4-Web.litertlm",
+      "gemma-3n-E4B-it-int4-Web.litertlm",
+      "gemma3-270m-it-q4_0-web.task",
+      "gemma3-1b-it-int4-web.task",
+    ]);
+    const phone = rows.find((r) => r.id === "gemma3-270m-it-q4_0-web");
+    // The package's numbers survive the join…
+    expect(phone).toMatchObject({ label: "Gemma 3 270m (q4)", vramMb: 600, family: "gemma", onMirror: true });
+    // …and the mirror's facts arrive with it, the licence copy included.
+    expect(phone).toMatchObject({ bytes: 249233408, gatedAtSource: true, vision: false });
+    expect(phone?.license.termsCopyUrl).toBe("https://dl.0-0.chat/litert/GEMMA_TERMS.md");
+    expect(phone?.license.useRestrictionsUrl).toContain("prohibited_use_policy");
+    expect(rows.every((r) => r.estimated === undefined)).toBe(true);
+  });
+
+  it("still offers a row the package has never heard of, with its numbers marked estimated", () => {
+    const rows = mergeMirrorCatalog({
+      version: 1,
+      base: "https://dl.0-0.chat/litert",
+      assets: [
+        {
+          file: "gemma-9-XL-it-web.litertlm",
+          bytes: 4_000_000_000,
+          license: "gemma",
+          licenseName: "Gemma Terms of Use",
+          licenseUrl: "https://ai.google.dev/gemma/terms",
+          vision: true,
+        },
+        // No licence at all: nothing can be shown before the download, so it is not offered.
+        { file: "mystery.task", bytes: 10 },
+      ],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "gemma-9-XL-it-web",
+      label: "gemma-9-XL-it-web",
+      class: "strong",
+      vision: true,
+      estimated: true,
+      onMirror: true,
+      vramMb: 6000,
+    });
+  });
+
+  it("falls back to the package's rows, flagged, when there is no mirror to join", () => {
+    const rows = mergeMirrorCatalog(null);
+    expect(rows).toHaveLength(LITERT_CATALOG.length);
+    expect(rows.every((r) => r.onMirror === false)).toBe(true);
+    expect(rows.every((r) => r.bytes === undefined)).toBe(true);
+  });
+
+  it("leaves out a package row the host does not serve — a download that would 404", () => {
+    const rows = mergeMirrorCatalog({ version: 1, base: "https://h", assets: [{ file: "gemma3-1b-it-int4-web.task" }] });
+    expect(rows.map((r) => r.id)).toEqual(["gemma3-1b-it-int4-web"]);
+    expect(rows[0].license).toEqual(GEMMA_TERMS);
   });
 });

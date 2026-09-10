@@ -29,7 +29,17 @@ import { ProviderError, providerErrorFromThrow, throwIfAborted } from "./errors.
 import { mapFinishReason, mapUsage, parseToolArguments } from "./openai-compatible.js";
 import { fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
 import type { Readiness } from "./openai-compatible.js";
-import type { ChatChunk, ChatMessage, ChatRequest, ChatResponse, ModelInfo, ModelProvider, ToolCall, Usage } from "./types.js";
+import type {
+  ChatChunk,
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
+  ModelInfo,
+  ModelProvider,
+  ReadinessProgress,
+  ToolCall,
+  Usage,
+} from "./types.js";
 
 /** The installed runtime this catalogue was read off. Pinned by test against `package.json`. */
 export const WEBLLM_VERSION = "0.2.85";
@@ -140,6 +150,16 @@ export class WebLLMProvider implements ModelProvider {
   private readonly createEngine: WebLLMEngineFactory;
   private engine: WebLLMEngineLike | null = null;
   private loading: Promise<WebLLMEngineLike> | null = null;
+  /**
+   * The last init report, for the typed `progress` of the 2026-09-10 contract revision.
+   *
+   * WEB-LLM COUNTS WORK, NOT BYTES. `initProgressCallback` reports a fraction and a sentence
+   * ("Fetching param cache[12/24]") and never a size, so `loadedBytes` here is 0 and `totalBytes` is
+   * absent — the honest reading of the contract, and the reason `percent` is a field of its own
+   * rather than something a consumer divides out of the two. A bar draws `percent`; a byte counter
+   * must show nothing when `totalBytes` is undefined.
+   */
+  private progress: ReadinessProgress | null = null;
 
   constructor(opts: WebLLMProviderOptions = {}) {
     this.opts = opts;
@@ -166,9 +186,21 @@ export class WebLLMProvider implements ModelProvider {
       return { ready: false, reason: "unsupported", detail: "This browser has no WebGPU, so it cannot run a local model." };
     }
     if (!this.engine) {
-      return { ready: false, reason: "download", detail: `${this.modelId} has not been downloaded to this browser yet.` };
+      return {
+        ready: false,
+        reason: "download",
+        detail: this.progress?.percent === undefined ? `${this.modelId} has not been downloaded to this browser yet.` : `Loading ${this.modelId}…`,
+        ...(this.progress ? { progress: this.progress } : {}),
+      };
     }
     return { ready: true };
+  }
+
+  /** Remember what the engine reported, then hand it to the caller's listener unchanged. */
+  private report(report: WebLLMProgress): void {
+    const fraction = Number.isFinite(report.progress) ? Math.min(1, Math.max(0, report.progress)) : 0;
+    this.progress = { loadedBytes: 0, percent: Math.round(fraction * 100) };
+    this.opts.onProgress?.(report);
   }
 
   /** Download and compile. Safe to call twice: the second caller waits on the first one's promise. */
@@ -182,7 +214,7 @@ export class WebLLMProvider implements ModelProvider {
         providerId: this.id,
       });
     }
-    this.loading ??= this.createEngine(this.modelId, { initProgressCallback: this.opts.onProgress }).then(
+    this.loading ??= this.createEngine(this.modelId, { initProgressCallback: (report) => this.report(report) }).then(
       (engine) => {
         this.engine = engine;
         this.loading = null;

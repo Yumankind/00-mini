@@ -43,7 +43,17 @@ import type { FetchLike, Readiness } from "./openai-compatible.js";
 import { renderPrompt, stopAtTurnEnd, TURN_MARKER_MAX_LENGTH, turnMarkerIndex } from "./templates.js";
 import type { PromptFamily } from "./templates.js";
 import { fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
-import type { ChatChunk, ChatMessage, ChatRequest, ChatResponse, ModelInfo, ModelProvider, ToolCall, Usage } from "./types.js";
+import type {
+  ChatChunk,
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
+  ModelInfo,
+  ModelProvider,
+  ReadinessProgress,
+  ToolCall,
+  Usage,
+} from "./types.js";
 
 /** The installed runtime this file was written against. Pinned by test to the installed package.json. */
 export const LITERT_VERSION = "0.10.29";
@@ -79,11 +89,18 @@ export interface LiteRtModelInfo extends ModelInfo {
 }
 
 export interface ModelLicense {
-  id: "gemma" | "apache-2.0";
+  /** `gemma` and `apache-2.0` are what this package's own rows carry; a mirror may name another. */
+  id: string;
   name: string;
   url: string;
   /** Present when the licence incorporates use restrictions the person must be pointed at. */
   useRestrictionsUrl?: string;
+  /**
+   * Where the HOST keeps its verbatim copy of the terms, when it keeps one (§12.7 puts
+   * `GEMMA_TERMS.md` beside the weights). Never a constant here: the copy belongs to whoever
+   * redistributes the weights, which is exactly the thing this package refuses to hardcode.
+   */
+  termsCopyUrl?: string;
 }
 
 export const GEMMA_TERMS: ModelLicense = {
@@ -200,6 +217,21 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     family: "gemma",
     license: APACHE_2,
   },
+  // VERIFIED on the mirror (sha256 d37f9392…). Six gigabytes: the "power users with the VRAM" row of
+  // §12.7. It is listed so the OFFLINE fallback catalogue holds the same seven rows the mirror serves
+  // — a picker that shrinks when the network drops looks broken rather than offline.
+  {
+    id: "gemma-4-12B-it-web",
+    label: "Gemma 4 12B",
+    class: "strong",
+    local: true,
+    supportsTools: true,
+    contextTokens: 4096,
+    vramMb: 9000,
+    assetFile: "gemma-4-12B-it-web.litertlm",
+    family: "gemma",
+    license: APACHE_2,
+  },
 ];
 
 /** The row a first visit downloads when the caller names none. Gemma 4 E2B rather than the smaller
@@ -216,6 +248,187 @@ export function litertCatalogFor(options: { maxVramMb?: number } = {}): LiteRtMo
 /** `<base>/<file>`, with exactly one slash between them whatever the caller passed. */
 export function litertAssetUrl(baseUrl: string, assetFile: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/${assetFile.replace(/^\/+/, "")}`;
+}
+
+// ── The mirror's own catalogue, and the join ────────────────────────────────────────────────────
+//
+// WHY A SECOND CATALOGUE AT ALL. `LITERT_CATALOG` above is what this PACKAGE vouches for: file names
+// read out of the installed README or the mirror's snapshot, and `vramMb` estimates a human wrote.
+// `litert/catalog.json` on the host (§12.7) is what the MIRROR actually serves: exact bytes, a
+// sha256, the licence the publisher declared and whether the row does vision. Neither is a superset
+// of the other, so a picker joins them on the file name — the mirror decides WHAT IS THERE (a row
+// that has been published, a row that has been withdrawn), the package supplies WHAT IT COSTS to run
+// and how to prompt it. A row on the mirror the package has never heard of is still offered, with
+// its numbers derived and marked `estimated`, because the alternative is a model nobody can pick
+// until this file is edited and released.
+//
+// Parsing is defensive to the point of rudeness: this JSON is fetched over the network from a bucket,
+// so every field is checked and an unusable document answers `null` rather than half a catalogue.
+
+export interface LiteRtMirrorAsset {
+  file: string;
+  bytes?: number;
+  sha256?: string;
+  source?: string;
+  license?: string;
+  licenseName?: string;
+  licenseUrl?: string;
+  termsCopyUrl?: string;
+  useRestrictionsUrl?: string;
+  gatedAtSource?: boolean;
+  vision?: boolean;
+}
+
+export interface LiteRtMirrorCatalog {
+  version: number;
+  /** The `modelBaseUrl` every asset below is served from. */
+  base: string;
+  publishedAt?: string;
+  notice?: string;
+  noticeUrl?: string;
+  gemmaTermsUrl?: string;
+  gemmaProhibitedUseUrl?: string;
+  assets: LiteRtMirrorAsset[];
+}
+
+/** A row a picker draws: the package's model info, plus what the mirror knows about the file. */
+export interface LiteRtCatalogRow extends LiteRtModelInfo {
+  /** Exact size from the mirror. Absent offline, where only the package's rows exist. */
+  bytes?: number;
+  sha256?: string;
+  gatedAtSource?: boolean;
+  /** True when the host actually serves this file today. */
+  onMirror: boolean;
+  /** True when `vramMb`, `class` and `label` were derived from the file rather than measured. */
+  estimated?: boolean;
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function num(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** `litert/catalog.json` → the shape above, or `null` when it is not that document. */
+export function parseMirrorCatalog(raw: unknown): LiteRtMirrorCatalog | null {
+  const doc = raw as Partial<LiteRtMirrorCatalog> | null;
+  if (!doc || typeof doc !== "object") return null;
+  const base = str(doc.base);
+  if (!base || !Array.isArray(doc.assets)) return null;
+  const assets: LiteRtMirrorAsset[] = [];
+  for (const entry of doc.assets as unknown[]) {
+    const asset = entry as Partial<LiteRtMirrorAsset>;
+    const file = str(asset?.file);
+    // A file name with a path separator in it would escape the base URL the host published; a row
+    // without a name is not a row at all. Both are dropped rather than repaired.
+    if (!file || file.includes("/") || file.includes("..")) continue;
+    assets.push({
+      file,
+      bytes: num(asset.bytes),
+      sha256: str(asset.sha256),
+      source: str(asset.source),
+      license: str(asset.license),
+      licenseName: str(asset.licenseName),
+      licenseUrl: str(asset.licenseUrl),
+      termsCopyUrl: str(asset.termsCopyUrl),
+      useRestrictionsUrl: str(asset.useRestrictionsUrl),
+      gatedAtSource: typeof asset.gatedAtSource === "boolean" ? asset.gatedAtSource : undefined,
+      vision: typeof asset.vision === "boolean" ? asset.vision : undefined,
+    });
+  }
+  if (!assets.length) return null;
+  return {
+    version: num(doc.version) ?? 1,
+    base,
+    publishedAt: str(doc.publishedAt),
+    notice: str(doc.notice),
+    noticeUrl: str(doc.noticeUrl),
+    gemmaTermsUrl: str(doc.gemmaTermsUrl),
+    gemmaProhibitedUseUrl: str(doc.gemmaProhibitedUseUrl),
+    assets,
+  };
+}
+
+/**
+ * VRAM for a row nobody measured: the file's own size plus half again for the KV cache and the
+ * runtime's working set. The measured rows sit between 1.2× and 2.4× their asset, so this is the
+ * middle of a wide range and is marked `estimated` wherever it is used — §12.6's phone cap is kept
+ * with the package's own rows, never with one of these.
+ */
+function estimateVramMb(bytes?: number): number {
+  return bytes ? Math.round((bytes / 1_000_000) * 1.5) : 0;
+}
+
+function licenceFrom(asset: LiteRtMirrorAsset, fallback?: ModelLicense): ModelLicense | undefined {
+  const url = asset.licenseUrl ?? fallback?.url;
+  const name = asset.licenseName ?? fallback?.name;
+  if (!url || !name) return fallback;
+  return {
+    id: asset.license ?? fallback?.id ?? "unknown",
+    name,
+    url,
+    useRestrictionsUrl: asset.useRestrictionsUrl ?? fallback?.useRestrictionsUrl,
+    termsCopyUrl: asset.termsCopyUrl ?? fallback?.termsCopyUrl,
+  };
+}
+
+/**
+ * The mirror's rows, in the mirror's order, enriched from the package's catalogue.
+ *
+ * With no mirror (offline, unreachable, or a document that did not parse) the package's own rows are
+ * the answer, flagged `onMirror: false` so a UI can say the size and the download are unconfirmed.
+ * A package row the mirror does NOT list is left out when a mirror was given: it is a file the host
+ * would answer 404 for, and offering a download that cannot happen is worse than offering fewer.
+ */
+export function mergeMirrorCatalog(
+  mirror: LiteRtMirrorCatalog | null,
+  packageCatalog: LiteRtModelInfo[] = LITERT_CATALOG,
+): LiteRtCatalogRow[] {
+  if (!mirror) return packageCatalog.map((m) => ({ ...m, onMirror: false }));
+  const byFile = new Map(packageCatalog.map((m) => [m.assetFile, m]));
+  const rows: LiteRtCatalogRow[] = [];
+  for (const asset of mirror.assets) {
+    const known = byFile.get(asset.file);
+    const licence = licenceFrom(asset, known?.license);
+    if (known) {
+      rows.push({
+        ...known,
+        ...(licence ? { license: licence } : {}),
+        ...(typeof asset.vision === "boolean" ? { vision: asset.vision } : {}),
+        ...(asset.bytes === undefined ? {} : { bytes: asset.bytes }),
+        ...(asset.sha256 === undefined ? {} : { sha256: asset.sha256 }),
+        ...(asset.gatedAtSource === undefined ? {} : { gatedAtSource: asset.gatedAtSource }),
+        onMirror: true,
+      });
+      continue;
+    }
+    // A row this package has never heard of. It is offered anyway; everything the package would have
+    // supplied is derived, and `estimated` says so out loud.
+    if (!licence) continue;
+    const id = asset.file.replace(/\.(task|litertlm)$/i, "");
+    const vramMb = estimateVramMb(asset.bytes);
+    rows.push({
+      id,
+      label: id,
+      class: asset.bytes && asset.bytes > 3_500_000_000 ? "strong" : "small",
+      local: true,
+      supportsTools: true,
+      contextTokens: 4096,
+      vramMb,
+      assetFile: asset.file,
+      family: "gemma",
+      ...(typeof asset.vision === "boolean" ? { vision: asset.vision } : {}),
+      license: licence,
+      ...(asset.bytes === undefined ? {} : { bytes: asset.bytes }),
+      ...(asset.sha256 === undefined ? {} : { sha256: asset.sha256 }),
+      ...(asset.gatedAtSource === undefined ? {} : { gatedAtSource: asset.gatedAtSource }),
+      onMirror: true,
+      estimated: true,
+    });
+  }
+  return rows;
 }
 
 // ── The task and the cache, behind interfaces so Node can hold them ─────────────────────────────
@@ -336,6 +549,13 @@ export class LiteRtProvider implements ModelProvider {
   private loading: Promise<LiteRtTaskLike> | null = null;
   /** Remembered so `readiness()` need not re-open the cache on every poll of a settings screen. */
   private cached: boolean | null = null;
+  /**
+   * The last download report, so `readiness()` can carry the typed `progress` of the 2026-09-10
+   * contract revision. A settings screen polls readiness on a timer and has no way to be handed the
+   * `onProgress` callback of a provider it did not construct; without this, a two-gigabyte download
+   * looks identical to one that has not started.
+   */
+  private progress: ReadinessProgress | null = null;
   private applied: { temperature?: number; maxTokens?: number };
 
   constructor(opts: LiteRtProviderOptions) {
@@ -401,7 +621,26 @@ export class LiteRtProvider implements ModelProvider {
     }
     if (this.task) return { ready: true };
     if (await this.isCached()) return { ready: true };
-    return { ready: false, reason: "download", detail: `${this.modelId} has not been downloaded to this browser yet.` };
+    return {
+      ready: false,
+      reason: "download",
+      detail: this.progress
+        ? `Downloading ${this.modelId}…`
+        : `${this.modelId} has not been downloaded to this browser yet.`,
+      ...(this.progress ? { progress: this.progress } : {}),
+    };
+  }
+
+  /** One place that both calls the caller's listener and remembers the numbers for `readiness()`. */
+  private report(report: LiteRtProgress): void {
+    this.progress = {
+      loadedBytes: report.loadedBytes,
+      totalBytes: report.totalBytes,
+      // Only when it can be computed honestly: a host that sent no `Content-Length` knows how much
+      // has arrived and cannot know how much is left, and a made-up bar is worse than no bar.
+      percent: report.totalBytes ? Math.min(100, Math.round((report.loadedBytes / report.totalBytes) * 100)) : undefined,
+    };
+    this.opts.onProgress?.(report);
   }
 
   /**
@@ -420,7 +659,7 @@ export class LiteRtProvider implements ModelProvider {
         const hit = await cache.match(this.assetUrl);
         if (hit) {
           this.cached = true;
-          this.opts.onProgress?.({ progress: 1, loadedBytes: 0, text: `${this.modelId} is already on this device.` });
+          this.report({ progress: 1, loadedBytes: 0, text: `${this.modelId} is already on this device.` });
           return new Uint8Array(await hit.arrayBuffer());
         }
       } catch {
@@ -453,7 +692,7 @@ export class LiteRtProvider implements ModelProvider {
         if (!value) continue;
         parts.push(value);
         loaded += value.byteLength;
-        this.opts.onProgress?.({
+        this.report({
           progress: total ? loaded / total : 0,
           loadedBytes: loaded,
           totalBytes: total,
@@ -481,7 +720,7 @@ export class LiteRtProvider implements ModelProvider {
         // survive the tab. The next open downloads it again, which is slow, not broken.
       }
     }
-    this.opts.onProgress?.({ progress: 1, loadedBytes: bytes.byteLength, totalBytes: total, text: `${this.modelId} is ready.` });
+    this.report({ progress: 1, loadedBytes: bytes.byteLength, totalBytes: total, text: `${this.modelId} is ready.` });
     return bytes;
   }
 

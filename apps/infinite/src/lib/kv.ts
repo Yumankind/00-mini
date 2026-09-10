@@ -73,3 +73,5 @@ export const AGENT_ID_KEY = "agentId";
 export const SETTINGS_KEY = "connections";
 export const CREDENTIAL_KEY = "vaultCredentialId";
 export const MOVE_RECEIPT_KEY = "moveReceipt";
+/** The mirror's model catalogue, with the stamp its five-minute freshness is measured from (§12.7). */
+export const LITERT_CATALOG_KEY = "litertCatalog";

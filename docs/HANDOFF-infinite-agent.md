@@ -50,11 +50,11 @@ folder from its own origin and pass a `modelBaseUrl` (decision §12.7).
 3. The sponsored catalog source for a device caller is unnamed (`GET /api/v1/models?tier=` looks
    intended); Overblast's `models` come from the mint call. Both providers take the catalog as a
    parameter for now.
-4. `api.ts` gaps found by the PWA: the vault is not in the frozen surface; `agent_message` does not
+4. ~~`api.ts` gaps found by the PWA: the vault is not in the frozen surface; `agent_message` does not
    say delta vs whole; `readiness().detail` is free-form (a `progress?: number` is wanted);
    `ModelProvider` has no `unload`; `RunResult` lacks `providerId`; providers are fixed at
-   construction (a `setProviders` would remove the PWA's façade). Promote these in one contract
-   revision, with both app owners in the loop.
+   construction (a `setProviders` would remove the PWA's façade).~~ **DONE 2026-09-10** — all six
+   shipped additively; see *Contract revision 2026-09-10* at the end of this file.
 5. Runtime divergences from the engine, all documented in-module: `grep`/`find` ignore no
    `.gitignore`; git tools have no engine twin (a Mac agent uses `bash`); no `git_push` by design;
    the router's class-aware routing of §6 is not implemented (`auto` = first ready provider).
@@ -992,3 +992,118 @@ Overblast app once linked); the embed modifying, submitting, clicking or reading
 host page beyond navigating, scrolling, highlighting and describing (it shows the button, the
 person presses it); the crawl leaving the site's own origin, sending anything other than `GET`, or
 uploading a visitor's index anywhere; any path that wakes a container without a lease.
+
+---
+
+## Contract revision 2026-09-10
+
+Finding 4 of the Status list, shipped. **Every change is additive**: a consumer written against the
+previous surface still compiles, with the one exception named under (b). Three packages moved
+together (`@00/agent-models`, `@00/agent-runtime`, `apps/infinite`); the embed was not edited.
+
+### (a) `AgentRuntime.setProviders(providers: ModelProvider[]): void`
+
+The brain changes mid-session (§4.1's proof) and `createAgentRuntime` fixed its providers at
+construction, so the PWA held a façade whose listeners survived while the inner runtime was rebuilt.
+The façade is **gone** (`apps/infinite/src/runtime/bootstrap.ts`); the runtime swaps its own list.
+
+**When it takes effect: at the next `run()`.** A run in flight keeps the list it started with,
+because a turn planned by one model and answered by another is a corrupted turn, not a fallback —
+the same rule `ModelRouter.stream` applies once it has emitted. A caller who wants the change to bite
+now calls `abort()` first, which is a decision made out loud rather than a side effect. (The old
+façade aborted silently; that behaviour is not preserved, and the PWA no longer wants it.)
+An empty list throws `a runtime needs at least one ModelProvider`, at the call, as the constructor does.
+
+### (b) `agent_message` splits into `agent_delta` + `agent_message`
+
+```ts
+| { type: "agent_delta"; text: string }              // one streamed increment, never repeated
+| { type: "agent_message"; text: string; final: true } // ONE whole message, once, repeating its deltas
+```
+
+`final` was a boolean that said nothing about whether the text repeated the stream or added to it, so
+every consumer guessed — the PWA's reducer carried a heuristic ("a repeat is dropped") with a bug in
+it for any answer that ends by repeating itself. Now: **a delta ADDS, a message REPLACES and closes.**
+`final` stays, always `true`, so the two tell apart at a glance and a reducer written against the old
+union still compiles.
+
+The loop calls `provider.chat()`, which buffers, so today it emits `agent_message` only — one per
+assistant turn, including a turn that also called tools. `agent_delta` is emitted the day the loop
+takes `provider.stream()`; consumers should handle it now.
+
+**The one non-additive edge:** code that read `final` as *false ⇒ more is coming* now sees `true` on
+an intermediate turn. Nothing in this repo did.
+
+### (c) `Readiness.progress`
+
+```ts
+interface ReadinessProgress { loadedBytes: number; totalBytes?: number; percent?: number }
+```
+
+Beside the free-form `detail`, not instead of it. `Readiness` moved to `agent-models/src/types.ts`
+(`openai-compatible.ts` re-exports it, so every import path still works). `LiteRtProvider` fills it
+from the download it is already streaming, and `WebLLMProvider` from `initProgressCallback` — which
+counts WORK, not bytes, so it reports `loadedBytes: 0`, no `totalBytes`, and a `percent`. `percent` is
+present only when it can be computed honestly: a host that sent no `Content-Length` knows what has
+arrived and cannot know what is left, and a made-up bar is worse than no bar.
+`downloadPercent()` in the PWA reads the typed field first and keeps the sentence parser behind it.
+
+### (d) `ModelProvider.unload?()` and `ModelRouter.unloadAll()`
+
+`unload` is optional on the interface, so **always call it as `provider.unload?.()`**; it means "give
+the machine back what you are holding", not "close" — the provider stays usable and the next request
+loads again. `ModelRouter.unloadAll()` walks every provider it holds, not only the ones in a
+preference list (the one no longer preferred is exactly the one still sitting on the GPU), and a
+provider that throws on the way out does not stop the others being released.
+
+### (e) `RunResult.providerId` / `RunResult.model`
+
+Both optional; the LAST provider that answered, since a run that switched ended on that one. Absent
+when no provider was reached (an abort before the first step). The agent still never learns any of
+it — this is the caller's receipt, not the model's context.
+
+### (f) `Vault` in the frozen surface
+
+`api.ts` re-exports `Vault`, `VaultErrorCode`, `VaultFile`, `VaultOptions`, `VaultStore` (types only;
+`createVault` stays in `index.ts`). The PWA holds a vault for the life of a session and could not name
+its type without reaching past the contract.
+
+### The local brain picker (§12.7, §12.6), same day
+
+The Local AI card is now a picker fed by `https://dl.0-0.chat/litert/catalog.json`.
+
+- **The join.** `parseMirrorCatalog` + `mergeMirrorCatalog` in `@00/agent-models` join the mirror's
+  rows to `LITERT_CATALOG` on `file`/`assetFile`: the mirror decides WHAT IS THERE (exact bytes,
+  sha256, licence, `vision`, gated-at-source), the package decides WHAT IT COSTS to run (`vramMb`,
+  `family`, `contextTokens`, the label). A mirror row the package has never heard of is still offered
+  with its numbers derived and marked `estimated`; a package row the mirror does not serve is left
+  out, because that download would 404. `gemma-4-12B-it-web` joined `LITERT_CATALOG` so the offline
+  fallback holds the same seven rows the mirror serves.
+- **The cache.** `apps/infinite/src/lib/litert-catalog.ts`, five minutes in the settings IndexedDB
+  (`LITERT_CATALOG_KEY`). A fresh cache short-circuits before the network is touched; a stale one is
+  used only after the network failed; with neither, the package's own rows answer. The caller is told
+  which of the three it got (`live` / `cached` / `offline`). It is fetched when the card is OPENED,
+  never at boot.
+- **Choosing a row** builds a new `LiteRtProvider` (`modelId` + `assetFile`, `modelBaseUrl` from the
+  catalogue's own `base`), unloads the old one, calls `setProviders([litert, webllm])` and saves the
+  choice in the settings KV as `ConnectionSettings.localModel` — with the host, so a person who
+  downloaded two gigabytes from a mirror does not lose them to an environment variable change.
+- **Already downloaded?** `readiness()` of a provider built for that row, asked lazily, one row at a
+  time, after the list paints. Nothing is downloaded and no request is made.
+- **A phone gets no picker** (§12.6): `isPhone()` is `navigator.userAgentData.mobile` where it exists
+  and `width < 768` otherwise (which is the honest test — the rule is about a screen with no room for
+  a picker). It takes the smallest row under `PHONE_VRAM_CAP_MB` (2000, i.e. the 270m or the 1B),
+  decided from the PACKAGE's rows so the boot needs no network, and gets one line of explanation.
+  Rows whose numbers were derived are never eligible. The router's fallthrough to WebLLM is untouched.
+- **The licence line is per row**, not generic: each row links its own licence and, when it has one,
+  its use restrictions and the host's verbatim copy (`ModelLicense.termsCopyUrl`, filled only from the
+  mirror — the copy belongs to whoever redistributes the weights). `Unload` frees the GPU via (d).
+
+### Coverage
+
+`packages/agent-models` 98.9/90.3/98.2/98.9 and `packages/agent-runtime` 99.1/94.1/98.8/99.1, both
+above their floors. `apps/infinite` measured 54.4/84.7/74.5/54.4 against floors of 47/80/65/47 —
+statements and functions rose well past the ratchet's usual slack, but the floors are **left alone
+deliberately**: the embed owner is editing `embed/src`, which this config counts, and raising a floor
+under a peer's in-flight work is how a gate breaks for someone who did not touch it. Raise them
+together once the embed round lands.

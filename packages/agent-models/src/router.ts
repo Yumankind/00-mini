@@ -71,6 +71,20 @@ export class ModelRouter {
     this.onSwitch = options.onSwitch;
   }
 
+  /**
+   * Give the machine back what every provider behind this router is holding (contract revision
+   * 2026-09-10, §6 finding 4).
+   *
+   * Two decisions in five lines. It walks EVERY provider the router holds rather than only the ones
+   * in the preference lists, because a provider that is no longer preferred is exactly the one still
+   * sitting on a gigabyte of GPU memory. And a provider that throws on the way out does not stop the
+   * others being released: unloading is cleanup, and cleanup that gives up half way is worse than
+   * cleanup that is noisy.
+   */
+  async unloadAll(): Promise<void> {
+    await Promise.all([...this.providers.values()].map(async (p) => p.unload?.().catch(() => undefined)));
+  }
+
   /** The providers named for a class, in order, that this router actually holds. */
   candidates(cls: ModelClass): ModelProvider[] {
     const out: ModelProvider[] = [];
@@ -172,8 +186,14 @@ export class ModelRouter {
 
 // ── The two local brains ────────────────────────────────────────────────────────────────────────
 
-/** A local provider is a `ModelProvider` that can also give the GPU back. Additive; see §6 finding 4. */
-export type LocalProvider = ModelProvider & { unload?: () => Promise<void> };
+/**
+ * A local provider is a `ModelProvider` that can also give the GPU back.
+ *
+ * `unload` became part of `ModelProvider` itself in the contract revision of 2026-09-10, so this
+ * alias no longer ADDS anything — it is kept because it says, at every call site, which providers are
+ * the ones that hold a GPU, and because deleting a name the PWA imports buys nothing.
+ */
+export type LocalProvider = ModelProvider;
 
 /**
  * THE LOCAL PAIR, in preference order: LiteRT first, WebLLM second.

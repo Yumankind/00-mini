@@ -75,18 +75,22 @@ function openToolRow(state: ConversationState, name: string): (Row & { kind: "to
 
 export function reduceEvent(state: ConversationState, event: AgentEvent): ConversationState {
   switch (event.type) {
+    // THE TWO ANSWER EVENTS (contract revision 2026-09-10). They used to be one event with a boolean,
+    // and this reducer had to honour BOTH readings of it — appending unless the text happened to be a
+    // repeat of what it had already accumulated, which is a guess with a bug in it for any answer
+    // that ends by repeating itself. Now the contract says which is which: a delta ADDS, a message
+    // REPLACES and closes.
+    case "agent_delta": {
+      const open = openAgentRow(state);
+      if (!open) return withRow(state, { kind: "agent", text: event.text, streaming: true });
+      return replaceRow(state, open.id, { ...open, text: open.text + event.text });
+    }
     case "agent_message": {
       const open = openAgentRow(state);
-      if (!open) {
-        // A `final` with no preceding delta is a whole message; a first delta opens the bubble.
-        return withRow(state, { kind: "agent", text: event.text, streaming: !event.final });
-      }
-      // The contract does not say whether `text` on a final event repeats the accumulated stream or
-      // adds to it, so both readings are honoured: a repeat is dropped, anything else appends. See
-      // the contract gaps note in the handoff for this module.
-      const repeat = event.final && event.text.length > 0 && open.text.endsWith(event.text);
-      const text = repeat ? open.text : open.text + event.text;
-      return replaceRow(state, open.id, { ...open, text, streaming: !event.final });
+      // The whole message, once: it repeats every delta of the same message, so the accumulation is
+      // replaced rather than added to, and the bubble stops streaming.
+      if (!open) return withRow(state, { kind: "agent", text: event.text, streaming: false });
+      return replaceRow(state, open.id, { ...open, text: event.text, streaming: false });
     }
     case "tool_started": {
       const open = openToolRow(state, event.name);

@@ -17,31 +17,35 @@ function run(events: AgentEvent[], from: ConversationState = emptyConversation()
 describe("the conversation reducer", () => {
   it("opens one bubble and appends the deltas into it", () => {
     const state = run([
-      { type: "agent_message", text: "Hel", final: false },
-      { type: "agent_message", text: "lo.", final: false },
+      { type: "agent_delta", text: "Hel" },
+      { type: "agent_delta", text: "lo." },
     ]);
     expect(state.rows).toHaveLength(1);
     expect(state.rows[0]).toMatchObject({ kind: "agent", text: "Hello.", streaming: true });
   });
 
-  it("closes the bubble on `final`", () => {
+  it("closes the bubble on the whole message, and never doubles the text", () => {
+    // The contract revision of 2026-09-10: `agent_message` repeats the deltas, so it REPLACES them.
     const state = run([
-      { type: "agent_message", text: "Hi", final: false },
-      { type: "agent_message", text: "", final: true },
-    ]);
-    expect(state.rows[0]).toMatchObject({ kind: "agent", text: "Hi", streaming: false });
-  });
-
-  it("does not double the text when `final` repeats the whole stream", () => {
-    // The contract does not say whether `text` on a final event repeats or adds. Both readings work.
-    const state = run([
-      { type: "agent_message", text: "Hello.", final: false },
+      { type: "agent_delta", text: "Hel" },
+      { type: "agent_delta", text: "lo." },
       { type: "agent_message", text: "Hello.", final: true },
     ]);
-    expect(state.rows[0]).toMatchObject({ text: "Hello.", streaming: false });
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]).toMatchObject({ kind: "agent", text: "Hello.", streaming: false });
   });
 
-  it("takes a `final` with no preceding delta as a whole message", () => {
+  it("takes the whole message even when it says more than the deltas did", () => {
+    // A provider whose stream was cut short still ends with the message it actually produced, and
+    // the person reads that rather than the half that arrived.
+    const state = run([
+      { type: "agent_delta", text: "Hello" },
+      { type: "agent_message", text: "Hello. And one more thing.", final: true },
+    ]);
+    expect(state.rows[0]).toMatchObject({ text: "Hello. And one more thing.", streaming: false });
+  });
+
+  it("takes a message with no preceding delta as a whole message", () => {
     const state = run([{ type: "agent_message", text: "Done.", final: true }]);
     expect(state.rows).toHaveLength(1);
     expect(state.rows[0]).toMatchObject({ kind: "agent", text: "Done.", streaming: false });
@@ -153,7 +157,7 @@ describe("the conversation reducer", () => {
   });
 
   it("settles a bubble a failed run left streaming", () => {
-    const streaming = run([{ type: "agent_message", text: "half…", final: false }]);
+    const streaming = run([{ type: "agent_delta", text: "half…" }]);
     expect(settle(streaming).rows[0]).toMatchObject({ streaming: false });
     // Settling twice, or with nothing open, changes nothing.
     expect(settle(settle(streaming))).toEqual(settle(streaming));

@@ -15,6 +15,8 @@ export type {
   ChatResponse,
   ModelInfo,
   ModelProvider,
+  Readiness,
+  ReadinessProgress,
   Role,
   ToolCall,
   ToolSchema,

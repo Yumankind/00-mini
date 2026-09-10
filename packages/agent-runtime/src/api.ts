@@ -7,6 +7,16 @@
 import type { AgentFs } from "@00/agent-fs";
 import type { ModelProvider, ToolSchema, ChatMessage, Usage } from "@00/agent-models";
 
+/**
+ * THE VAULT IS PART OF THE SURFACE (contract revision 2026-09-10, finding 4).
+ *
+ * It was reachable only from this package's own `index.ts`, which made the frozen file a contract
+ * with a hole in it: the PWA's boot builds a vault, holds it for the life of the session and shows
+ * its state on three screens, and could not name its type without reaching past the contract. Types
+ * only — `createVault` stays where it is.
+ */
+export type { Vault, VaultErrorCode, VaultFile, VaultOptions, VaultStore } from "./vault.js";
+
 export type PermissionTier = "safe" | "confirm" | "high-risk";
 
 export interface ToolContext {
@@ -26,7 +36,19 @@ export interface Tool {
 export type AgentEvent =
   | { type: "model_started"; providerId: string; model?: string }
   | { type: "model_completed"; providerId: string; usage?: Usage; footer?: string }
-  | { type: "agent_message"; text: string; final: boolean }
+  /**
+   * A streamed increment of the answer being written. Never the whole thing, never repeated.
+   * (Contract revision 2026-09-10: `agent_message` used to carry both readings behind a boolean, and
+   * every consumer had to guess whether a `final` event repeated the stream or added to it.)
+   */
+  | { type: "agent_delta"; text: string }
+  /**
+   * ONE assistant message, WHOLE, once. It arrives after any deltas of the same message and repeats
+   * them — a consumer that accumulated deltas replaces its accumulation with this text rather than
+   * appending it. `final` is `true` on every one of them: it is what makes the two events tell apart
+   * at a glance, and what keeps a reducer written against the old union compiling.
+   */
+  | { type: "agent_message"; text: string; final: true }
   | { type: "tool_started"; callId: string; name: string; args: Record<string, unknown> }
   | { type: "tool_completed"; callId: string; name: string; output: string; ms: number }
   | { type: "tool_failed"; callId: string; name: string; error: string }
@@ -61,6 +83,14 @@ export interface RunResult {
   steps: number;
   usage: Usage;
   stopped: "final" | "max_steps" | "aborted" | "error";
+  /**
+   * Which brain actually answered, and on which model (contract revision 2026-09-10). The LAST one
+   * of the run, because a run that switched brains mid-way ended on this one — and because the
+   * agent still never learns any of it: this is the caller's receipt, not the model's context.
+   * Absent when no provider was reached at all (an abort before the first step).
+   */
+  providerId?: string;
+  model?: string;
 }
 
 export interface AgentRuntimeOptions {
@@ -75,6 +105,19 @@ export interface AgentRuntimeOptions {
 
 export interface AgentRuntime {
   run(opts: RunOptions): Promise<RunResult>;
+  /**
+   * Change the brains behind this runtime without rebuilding it (contract revision 2026-09-10).
+   *
+   * WHEN IT TAKES EFFECT, AND WHY THAT AND NOT SOONER: at the NEXT `run()`. A run in flight keeps
+   * the list it started with, because a turn whose first half was planned by one model and whose
+   * second half is answered by another is not a fallback, it is a corrupted turn — the same rule the
+   * models router applies to a stream it has already emitted from. A caller who wants the change to
+   * bite now calls `abort()` first, and that is a decision they make out loud.
+   *
+   * Listeners survive: `on()` is subscribed once, at mount, and never learns that the brain changed.
+   * An empty list throws, exactly as the constructor does — a runtime with no provider cannot run.
+   */
+  setProviders(providers: ModelProvider[]): void;
   on(listener: (event: AgentEvent) => void): () => void;
   listSessions(): Promise<{ id: string; title: string; updatedAt: number }[]>;
   loadSession(id: string): Promise<ChatMessage[]>;

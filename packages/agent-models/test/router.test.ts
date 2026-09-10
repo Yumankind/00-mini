@@ -355,3 +355,33 @@ describe("localProviders", () => {
     await expect(webllm.readiness()).resolves.toMatchObject({ ready: false });
   });
 });
+
+describe("unloadAll (contract revision 2026-09-10)", () => {
+  it("releases every provider it holds — including ones no preference list names", async () => {
+    const unloaded: string[] = [];
+    const holding = (id: string): ModelProvider => ({
+      ...fake({ id }),
+      unload: async () => void unloaded.push(id),
+    });
+    const router = new ModelRouter({
+      providers: [holding("local-litert"), holding("local"), fake({ id: "sponsored" })],
+      // `local` is in no list, and is exactly the one still sitting on the GPU after a switch.
+      preference: { small: ["local-litert"], strong: ["sponsored"] },
+    });
+    await router.unloadAll();
+    expect(unloaded.sort()).toEqual(["local", "local-litert"]);
+  });
+
+  it("keeps going when one provider throws on the way out", async () => {
+    const unloaded: string[] = [];
+    const router = new ModelRouter({
+      providers: [
+        { ...fake({ id: "angry" }), unload: async () => { throw new Error("the GPU said no"); } },
+        { ...fake({ id: "calm" }), unload: async () => void unloaded.push("calm") },
+      ],
+      preference: { small: [], strong: [] },
+    });
+    await expect(router.unloadAll()).resolves.toBeUndefined();
+    expect(unloaded).toEqual(["calm"]);
+  });
+});

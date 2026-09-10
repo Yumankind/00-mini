@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   brainLabel,
   downloadPercent,
+  formatBytes,
   isUsable,
+  progressLine,
   readinessPhrase,
   statusLine,
   statusTone,
@@ -67,6 +69,47 @@ describe("readiness → status line", () => {
     expect(statusTone({ ready: false, reason: "credential" })).toBe("warn");
     expect(statusTone({ ready: false, reason: "offline" })).toBe("warn");
     expect(statusTone({ ready: false, reason: "unsupported" })).toBe("off");
+  });
+
+  // ── The typed `progress` of the contract revision, 2026-09-10 ────────────────────────────────
+
+  it("reads the percentage out of the typed progress, in preference to any sentence", () => {
+    expect(
+      downloadPercent({ ready: false, reason: "download", detail: "9%", progress: { loadedBytes: 5, totalBytes: 10, percent: 50 } }),
+    ).toBe(50);
+    // No percent, but a total: computed rather than parsed.
+    expect(downloadPercent({ ready: false, reason: "download", progress: { loadedBytes: 1, totalBytes: 4 } })).toBe(25);
+    expect(statusLine("local", { ready: false, reason: "download", progress: { loadedBytes: 1, totalBytes: 4 } })).toBe(
+      "Local AI · downloading 25%",
+    );
+  });
+
+  it("invents no percentage from bytes with no total, and none at all when ready", () => {
+    expect(downloadPercent({ ready: false, reason: "download", progress: { loadedBytes: 900 } })).toBeNull();
+    expect(downloadPercent({ ready: true })).toBeNull();
+    expect(downloadPercent({ ready: false, reason: "credential" })).toBeNull();
+  });
+
+  it("still reads a percentage a provider only put into words", () => {
+    expect(downloadPercent({ ready: false, reason: "download", detail: "42%" })).toBe(42);
+  });
+
+  it("says the bytes in the unit a two-gigabyte model is measured in", () => {
+    expect(formatBytes(249_233_408)).toBe("249 MB");
+    expect(formatBytes(2_003_697_664)).toBe("2.0 GB");
+    expect(formatBytes(12_000_000_000)).toBe("12 GB");
+    expect(formatBytes(0)).toBeNull();
+    expect(formatBytes(undefined)).toBeNull();
+  });
+
+  it("shows `x of y` while a download runs, and nothing when there is nothing to say", () => {
+    expect(progressLine({ ready: false, reason: "download", progress: { loadedBytes: 1_000_000_000, totalBytes: 2_000_000_000 } })).toBe(
+      "1.0 GB of 2.0 GB",
+    );
+    expect(progressLine({ ready: false, reason: "download", progress: { loadedBytes: 500_000_000 } })).toBe("500 MB");
+    expect(progressLine({ ready: false, reason: "download", progress: { loadedBytes: 0 } })).toBeNull();
+    expect(progressLine({ ready: false, reason: "download" })).toBeNull();
+    expect(progressLine({ ready: true })).toBeNull();
   });
 
   it("only calls a provider usable when it says it is ready", () => {

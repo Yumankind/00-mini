@@ -28,12 +28,17 @@ import {
   throwIfAborted,
 } from "./errors.js";
 import { readSse, SSE_DONE } from "./sse.js";
-import type { ChatChunk, ChatMessage, ChatRequest, ChatResponse, ModelInfo, ModelProvider, ToolCall, Usage } from "./types.js";
+import type { ChatChunk, ChatMessage, ChatRequest, ChatResponse, ModelInfo, ModelProvider, Readiness, ToolCall, Usage } from "./types.js";
 
 /** The only `fetch` shape this package uses. The global one is assignable to it. */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-export type Readiness = { ready: true } | { ready: false; reason: "download" | "credential" | "offline" | "unsupported"; detail?: string };
+/**
+ * Re-exported rather than declared: `Readiness` moved into `types.ts` with the contract revision of
+ * 2026-09-10 (it grew a typed `progress`), and every provider in this package imports it from here.
+ * One definition, one place to change it.
+ */
+export type { Readiness, ReadinessProgress } from "./types.js";
 
 /** What a footer extractor gets besides the parsed JSON, so it can work off text or headers too. */
 export interface FooterContext {

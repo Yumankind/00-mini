@@ -24,7 +24,7 @@
  * 4. ABORT IS CHECKED BETWEEN EVERY STEP AND PASSED INTO EVERY TOOL. `abort()` mid-tool works
  *    because the tool holds the signal, and the loop stops the moment it returns.
  */
-import type { ChatMessage, ChatResponse, ToolCall, Usage } from "@00/agent-models";
+import type { ChatMessage, ChatResponse, ModelProvider, ToolCall, Usage } from "@00/agent-models";
 import type { AgentFs } from "@00/agent-fs";
 import type {
   AgentEvent,
@@ -75,6 +75,12 @@ export interface RuntimeExtensions {
 
 export type AgentRuntimeOptionsExt = AgentRuntimeOptions & RuntimeExtensions;
 
+/** The invariant a runtime is built on, checked wherever the list is set rather than where it is used. */
+function nonEmpty(providers: ModelProvider[]): ModelProvider[] {
+  if (!providers.length) throw new Error("a runtime needs at least one ModelProvider");
+  return providers.slice();
+}
+
 function usageZero(): Usage {
   return { inputTokens: 0, outputTokens: 0 };
 }
@@ -113,7 +119,15 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
   const fs: AgentFs = opts.fs;
   const bus = new EventBus();
   const registry = new ToolRegistry(opts.tools);
-  const router = new ModelRouter(opts.providers);
+  /**
+   * The brains, swappable (`setProviders`, contract revision 2026-09-10).
+   *
+   * A router is a wrapper around an ordered list and costs nothing to make, so one is built PER RUN
+   * and a swap between runs is simply the next run seeing a different list. That is the whole
+   * mechanism behind "a run in flight keeps the list it started with": there is no shared mutable
+   * router for a live loop to notice changing underneath it.
+   */
+  let providers = nonEmpty(opts.providers);
   const origin = opts.origin ?? "local";
   const defaultWorkspace = opts.workspace ?? DEFAULT_WORKSPACE;
   const now = opts.now ?? (() => new Date());
@@ -135,10 +149,13 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
     const linked = linkSignals(controller.signal, run.signal);
     const signal = linked.signal;
 
+    const router = new ModelRouter(providers);
     const usage = { value: usageZero() };
     let steps = 0;
     let finalText = "";
     let stopped: RunResult["stopped"] = "final";
+    /** Who answered last — the run's receipt (`RunResult.providerId`), never the model's context. */
+    let answeredBy: { providerId: string; model?: string } | undefined;
 
     try {
       const resuming = !!run.sessionId;
@@ -167,7 +184,14 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
 
       const finish = (reason: RunResult["stopped"]): RunResult => {
         stopped = reason;
-        return { sessionId, text: finalText, steps, usage: usage.value, stopped };
+        return {
+          sessionId,
+          text: finalText,
+          steps,
+          usage: usage.value,
+          stopped,
+          ...(answeredBy ? { providerId: answeredBy.providerId, model: answeredBy.model } : {}),
+        };
       };
 
       const maxSteps = run.maxSteps ?? DEFAULT_MAX_STEPS;
@@ -176,6 +200,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
         steps++;
 
         const { provider, model } = await router.pick(run.model);
+        answeredBy = { providerId: provider.id, model };
         emit({ type: "model_started", providerId: provider.id, model });
         let response: ChatResponse;
         try {
@@ -206,7 +231,11 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
         messages.push({ role: "assistant", content: text, ...(calls.length ? { toolCalls: calls } : {}) });
         if (text) {
           finalText = text;
-          emit({ type: "agent_message", text, final: calls.length === 0 });
+          // ONE whole message per assistant turn (contract revision 2026-09-10). `chat()` buffers, so
+          // there is nothing to stream and no `agent_delta` is emitted here; the day the loop takes
+          // the provider's `stream()` instead, the deltas go out as they arrive and THIS event still
+          // closes the message with the whole of it.
+          emit({ type: "agent_message", text, final: true });
         }
         if (!calls.length) return finish("final");
 
@@ -268,6 +297,11 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
 
   return {
     run: runOne,
+    setProviders(next) {
+      // The invariant fails HERE rather than at the next run, so the caller who emptied the list is
+      // the one who hears about it.
+      providers = nonEmpty(next);
+    },
     on: (listener) => bus.on(listener),
     async listSessions() {
       return sessions.list();

@@ -86,6 +86,9 @@ const EXPECTED = [
   "APACHE_2",
   "litertCatalogFor",
   "litertAssetUrl",
+  // the mirror's catalogue and the join (contract revision 2026-09-10)
+  "parseMirrorCatalog",
+  "mergeMirrorCatalog",
   // the shared prompt-based tool fallback and the turn formats
   "fallbackToolPrompt",
   "parseFallbackToolCalls",

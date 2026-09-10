@@ -142,6 +142,33 @@ describe("readiness", () => {
     await expect(provider.readiness()).resolves.toMatchObject({ reason: "download" });
   });
 
+  it("carries the typed progress web-llm can honestly report: a percentage and no bytes", async () => {
+    withWebGpu();
+    // The engine is held open on purpose: readiness has to be asked while the load is genuinely in
+    // flight, which is the only moment a settings screen's poll ever sees.
+    let finish: (() => void) | undefined;
+    const provider = new WebLLMProvider({
+      createEngine: async (_id, opts) => {
+        opts.initProgressCallback?.({ progress: 0.42, timeElapsed: 1, text: "Fetching param cache[10/24]" });
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        return mockEngine({});
+      },
+    });
+    const loading = provider.load();
+    await Promise.resolve();
+    // web-llm counts work, not bytes: `percent` is filled and `totalBytes` deliberately is not, so a
+    // byte counter shows nothing rather than "0 B of 0 B".
+    const mid = await provider.readiness();
+    expect(mid).toMatchObject({ ready: false, reason: "download", progress: { loadedBytes: 0, percent: 42 } });
+    expect(mid.ready === false && mid.progress?.totalBytes).toBeUndefined();
+    expect(mid.ready === false && mid.detail).toContain("Loading");
+    finish?.();
+    await loading;
+    await expect(provider.readiness()).resolves.toEqual({ ready: true });
+  });
+
   it("hands back the catalogue and a stable id", async () => {
     const provider = new WebLLMProvider();
     expect(provider.id).toBe("local");
