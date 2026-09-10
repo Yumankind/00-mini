@@ -126,6 +126,14 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
 12. **Live transfer is wired end to end but the rooms base is a `.invalid` placeholder** until the
     worker deploys; the UI says "not connected yet" rather than spinning.
 
+15. **Scripts and servers in the browser shell** (2026-09-11): `node file.js`, `node -e`, `npm run`,
+    `serve`, `ports`, `kill` in a sandboxed Worker with a Node-flavoured prelude; `http.createServer`
+    registers a virtual port the service worker routes under `/~/<port>/`; folders serve the same way.
+    Measured in a real browser: a sandboxed iframe is never served by the service worker and an
+    unsandboxed one can read the app's storage, so the preview renders a served page as a snapshot
+    in the opaque frame, and a live in-pane preview waits for a separate origin (§12.1). Sync `fs`
+    writes and `npm install` refuse by name; the latter stays that way until the "own WebContainers"
+    layers (node polyfills, an npm client over the registry, a process model) or the licence.
 14. **"Remote brain via my Mac"** (later): a ModelProvider over mobile connect. The browser sends
     the latest turn to the Mac's agent, which answers with its own brain and tools, subscription
     CLIs included; the browser never holds those OAuth tokens (their terms bind them to their own
