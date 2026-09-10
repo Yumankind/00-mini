@@ -126,6 +126,16 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
 12. **Live transfer is wired end to end but the rooms base is a `.invalid` placeholder** until the
     worker deploys; the UI says "not connected yet" rather than spinning.
 
+17. **Cross-origin isolation and a synchronous filesystem** (2026-09-11): the site Worker sends
+    COOP `same-origin` + COEP `credentialless` on documents and the service worker (with
+    `run_worker_first`, since the asset layer would otherwise answer `/` without them), CORP
+    `same-origin` on its own assets and `cross-origin` on what third parties embed. Proven live:
+    `crossOriginIsolated`, SharedArrayBuffer, wasm and weights still loading as CORS. A dedicated
+    Worker owns the workspace through OPFS sync access handles and serves a shared-memory channel
+    byte-compatible with `@00/agent-node`'s; scripts get real `readFileSync`/`writeFileSync`/`require`
+    when isolated. Found on the way: the system prompt had grown past the 4096-token LiteRT context
+    (fix in flight: a prompt budget per model, compact tool signatures, 8192 tokens asked at load for
+    the desktop rows), and the browser pane blocks service-worker registration (the app's own too).
 16. **Live preview on a second origin + element picker** (2026-09-11): `apps/infinite-preview-site`,
     deployed at `https://infinite-preview.powerhouse.workers.dev` (no bindings, no data): the app posts
     a folder's files to it, its service worker serves them under `/s/<site>/` and forwards a virtual
