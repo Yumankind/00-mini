@@ -9,6 +9,11 @@
  *
  * The order of screens is the order of §4: boot, then the vault if one exists (asked EVERY entry),
  * then the shell. The approvals modal sits above all three because a run can outlive a pane change.
+ *
+ * TWO SHELLS, ONE APP (§1, added with B7). The header carries a Power toggle; with it on, the body
+ * below the header is `PowerLayout` — the IDE arrangement on a desk, the same panes as tabs on a
+ * phone. Simple mode is untouched: the same tabs, the same rail, the same bottom bar. The switch is
+ * one boolean and one component, so nothing about the simple shell has to know the other exists.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import ApprovalsModal from "./components/ApprovalsModal.vue";
@@ -18,6 +23,7 @@ import ConnectionsPane from "./components/ConnectionsPane.vue";
 import ConversationPane from "./components/ConversationPane.vue";
 import FilesPane from "./components/FilesPane.vue";
 import InstallNag from "./components/InstallNag.vue";
+import PowerLayout from "./components/PowerLayout.vue";
 import MovePanel from "./components/MovePanel.vue";
 import MovedReceipt from "./components/MovedReceipt.vue";
 import OfflineBanner from "./components/OfflineBanner.vue";
@@ -28,8 +34,9 @@ import WebsitePanel from "./components/WebsitePanel.vue";
 import { agent, boot, profile, ready } from "./state/agent.js";
 import { refuseAll } from "./state/approvals.js";
 import { listen } from "./state/conversation.js";
-import { refreshFiles } from "./state/files.js";
+import { refreshFiles, watchFileChanges } from "./state/files.js";
 import { nextTheme, startInstallWatch, startTheme, applyTheme, themeChoice } from "./state/install.js";
+import { mode, powerShell, startLayout, togglePower } from "./state/layout.js";
 import { loadMoveReceipt, movedAway } from "./state/move.js";
 import { startOffline } from "./state/offline.js";
 import { claimRequestFromQuery, type ClaimRequest } from "./state/registry.js";
@@ -70,12 +77,14 @@ onMounted(async () => {
     for (const key of ["claim", "nonce", "origin"]) clean.searchParams.delete(key);
     window.history.replaceState(window.history.state, "", clean);
   }
-  teardown.push(startOffline(), startInstallWatch(), startVaultClock());
+  teardown.push(startOffline(), startInstallWatch(), startVaultClock(), startLayout());
   // Before the agent, because a moved-away agent must never flash its shell on the way to its receipt.
   await loadMoveReceipt();
   await boot();
   await refreshVault();
   listen();
+  // The tree must not lag behind the agent's own writes — in either shell.
+  teardown.push(watchFileChanges());
   // A person's activity is what the idle lock measures, and a pane click is activity.
   const touch = () => touchVault();
   window.addEventListener("pointerdown", touch, { passive: true });
@@ -125,7 +134,7 @@ watch(pane, (next) => {
           <span class="text-[13px] font-medium truncate">{{ profile?.displayName }}</span>
         </div>
 
-        <nav class="hidden sm:flex items-center gap-1 ml-4">
+        <nav v-if="mode === 'simple'" class="hidden sm:flex items-center gap-1 ml-4">
           <button
             v-for="tab in TABS"
             :key="tab.id"
@@ -140,6 +149,17 @@ watch(pane, (next) => {
         </nav>
 
         <div class="ml-auto flex items-center gap-1">
+          <!-- §1: the same runtime, more panes. A toggle rather than a second app. -->
+          <button
+            type="button"
+            class="ia-btn h-8 px-2.5 text-[11px] flex items-center gap-1.5"
+            :class="powerShell ? 'ia-btn-primary' : ''"
+            :title="powerShell ? 'Back to the simple shell' : 'Power shell: files, editor, terminal, git'"
+            @click="togglePower()"
+          >
+            <TablerIcon name="tools" :size="14" />
+            <span class="hidden sm:inline">Power</span>
+          </button>
           <div class="relative">
             <button
               type="button"
@@ -189,7 +209,16 @@ watch(pane, (next) => {
       <OfflineBanner />
       <InstallNag />
 
-      <div class="flex-1 flex min-h-0">
+      <!-- The power shell takes the whole body; a claim link still comes first, since it is a grant. -->
+      <ClaimPane
+        v-if="claimRequest && mode !== 'simple'"
+        :request="claimRequest"
+        @done="claimRequest = null; pane = 'website'"
+        @cancel="claimRequest = null"
+      />
+      <PowerLayout v-else-if="mode !== 'simple'" />
+
+      <div v-else class="flex-1 flex min-h-0">
         <aside class="hidden sm:flex w-56 shrink-0 border-r border-[var(--color-line)]">
           <SessionsList class="w-full" />
         </aside>
@@ -218,6 +247,7 @@ watch(pane, (next) => {
       </div>
 
       <nav
+        v-if="mode === 'simple'"
         class="sm:hidden flex items-stretch border-t border-[var(--color-line)] shrink-0"
         style="padding-bottom: env(safe-area-inset-bottom)"
       >

@@ -1,11 +1,23 @@
 <script setup lang="ts">
-/** One row of the tree, recursive. Split out because a component cannot render itself inline. */
+/**
+ * One row of the tree, recursive. Split out because a component cannot render itself inline.
+ *
+ * A click does two things now (power shell, B7): it opens or toggles, AND it marks this row as
+ * "here" — the folder the toolbar's New, Upload and drop target mean. Two separate gestures for
+ * "look at this" and "work in this" is one gesture too many at a file tree.
+ */
 import TablerIcon from "./TablerIcon.vue";
 import type { TreeNode } from "../lib/files-tree.js";
 import { formatSize } from "../lib/files-tree.js";
-import { openFile, openFolders, selectedPath, toggleFolder } from "../state/files.js";
+import { focusNode, focusedPath, openFile, openFolders, selectedPath, toggleFolder } from "../state/files.js";
 
 defineProps<{ node: TreeNode; depth: number }>();
+
+function pick(node: TreeNode): void {
+  focusNode(node.path);
+  if (node.kind === "dir") toggleFolder(node.path);
+  else void openFile(node.path);
+}
 </script>
 
 <template>
@@ -13,9 +25,14 @@ defineProps<{ node: TreeNode; depth: number }>();
     <button
       type="button"
       class="w-full flex items-center gap-1.5 px-2 py-1 text-left rounded-md hover:bg-[color-mix(in_srgb,var(--color-panel-2)_70%,transparent)]"
-      :class="selectedPath === node.path ? 'bg-[color-mix(in_srgb,var(--color-phosphor)_12%,transparent)]' : ''"
+      :class="[
+        selectedPath === node.path ? 'bg-[color-mix(in_srgb,var(--color-phosphor)_12%,transparent)]' : '',
+        focusedPath === node.path && selectedPath !== node.path
+          ? 'bg-[color-mix(in_srgb,var(--color-panel-2)_70%,transparent)]'
+          : '',
+      ]"
       :style="{ paddingLeft: `${8 + depth * 12}px` }"
-      @click="node.kind === 'dir' ? toggleFolder(node.path) : openFile(node.path)"
+      @click="pick(node)"
     >
       <TablerIcon
         v-if="node.kind === 'dir'"

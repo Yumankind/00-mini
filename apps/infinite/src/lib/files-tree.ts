@@ -119,3 +119,128 @@ export function ancestors(path: string): string[] {
   }
   return out;
 }
+
+// ── Mutations, added with the power shell's file manager (B7) ─────────────────────────────────────
+//
+// WHY THE TREE IS EDITED IN PLACE RATHER THAN RE-WALKED. A rename inside a 4 000-file agent is one
+// `AgentFs.rename` and one node moving; re-walking the whole folder to see it costs a second pass
+// over OPFS and, worse, collapses nothing and re-sorts everything, so the row a person just renamed
+// jumps somewhere else while their finger is still on it. The walk stays the source of truth (the
+// pane reloads on the agent's own `file_changed`); these are the local echoes that keep a click
+// feeling like a click. Every one of them is pure: nodes in, new nodes out.
+
+/** `a/b/c.md` → `a/b`; a top-level path's parent is `""`. */
+export function parentOf(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? "" : path.slice(0, i);
+}
+
+/** `a/b/c.md` → `c.md`. */
+export function baseName(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+export function joinPath(dir: string, name: string): string {
+  return dir ? `${dir}/${name}` : name;
+}
+
+/**
+ * Why a name is refused, or `null`. The rules are the filesystem's own (`assertRelativePath`), said
+ * before the write rather than after it, so a person sees "no slashes" under the field rather than a
+ * thrown adapter error in a toast.
+ */
+export function nameProblem(name: string, siblings: string[] = []): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return "A name is needed.";
+  if (trimmed.includes("/")) return "No slashes — make a folder instead.";
+  if (trimmed === "." || trimmed === "..") return "That name means something else to a filesystem.";
+  if (/[\0\\]/.test(trimmed)) return "That character cannot be in a file name.";
+  if (siblings.includes(trimmed)) return "Something here already has that name.";
+  return null;
+}
+
+export function findNode(nodes: TreeNode[], path: string): TreeNode | null {
+  for (const n of nodes) {
+    if (n.path === path) return n;
+    if (n.children) {
+      const hit = findNode(n.children, path);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** The names directly inside `dir` — what `nameProblem` needs to refuse a collision. */
+export function childNames(nodes: TreeNode[], dir: string): string[] {
+  const list = dir === "" ? nodes : findNode(nodes, dir)?.children ?? [];
+  return list.map((n) => n.name);
+}
+
+function mapChildren(nodes: TreeNode[], dir: string, fn: (children: TreeNode[]) => TreeNode[]): TreeNode[] {
+  if (dir === "") return sortTree(fn(nodes));
+  return nodes.map((n) => {
+    if (n.path === dir && n.kind === "dir") return { ...n, children: sortTree(fn(n.children ?? [])) };
+    if (n.children) return { ...n, children: mapChildren(n.children, dir, fn) };
+    return n;
+  });
+}
+
+/** Add a file or folder that was just written. A path whose parent is not in the tree is ignored. */
+export function insertNode(nodes: TreeNode[], path: string, kind: "file" | "dir", size = 0): TreeNode[] {
+  const dir = parentOf(path);
+  if (dir && !findNode(nodes, dir)) return nodes;
+  if (findNode(nodes, path)) return nodes;
+  const node: TreeNode = { name: baseName(path), path, kind, size, ...(kind === "dir" ? { children: [] } : {}) };
+  return mapChildren(nodes, dir, (children) => [...children, node]);
+}
+
+/** Drop a node and everything under it. */
+export function removeNode(nodes: TreeNode[], path: string): TreeNode[] {
+  return mapChildren(nodes, parentOf(path), (children) => children.filter((c) => c.path !== path));
+}
+
+/** Rename in place — the node keeps its children, whose paths are rewritten under the new prefix. */
+export function renameNode(nodes: TreeNode[], path: string, name: string): TreeNode[] {
+  const target = findNode(nodes, path);
+  if (!target) return nodes;
+  const next = joinPath(parentOf(path), name);
+  const rewrite = (node: TreeNode, from: string, to: string): TreeNode => ({
+    ...node,
+    path: to,
+    name: baseName(to),
+    ...(node.children ? { children: node.children.map((c) => rewrite(c, from, `${to}/${c.name}`)) } : {}),
+  });
+  return mapChildren(nodes, parentOf(path), (children) =>
+    children.map((c) => (c.path === path ? rewrite(c, path, next) : c)),
+  );
+}
+
+/** Every file path under a node, for a folder download or a size count. */
+export function filesUnder(node: TreeNode): string[] {
+  if (node.kind === "file") return [node.path];
+  return (node.children ?? []).flatMap(filesUnder);
+}
+
+// ── What the editor will open ────────────────────────────────────────────────────────────────────
+
+/** Past this the textarea editor stops being an editor and starts being a way to hang a tab. */
+export const EDITOR_MAX_BYTES = 1_048_576;
+
+/**
+ * Editable = text by extension AND small enough to hold in a textarea. Bigger or binary falls back
+ * to the read-only viewer, which says so — an editor that opened a 40 MB log and could not save it
+ * would be worse than one that refused.
+ */
+export function isEditablePath(path: string, size = 0): boolean {
+  return isTextPath(path) && size <= EDITOR_MAX_BYTES;
+}
+
+/** The one extension the editor offers a rendered preview for. */
+export function isMarkdownPath(path: string): boolean {
+  return /\.(md|markdown)$/i.test(path);
+}
+
+/** The one extension the preview pane will render. */
+export function isPreviewablePath(path: string): boolean {
+  return /\.html?$/i.test(path);
+}
