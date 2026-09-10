@@ -82,6 +82,8 @@ const EXPECTED = [
   "LITERT_CATALOG",
   "LITERT_DEFAULT_MODEL_ID",
   "LITERT_UNVERIFIED_ASSETS",
+  "GEMMA_TERMS",
+  "APACHE_2",
   "litertCatalogFor",
   "litertAssetUrl",
   // the shared prompt-based tool fallback and the turn formats

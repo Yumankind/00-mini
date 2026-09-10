@@ -136,17 +136,34 @@ done <<< "$ASSETS"
 
 [ $DRY -eq 1 ] && exit 0
 
+# Section 3.1 of the Gemma terms: a NOTICE beside every distribution and a copy of the Agreement for
+# every recipient. Both tracked in scripts/litert-notices/ and put up on every run, so a stale copy
+# in the bucket cannot outlive an edit here.
+NOTICES_DIR="$(cd "$(dirname "$0")/litert-notices" && pwd)"
+"$WRANGLER" r2 object put "$R2_BUCKET/litert/NOTICE.txt" --file "$NOTICES_DIR/NOTICE.txt" --remote \
+  --content-type "text/plain; charset=utf-8" --cache-control "public, max-age=3600" >/dev/null
+"$WRANGLER" r2 object put "$R2_BUCKET/litert/GEMMA_TERMS.md" --file "$NOTICES_DIR/GEMMA_TERMS.md" --remote \
+  --content-type "text/markdown; charset=utf-8" --cache-control "public, max-age=3600" >/dev/null
+echo "✓ $DL_URL/litert/NOTICE.txt and GEMMA_TERMS.md"
+
 # The catalog the app can read beside the files: what is here, from where, under which licence.
 cat_json=$(mktemp -t litert-catalog.XXXXXX.json)
 {
-  echo '{ "version": 1, "base": "'"$DL_URL"'/litert", "publishedAt": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'", "assets": ['
+  echo '{ "version": 1, "base": "'"$DL_URL"'/litert", "publishedAt": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",'
+  echo '  "notice": "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms",'
+  echo '  "noticeUrl": "'"$DL_URL"'/litert/NOTICE.txt", "gemmaTermsUrl": "'"$DL_URL"'/litert/GEMMA_TERMS.md",'
+  echo '  "gemmaProhibitedUseUrl": "https://ai.google.dev/gemma/prohibited_use_policy", "assets": ['
   first=1
   for row in "${mirrored[@]}"; do
     IFS='|' read -r repo commit file bytes sha licence gated vision <<< "$row"
     [ $first -eq 1 ] || echo ','
     first=0
-    printf '  { "file": "%s", "bytes": %s, "sha256": "%s", "source": "https://huggingface.co/%s/blob/%s/%s", "license": "%s", "gatedAtSource": %s, "vision": %s }' \
-      "$file" "$bytes" "$sha" "$repo" "$commit" "$file" "$licence" "$([ "$gated" = yes ] && echo true || echo false)" "$([ "$vision" = yes ] && echo true || echo false)"
+    case "$licence" in
+      gemma) lic='"license": "gemma", "licenseName": "Gemma Terms of Use", "licenseUrl": "https://ai.google.dev/gemma/terms", "termsCopyUrl": "'"$DL_URL"'/litert/GEMMA_TERMS.md", "useRestrictionsUrl": "https://ai.google.dev/gemma/prohibited_use_policy"' ;;
+      *) lic='"license": "'"$licence"'", "licenseName": "Apache License 2.0", "licenseUrl": "https://www.apache.org/licenses/LICENSE-2.0"' ;;
+    esac
+    printf '  { "file": "%s", "bytes": %s, "sha256": "%s", "source": "https://huggingface.co/%s/blob/%s/%s", %s, "gatedAtSource": %s, "vision": %s }' \
+      "$file" "$bytes" "$sha" "$repo" "$commit" "$file" "$lic" "$([ "$gated" = yes ] && echo true || echo false)" "$([ "$vision" = yes ] && echo true || echo false)"
   done
   echo; echo '] }'
 } > "$cat_json"

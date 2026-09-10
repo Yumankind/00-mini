@@ -70,7 +70,26 @@ export interface LiteRtModelInfo extends ModelInfo {
   assetFile: string;
   /** Which turn format to build the prompt in (`templates.ts`). */
   family: PromptFamily;
+  /** The publisher's licence, as the Hub declares it. Gemma rows carry use restrictions the app must
+   *  show before the download (docs/HANDOFF-infinite-agent.md §12.7); Apache rows do not. */
+  license: ModelLicense;
 }
+
+export interface ModelLicense {
+  id: "gemma" | "apache-2.0";
+  name: string;
+  url: string;
+  /** Present when the licence incorporates use restrictions the person must be pointed at. */
+  useRestrictionsUrl?: string;
+}
+
+export const GEMMA_TERMS: ModelLicense = {
+  id: "gemma",
+  name: "Gemma Terms of Use",
+  url: "https://ai.google.dev/gemma/terms",
+  useRestrictionsUrl: "https://ai.google.dev/gemma/prohibited_use_policy",
+};
+export const APACHE_2: ModelLicense = { id: "apache-2.0", name: "Apache License 2.0", url: "https://www.apache.org/licenses/LICENSE-2.0" };
 
 /**
  * The rows whose `assetFile` this package could NOT verify against anything installed.
@@ -109,6 +128,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     vramMb: 1200,
     assetFile: "gemma3-1b-it-int4-web.task",
     family: "gemma",
+    license: GEMMA_TERMS,
   },
   // VERIFIED: named in full in the installed package's README.md.
   {
@@ -121,6 +141,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     vramMb: 3600,
     assetFile: "gemma-3n-E2B-it-int4-Web.litertlm",
     family: "gemma",
+    license: GEMMA_TERMS,
   },
   // VERIFIED: the installed README's first download link. The owner's "Gemma 4" — it exists, and
   // this is the name it exists under.
@@ -134,6 +155,8 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     vramMb: 3600,
     assetFile: "gemma-4-E2B-it-web.task",
     family: "gemma",
+    // The litert-community repo declares Apache-2.0 on the Hub (read 2026-09-10), not the Gemma terms.
+    license: APACHE_2,
   },
   // VERIFIED: the installed README's second download link. Desktop-class; never offered to a phone.
   {
@@ -146,11 +169,14 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     vramMb: 6800,
     assetFile: "gemma-4-E4B-it-web.task",
     family: "gemma",
+    license: APACHE_2,
   },
 ];
 
-/** The smallest row: the one a first visit downloads when the caller names none. */
-export const LITERT_DEFAULT_MODEL_ID = "gemma3-1b-it-int4-web";
+/** The row a first visit downloads when the caller names none. Gemma 4 E2B rather than the smaller
+ *  Gemma 3 1B because it is what the mirror serves today (the 1B is gated at its source and lands
+ *  with the next publish), and because its licence carries no use restrictions to show first. */
+export const LITERT_DEFAULT_MODEL_ID = "gemma-4-E2B-it-web";
 
 /** §12.6: a phone gets one model, not a picker. Same filter as the WebLLM catalogue's. */
 export function litertCatalogFor(options: { maxVramMb?: number } = {}): LiteRtModelInfo[] {

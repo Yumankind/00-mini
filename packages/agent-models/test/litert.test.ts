@@ -201,6 +201,8 @@ describe("the curated catalogue", () => {
       expect(model.local).toBe(true);
       expect(model.supportsTools).toBe(true);
       expect(model.family).toBe("gemma");
+      expect(["gemma", "apache-2.0"]).toContain(model.license.id);
+      if (model.license.id === "gemma") expect(model.license.useRestrictionsUrl).toContain("prohibited_use_policy");
       expect(model.assetFile).toMatch(/\.(task|litertlm)$/);
       expect(ids.has(model.id), `${model.id} is listed twice`).toBe(false);
       ids.add(model.id);
@@ -209,7 +211,10 @@ describe("the curated catalogue", () => {
 
   it("filters to a phone's cap, so a phone is offered one model and not a wall", () => {
     const phone = litertCatalogFor({ maxVramMb: 2000 });
-    expect(phone.map((m) => m.id)).toEqual([LITERT_DEFAULT_MODEL_ID]);
+    expect(phone.map((m) => m.id)).toEqual(["gemma3-1b-it-int4-web"]);
+    // The default is NOT the phone row: it is the smallest asset the mirror serves today (§12.7),
+    // whose licence carries no use restrictions; the 1B joins the mirror with the gated publish.
+    expect(LITERT_DEFAULT_MODEL_ID).toBe("gemma-4-E2B-it-web");
     expect(litertCatalogFor()).toHaveLength(LITERT_CATALOG.length);
   });
 
@@ -250,7 +255,7 @@ describe("construction", () => {
     expect(instance.wasmBaseUrl).toBe(LITERT_DEFAULT_WASM_PATH);
     expect(LITERT_DEFAULT_WASM_PATH.startsWith("/")).toBe(true);
     expect(instance.modelId).toBe(LITERT_DEFAULT_MODEL_ID);
-    expect(instance.assetUrl).toBe(`${BASE}/${LITERT_CATALOG[0]?.assetFile}`);
+    expect(instance.assetUrl).toBe(`${BASE}/${LITERT_CATALOG.find((m) => m.id === LITERT_DEFAULT_MODEL_ID)?.assetFile}`);
   });
 });
 
@@ -269,7 +274,7 @@ describe("readiness", () => {
     const { instance, caches, fetcher } = provider();
     await expect(instance.readiness()).resolves.toMatchObject({ ready: false, reason: "download" });
     await instance.load();
-    expect(fetcher.calls).toEqual([`${BASE}/${LITERT_CATALOG[0]?.assetFile}`]);
+    expect(fetcher.calls).toEqual([`${BASE}/${LITERT_CATALOG.find((m) => m.id === LITERT_DEFAULT_MODEL_ID)?.assetFile}`]);
     await expect(instance.readiness()).resolves.toEqual({ ready: true });
 
     // A SECOND provider over the same cache is ready before it has loaded anything: that is the

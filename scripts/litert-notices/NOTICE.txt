@@ -1,0 +1,23 @@
+Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms
+
+This folder (https://dl.0-0.chat/litert/) mirrors browser-ready model files for the Infinite Agent,
+byte for byte as published (the sha256 of every file is in catalog.json beside it). Nothing here
+is modified.
+
+Files subject to the Gemma Terms of Use (a copy is in GEMMA_TERMS.md beside this notice; their use
+restrictions are the Gemma Prohibited Use Policy at ai.google.dev/gemma/prohibited_use_policy):
+  gemma-3n-E2B-it-int4-Web.litertlm
+  gemma-3n-E4B-it-int4-Web.litertlm
+  gemma3-270m-it-q4_0-web.task
+  gemma3-1b-it-int4-web.task
+
+Files their publisher lists under the Apache License 2.0 (litert-community on Hugging Face):
+  gemma-4-E2B-it-web.task
+  gemma-4-E4B-it-web.task
+  gemma-4-12B-it-web.litertlm
+
+The MediaPipe runtime under ../mediapipe/ is Google's @mediapipe/tasks-genai, Apache License 2.0.
+
+By downloading or running any Gemma file you accept the Gemma Terms of Use, including the
+Prohibited Use Policy. 00 (0-0.chat) incorporates those restrictions into its own terms:
+https://0-0.chat/terms and https://0-0.chat/acceptable-use

@@ -965,6 +965,14 @@ runtime inside the mobile app, scheduled work handed to Mac/cloud.
    builds (Apache, ungated, but no `-web` variant, so unproven on the browser runtime). The gated
    rows need an `HF_TOKEN` at publish time only; visitors never see the Hub.
 
+   **Gemma terms, §3.1, met like this (2026-09-10):** `litert/NOTICE.txt` with Google's sentence and
+   `litert/GEMMA_TERMS.md` (a verbatim copy) beside the files, re-put on every publish from
+   `scripts/litert-notices/`; the catalog carries licence, terms and use-restriction URLs per asset;
+   the app's local-brain card and the embed's "Load local AI" offer name the licence and the
+   Prohibited Use Policy before the download; the landing's terms and acceptable-use pages
+   incorporate the policy as an enforceable term. Nothing is modified (sha256 proves it), so §3.1.3
+   has nothing to say. The Gemma 4 rows are Apache-2.0 per the Hub, and carry none of this.
+
    **Live on 2026-09-10:** the three Gemma 4 rows (E2B, E4B, 12B) and MediaPipe's wasm, with
    `litert/catalog.json` listing them; range requests and CORS verified on the custom domain. The
    four gated rows (3n E2B and E4B with vision, 270m, 1B) wait for an `HF_TOKEN` at publish time:

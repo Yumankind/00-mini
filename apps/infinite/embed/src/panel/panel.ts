@@ -36,7 +36,12 @@ export interface PanelDeps {
   tools: Tool[];
   brain: Brain | null;
   /** The download the visitor is OFFERED, never given automatically (§5.2.3). */
-  localAi: { sizeMb: number; load: (onProgress: (line: string) => void) => Promise<Brain | null> };
+  localAi: {
+    sizeMb: number;
+    /** The model's name and its publisher's licence — shown beside the button, before any download. */
+    model: { name: string; licenseName: string; licenseUrl: string; useRestrictionsUrl?: string };
+    load: (onProgress: (line: string) => void) => Promise<Brain | null>;
+  };
   clearMemory: () => Promise<void>;
   applyConfig: (config: SiteConfig) => void;
   fetchImpl: typeof fetch;
@@ -247,6 +252,17 @@ export function createPanel(deps: PanelDeps): PanelHandle {
     const offer = el("div", { className: "offer" }, [
       el("p", { textContent: "Answers here come from this site's own pages. A small AI can talk them through — it downloads to this device only." }),
     ]);
+    // The licence is named where the download is offered, not after it: a model's terms bind the
+    // person who runs it, and Gemma's carry use restrictions they must be able to read first.
+    const m = deps.localAi.model;
+    const licence = el("p", { className: "licence" }, [
+      el("span", { textContent: `${m.name} · ` }),
+      el("a", { href: m.licenseUrl, target: "_blank", rel: "noopener", textContent: m.licenseName }),
+    ]);
+    if (m.useRestrictionsUrl) {
+      licence.append(el("span", { textContent: " · " }), el("a", { href: m.useRestrictionsUrl, target: "_blank", rel: "noopener", textContent: "use restrictions" }));
+    }
+    offer.append(licence);
     const button = el("button", { type: "button", textContent: `Load local AI · ${deps.localAi.sizeMb} MB` });
     button.addEventListener("click", () => {
       button.disabled = true;

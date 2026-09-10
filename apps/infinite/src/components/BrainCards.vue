@@ -155,14 +155,27 @@ const keyProblem = computed(() =>
             <p v-if="card.tone === 'off'" class="text-[11px] text-[var(--color-amber)]">
               This browser has no WebGPU, so the local brain cannot run here. Everything else still works.
             </p>
-            <button
-              v-else
-              type="button"
-              class="ia-btn w-full h-8 text-[11px]"
-              @click="run(() => chooseBrain('local').then(() => 'Local AI will answer.'))"
-            >
-              Use the local brain
-            </button>
+            <template v-else>
+              <!-- Section 3.1 of the Gemma terms: the restrictions are named BEFORE the download, and the
+                   person gets the agreement itself. The fallback model has its own licence; it is named too. -->
+              <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+                Local models run under their publishers' licences. Gemma models come under the
+                <a class="underline" href="https://ai.google.dev/gemma/terms" target="_blank" rel="noopener">Gemma Terms of Use</a>
+                and their
+                <a class="underline" href="https://ai.google.dev/gemma/prohibited_use_policy" target="_blank" rel="noopener">Prohibited Use Policy</a>
+                (<a class="underline" href="https://dl.0-0.chat/litert/GEMMA_TERMS.md" target="_blank" rel="noopener">copy</a>);
+                the fallback Llama 3.2 model under the
+                <a class="underline" href="https://www.llama.com/llama3_2/license/" target="_blank" rel="noopener">Llama 3.2 Community License</a>.
+                Using the local brain accepts them.
+              </p>
+              <button
+                type="button"
+                class="ia-btn w-full h-8 text-[11px]"
+                @click="run(() => chooseBrain('local').then(() => 'Local AI will answer.'))"
+              >
+                Use the local brain
+              </button>
+            </template>
           </template>
 
           <!-- Sponsored: the passkey account lives on sponsoredtokens; this registers the browser. -->

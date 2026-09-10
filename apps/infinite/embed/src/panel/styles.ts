@@ -70,8 +70,10 @@ button.send { border: 0; border-radius: 10px; padding: 9px 14px; background: var
 footer { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 footer button { border: 0; background: transparent; color: var(--muted); text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
 footer .sponsor { margin-left: auto; text-align: right; }
-.offer { border: 1px dashed var(--line); border-radius: 12px; padding: 10px; display: flex; gap: 8px; align-items: center; }
+.offer { border: 1px dashed var(--line); border-radius: 12px; padding: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .offer p { margin: 0; flex: 1; font-size: 12px; color: var(--muted); }
+.offer .licence { flex-basis: 100%; font-size: 11px; color: var(--muted); }
+.offer .licence a { color: inherit; text-decoration: underline; }
 .offer button { border: 1px solid var(--line); background: transparent; color: var(--fg); border-radius: 8px; padding: 6px 10px; cursor: pointer; font: inherit; }
 .setup { display: flex; flex-direction: column; gap: 14px; }
 .setup h2 { margin: 0; font-size: 15px; }

@@ -43,6 +43,12 @@ import type { AuthState } from "./types.js";
  * reads the real catalogue and fails when the two drift.
  */
 export const LOCAL_AI_MB = 879;
+/** What that number buys, and under whose terms: web-llm's default row (webllm.ts) is Meta's Llama 3.2 1B. */
+export const LOCAL_AI_MODEL = {
+  name: "Llama 3.2 1B",
+  licenseName: "Llama 3.2 Community License",
+  licenseUrl: "https://www.llama.com/llama3_2/license/",
+} as const;
 /** Built by `embed/vite.model.config.ts`, served next to the loader, fetched only when asked for. */
 export const LOCAL_MODEL_MODULE = "/m/m.js";
 const WELL_KNOWN = "/.well-known/infinite-agent.json";
@@ -253,7 +259,7 @@ export async function start(): Promise<EmbedHandle | null> {
       tools,
       // No brain until the visitor asks for one: level 0 is retrieval plus the page tools (§5.2.3).
       brain: null,
-      localAi: { sizeMb: LOCAL_AI_MB, load: (onProgress) => makeBrain(onProgress) },
+      localAi: { sizeMb: LOCAL_AI_MB, model: LOCAL_AI_MODEL, load: (onProgress) => makeBrain(onProgress) },
       clearMemory: async () => {
         // The panel's "clear memory" button: the purge, and then nothing of this site remains.
         await index.clearAll();
