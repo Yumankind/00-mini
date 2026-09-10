@@ -16,6 +16,7 @@
   "dependencies": {
     "@00/agent-fs": "workspace:*",
     "@00/agent-models": "workspace:*",
+    "@00/agent-node": "workspace:*",
     "@00/agent-runtime": "workspace:*",
     "@00/shared": "workspace:*",
     "buffer": "^6.0.3",
