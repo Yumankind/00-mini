@@ -29,6 +29,17 @@ export interface SiteConfig {
   version: number;
   /** Site file only: binds the file to the ref, which is the ownership proof. */
   ref?: string;
+  /**
+   * The owner's ed25519 LINK public key, base64url of the raw 32 bytes (§5.1).
+   *
+   * WHY A SETTING AND NOT A SECRET: it is the public half, and §5.1 says the ref and the tag are
+   * "public by design". It has to travel with them because REGISTRATION HAPPENS IN A VISITOR'S
+   * BROWSER (§5.3, and the worker's `Origin` check makes that mandatory) while the private half
+   * never leaves the owner's. The key registered is the key the claim of §5.4 is verified against,
+   * so a snippet that carries none can be set up, crawled and asked questions — everything at
+   * level 0 — and simply cannot be registered until the owner pastes it in.
+   */
+  linkPub?: string;
   depth: number;
   includes: string[];
   excludes: string[];
@@ -75,6 +86,9 @@ export const DEFAULT_SITE_CONFIG: SiteConfig = {
   intro: { name: "", line: "" },
   knowledge: [],
 };
+
+/** Raw 32 bytes, base64url, unpadded — the worker's `isLinkPub` by shape rather than by decoding. */
+export const LINK_PUB_RE = /^[A-Za-z0-9_-]{43}$/;
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -133,7 +147,7 @@ export function validateSiteConfig(input: unknown): { config: SiteConfig; notes:
   if (!isRecord(input)) return { config: { ...DEFAULT_SITE_CONFIG }, notes: ["settings were not an object; defaults used"] };
 
   const known = new Set([
-    "version", "ref", "depth", "includes", "excludes", "ttlDays", "doNotTouch",
+    "version", "ref", "linkPub", "depth", "includes", "excludes", "ttlDays", "doNotTouch",
     "crawlAuthed", "session", "intro", "knowledge",
   ]);
   const dropped = Object.keys(input).filter((k) => !known.has(k));
@@ -146,6 +160,12 @@ export function validateSiteConfig(input: unknown): { config: SiteConfig; notes:
 
   const introIn = isRecord(input.intro) ? input.intro : {};
   const ref = typeof input.ref === "string" && /^ia_[a-z0-9_]{4,64}$/i.test(input.ref) ? input.ref : undefined;
+  // 32 bytes of base64url is exactly 43 characters, unpadded. Checked by shape here so a typo is a
+  // note in the owner panel rather than a `bad_link_pub` from a worker they cannot see.
+  const linkPub = typeof input.linkPub === "string" && LINK_PUB_RE.test(input.linkPub) ? input.linkPub : undefined;
+  if (input.linkPub !== undefined && !linkPub) {
+    notes.push("linkPub is not an ed25519 public key (43 base64url characters); registration will be refused");
+  }
 
   const depth = clampInt(input.depth, 1, 2, DEFAULT_SITE_CONFIG.depth);
   if (input.depth !== undefined && depth !== input.depth) notes.push(`depth clamped to ${depth} (1–2)`);
@@ -155,6 +175,7 @@ export function validateSiteConfig(input: unknown): { config: SiteConfig; notes:
   const config: SiteConfig = {
     version: clampInt(input.version, 1, 1_000_000, 1),
     ...(ref ? { ref } : {}),
+    ...(linkPub ? { linkPub } : {}),
     depth,
     includes: pathList(input.includes),
     excludes: pathList(input.excludes),

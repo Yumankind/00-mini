@@ -218,9 +218,18 @@ describe("one host, one place (§12.7)", () => {
       const hosts = [...code(readFileSync(file, "utf8")).matchAll(/https?:\/\/([A-Za-z0-9.-]+)/g)].map((m) => m[1]!);
       const unique = [...new Set(hosts)];
       if (name === "local-ai.ts") {
-        // The one module allowed to know where things live: the mirror, and the two licences it
+        // The one module allowed to know where the MODEL lives: the mirror, and the two licences it
         // must point a person at before they download the weights.
         expect(unique.filter((h) => !["dl.0-0.chat", "ai.google.dev", "www.llama.com"].includes(h))).toEqual([]);
+        return;
+      }
+      if (name === "registry/api-base.ts") {
+        // The second — and last — module allowed to name a host: the Infinite registry of §9.4,
+        // which ships as an UNROUTABLE placeholder until `VITE_INFINITE_API_BASE` is set, so a build
+        // made before the worker is deployed fails at the fetch with an obvious name (the same
+        // semantics as apps/infinite/src/transfer/config.ts). Everything else in `registry/` writes
+        // its paths against `infiniteApiBase()` and names nothing.
+        expect(unique).toEqual(["infinite-registry.invalid"]);
         return;
       }
       // Everywhere else: only the two literals that never reach the network — the base a relative

@@ -8,6 +8,7 @@
  * ends by handing them a file to save or a tag to paste, and never by storing anything anywhere.
  */
 
+import type { RegisterResult } from "../registry/client.js";
 import type { SiteConfig } from "../site-config.js";
 import {
   SETUP_STEPS,
@@ -15,12 +16,27 @@ import {
   buildSiteConfig,
   checkSiteFile,
   defaultAnswers,
+  describeRegistration,
   isDevOrigin,
   sessionKindHelp,
   siteFileText,
   snippetFor,
   type SetupAnswers,
 } from "./setup-model.js";
+
+/**
+ * What step 5's Register card is given (§5.3, §5.4).
+ *
+ * Actions, not a client: the flow asks to register and asks for the claim link, and everything about
+ * how those are fetched — and whether a registry exists at all — belongs to `registry/client.ts`.
+ * `openTab` is injectable because a test has no window and because opening one is the single
+ * side-effect on this card.
+ */
+export interface AdminFlow {
+  register(): Promise<RegisterResult>;
+  claimUrl(): string | null;
+  openTab?(url: string): void;
+}
 
 export interface SetupOptions {
   origin: string;
@@ -29,6 +45,10 @@ export interface SetupOptions {
   productHost: string;
   fetchImpl: typeof fetch;
   onApply(config: SiteConfig): void;
+  /** The owner's agent key already in force, so re-opening the gear does not lose it. */
+  linkPub?: string;
+  /** Absent ⇒ step 5 stays the list of what is possible later, exactly as it was at level 0. */
+  admin?: AdminFlow;
 }
 
 const el = <K extends keyof HTMLElementTagNameMap>(
@@ -49,7 +69,7 @@ const list = (value: string): string[] =>
     .filter(Boolean);
 
 export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
-  const answers: SetupAnswers = defaultAnswers(opts.origin);
+  const answers: SetupAnswers = { ...defaultAnswers(opts.origin), linkPub: opts.linkPub ?? "" };
   const dev = isDevOrigin(opts.origin);
 
   const wrap = el("div", { className: "setup" });
@@ -167,6 +187,11 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
     knowledge,
   );
 
+  // Declared here, rendered in step 5: the key belongs with Register, but it is a FIELD OF THE
+  // SETTINGS DOCUMENT, so step 4's preview and snippet have to be rebuilt when it changes.
+  const linkPubInput = el("input", { type: "text", placeholder: "43 characters, base64url", value: answers.linkPub });
+  linkPubInput.addEventListener("input", () => (answers.linkPub = linkPubInput.value.trim()));
+
   // ── 4. Where to keep these settings ────────────────────────────────────────────────────────
   const step4 = step(3);
   const carrier = el("select");
@@ -190,7 +215,7 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
     opts.onApply(config);
   };
   carrier.addEventListener("change", refresh);
-  for (const input of [depth, ttl, kind, names, logout, name, line, knowledge, auto]) {
+  for (const input of [depth, ttl, kind, names, logout, name, line, knowledge, auto, linkPubInput]) {
     input.addEventListener("change", refresh);
     input.addEventListener("input", refresh);
   }
@@ -222,6 +247,66 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
     ["Give it a stronger brain", "a claimed app, or a local model on the visitor's device"],
   ]) {
     step5.append(el("div", { className: "rule", textContent: `${title} — needs ${needs}` }));
+  }
+
+  // The admin flow proper (§5.3, §5.4). It is the FIRST thing on this page that calls anything of
+  // ours, and it does so only when the button is pressed — see registry/client.ts's header.
+  if (opts.admin) {
+    const admin = opts.admin;
+    const registerOut = el("div", { className: "rule" });
+    const registerDetail = el("p", { className: "note" });
+    const registerBtn = el("button", { className: "copy", type: "button", textContent: "Register this site" });
+    const claimBtn = el("button", { className: "copy", type: "button", textContent: "Claim it in your agent" });
+    claimBtn.hidden = true;
+    registerOut.hidden = true;
+
+    registerBtn.addEventListener("click", () => {
+      registerBtn.disabled = true;
+      registerBtn.textContent = "Registering…";
+      void admin
+        .register()
+        .then((result) => show(result))
+        .catch((err: unknown) => {
+          registerOut.hidden = false;
+          registerOut.textContent = `That did not work (${String(err)}).`;
+        })
+        .finally(() => {
+          registerBtn.disabled = false;
+          registerBtn.textContent = "Register this site";
+        });
+    });
+
+    const show = (result: RegisterResult): void => {
+      const view = describeRegistration(result, admin.claimUrl());
+      registerOut.hidden = false;
+      registerOut.textContent = view.headline;
+      registerDetail.textContent = view.detail;
+      claimBtn.hidden = !view.action;
+      if (view.action) {
+        claimBtn.textContent = view.action.label;
+        claimBtn.onclick = () => {
+          const url = view.action!.url;
+          // A new tab, never this one: the owner is in the middle of setting up their site, and
+          // navigating away from it would lose the form they have been filling in.
+          if (admin.openTab) admin.openTab(url);
+          else window.open(url, "_blank", "noopener");
+        };
+      }
+    };
+
+    step5.append(
+      el("label", { textContent: "Your agent's public key (from the Infinite Agent app)" }),
+      linkPubInput,
+      el("p", {
+        className: "note",
+        textContent:
+          "Public by design, like the snippet. It is stored when the site registers, and it is what proves the claim is yours.",
+      }),
+      registerBtn,
+      registerOut,
+      registerDetail,
+      claimBtn,
+    );
   }
 
   container.replaceChildren(wrap);

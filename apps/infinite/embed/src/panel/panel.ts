@@ -19,7 +19,7 @@ import type { SiteIndex } from "../index/site-index.js";
 import { pathOf } from "../index/site-index.js";
 import type { PageBridge } from "../page/bridge.js";
 import { matchLandmark, planNoBrainReply } from "./no-brain.js";
-import { renderSetup } from "./setup.js";
+import { renderSetup, type AdminFlow } from "./setup.js";
 import { PANEL_CSS } from "./styles.js";
 
 export interface PanelDeps {
@@ -54,6 +54,14 @@ export interface PanelDeps {
   fetchImpl: typeof fetch;
   /** True when this site has no site.json yet: the gear opens the owner's setup flow. */
   needsSetup: boolean;
+  /**
+   * Phase 3 (§5.6): the panel tells the loader when it is open, and the reply poller runs then and
+   * only then. A closed panel has nowhere to put a reply, and a site with a thousand readers and no
+   * open panels must make no calls at all.
+   */
+  onOpenChange?: (open: boolean) => void;
+  /** Phase 3 (§5.3, §5.4): what the admin flow's Register card needs. Absent ⇒ the card is not shown. */
+  admin?: AdminFlow;
 }
 
 export interface PanelHandle {
@@ -62,6 +70,13 @@ export interface PanelHandle {
   toggle(): void;
   isOpen(): boolean;
   onAgentEvent(event: AgentEvent): void;
+  /**
+   * The `confirm` tier, rendered (§5.2.2). Resolves true only when the visitor presses the button
+   * with the question's own words above it — never on a timeout, never by default.
+   */
+  confirm(question: string, detail?: string): Promise<boolean>;
+  /** A reply the owner sent, shown as what it is: a person, not the agent (§5.6). */
+  ownerMessage(text: string): void;
 }
 
 /** Survives a `page_open` navigation: the panel reopens where it was (§5.2.2). */
@@ -150,6 +165,44 @@ export function createPanel(deps: PanelDeps): PanelHandle {
     body.scrollTop = body.scrollHeight;
     if (remember) transcript.push({ who, text });
     return node;
+  };
+
+  /**
+   * The one door out of the device, asked for in the visitor's own transcript.
+   *
+   * NO `window.confirm`: a native dialog on somebody else's website is the host page's furniture,
+   * it blocks their whole tab, and it cannot show the text that is about to be sent. This is a
+   * bubble with the message in it and two buttons, and nothing leaves until one is pressed.
+   */
+  const confirmAsk = (question: string, detail?: string): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      const box = el("div", { className: "ask" }, [el("p", { textContent: question })]);
+      if (detail) box.append(el("p", { className: "note", textContent: detail }));
+      const yes = el("button", { className: "yes", type: "button", textContent: "Send" });
+      const no = el("button", { type: "button", textContent: "Not now" });
+      const answer = (value: boolean): void => {
+        box.replaceChildren(
+          el("p", { className: "note", textContent: value ? "Sent to the site owner." : "Nothing was sent." }),
+        );
+        resolve(value);
+      };
+      yes.addEventListener("click", () => answer(true));
+      no.addEventListener("click", () => answer(false));
+      box.append(yes, no);
+      body.append(box);
+      body.scrollTop = body.scrollHeight;
+      yes.focus();
+    });
+
+  const ownerMessage = (text: string): void => {
+    const node = el("div", { className: "msg owner" }, [
+      el("b", { textContent: "From the site owner" }),
+      el("div", { textContent: text }),
+    ]);
+    body.append(node);
+    body.scrollTop = body.scrollHeight;
+    transcript.push({ who: "them", text: `From the site owner: ${text}` });
+    park(deps.ref, { open, transcript });
   };
 
   const suggest = (hits: { url: string; title: string; heading: string; passage: string }[]): void => {
@@ -315,15 +368,19 @@ export function createPanel(deps: PanelDeps): PanelHandle {
       productHost: deps.productHost,
       fetchImpl: deps.fetchImpl,
       onApply: deps.applyConfig,
+      ...(deps.admin ? { admin: deps.admin } : {}),
+      linkPub: deps.config.linkPub ?? "",
     });
   });
 
   const setOpen = (next: boolean): void => {
+    const changed = next !== open;
     open = next;
     panel.dataset.open = next ? "1" : "0";
     launcher.style.display = next ? "none" : "";
     park(deps.ref, { open: next, transcript });
     if (next) input.focus();
+    if (changed) deps.onOpenChange?.(next);
   };
   launcher.addEventListener("click", () => setOpen(true));
   close.addEventListener("click", () => setOpen(false));
@@ -350,6 +407,8 @@ export function createPanel(deps: PanelDeps): PanelHandle {
     close: () => setOpen(false),
     toggle: () => setOpen(!open),
     isOpen: () => open,
+    confirm: confirmAsk,
+    ownerMessage,
     /** The runtime's events, while a turn is in flight: text streams into the waiting bubble. */
     onAgentEvent: (event) => {
       if (event.type === "agent_message" && live) live.textContent = event.text;

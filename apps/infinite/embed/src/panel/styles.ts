@@ -56,6 +56,13 @@ header .grow { flex: 1; }
 .msg { max-width: 90%; padding: 8px 11px; border-radius: 12px; background: var(--bubble); white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.me { align-self: flex-end; background: var(--fg); color: var(--bg); }
 .msg.status { align-self: flex-start; background: transparent; color: var(--muted); font-size: 12px; padding: 0 2px; }
+/* A reply from the owner is a person, not the agent: it is labelled, and it is not the model's voice. */
+.msg.owner { border-left: 3px solid var(--accent); }
+.msg.owner b { display: block; font-size: 11px; color: var(--muted); font-weight: 600; }
+.ask { border: 1px solid var(--accent); border-radius: 12px; padding: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
+.ask p { margin: 0; flex-basis: 100%; font-size: 13px; }
+.ask button { border: 1px solid var(--line); background: transparent; color: var(--fg); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: 600 13px/1 system-ui; }
+.ask button.yes { background: var(--fg); color: var(--bg); border-color: var(--fg); }
 .hit { border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; background: transparent; text-align: left; cursor: pointer; width: 100%; color: inherit; font: inherit; }
 .hit:hover { border-color: var(--accent); }
 .hit b { display: block; font-weight: 600; }

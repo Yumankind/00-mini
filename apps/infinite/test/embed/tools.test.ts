@@ -213,10 +213,32 @@ describe("what each tool answers", () => {
     const { tools } = build({
       sendToOwner: async (kind, text) => {
         sent.push(`${kind}:${text}`);
-        return "queued";
+        return { ok: true, message: "queued" };
       },
     });
     expect((await run(tools, "send_to_owner", { kind: "lead", text: "call me" })).output).toBe("queued");
     expect(sent).toEqual(["lead:call me"]);
+  });
+
+  it("send_to_owner carries the registry's own refusal back as an error", async () => {
+    const { tools } = build({
+      sendToOwner: async () => ({ ok: false, message: "This agent’s mailbox is full." }),
+    });
+    const res = await run(tools, "send_to_owner", { kind: "message", text: "hello" });
+    expect(res.isError).toBe(true);
+    expect(res.output).toContain("mailbox is full");
+  });
+
+  it("send_to_owner refuses an empty message before anything leaves the device", async () => {
+    const sent: string[] = [];
+    const { tools } = build({
+      sendToOwner: async (kind, text) => {
+        sent.push(`${kind}:${text}`);
+        return { ok: true, message: "queued" };
+      },
+    });
+    const res = await run(tools, "send_to_owner", { kind: "message", text: "   " });
+    expect(res.isError).toBe(true);
+    expect(sent).toEqual([]);
   });
 });

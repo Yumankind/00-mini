@@ -16,7 +16,8 @@
  *   5. Optional, later — register, claim, publish, messages, a stronger brain. None required.
  */
 
-import { DEFAULT_SITE_CONFIG, encodeDataSite, normalisePath, type SessionKind, type SiteConfig } from "../site-config.js";
+import type { RegisterResult } from "../registry/client.js";
+import { DEFAULT_SITE_CONFIG, LINK_PUB_RE, encodeDataSite, normalisePath, type SessionKind, type SiteConfig } from "../site-config.js";
 
 export interface SetupStep {
   id: "site" | "read" | "intro" | "keep" | "later";
@@ -51,6 +52,14 @@ export interface SetupAnswers {
   introLine: string;
   knowledge: string[];
   carrier: "site-file" | "snippet";
+  /**
+   * The owner's agent key (ed25519 public half, base64url), copied out of the Infinite Agent app.
+   *
+   * It rides in BOTH carriers, unlike `ref`: registration happens in a visitor's browser (§5.3) and
+   * the key it registers is the one the claim of §5.4 is verified against, so a snippet-only owner
+   * needs it as much as a file one does. It is public by design — see `SiteConfig.linkPub`.
+   */
+  linkPub: string;
 }
 
 export function defaultAnswers(origin: string): SetupAnswers {
@@ -71,6 +80,7 @@ export function defaultAnswers(origin: string): SetupAnswers {
     introLine: "",
     knowledge: [],
     carrier: "site-file",
+    linkPub: "",
   };
 }
 
@@ -117,6 +127,7 @@ export function buildSiteConfig(answers: SetupAnswers, ref?: string): SiteConfig
     // The ref binds the file to this snippet, which is what makes the file an ownership proof —
     // and only the site-file carrier carries it (§5.2.4).
     ...(ref && answers.carrier === "site-file" ? { ref } : {}),
+    ...(LINK_PUB_RE.test(answers.linkPub.trim()) ? { linkPub: answers.linkPub.trim() } : {}),
     depth: answers.depth >= 2 ? 2 : 1,
     includes: paths(answers.includes),
     excludes: paths(answers.excludes),
@@ -151,6 +162,101 @@ export function snippetFor(host: string, ref: string, config: SiteConfig, carrie
   if (carrier === "site-file") return `<script async src="${src}"></script>`;
   const { ref: _dropped, ...withoutRef } = config;
   return `<script async src="${src}" data-site='${encodeDataSite(withoutRef)}'></script>`;
+}
+
+// ── Step 5: register and claim (§5.3, §5.4) ─────────────────────────────────────────────────────
+
+/** What the Register card shows after one attempt. Pure data, so every branch is a test. */
+export interface RegistrationView {
+  /** `dev` | `unclaimed` | `claimed` | `requested` | `refused` — what the card is now showing. */
+  state: "dev" | "unclaimed" | "claimed" | "requested" | "refused";
+  headline: string;
+  detail: string;
+  /** The ONE button, when there is one: opening the owned agent to sign the claim. */
+  action: { label: string; url: string } | null;
+}
+
+/**
+ * The four answers §5.3 and §5.4 allow, and the refusals, turned into a card.
+ *
+ * THE ONE BUTTON is deliberate. A claim is an ed25519 signature under the link key, which lives in
+ * the owner's OTHER browser — the owned agent's. So the admin flow cannot claim anything itself; all
+ * it can do is send the person to `<product origin>/?claim=<appId>&nonce=…&origin=…` and let the
+ * agent that holds the key sign. Anything else on this card would be a promise this page cannot keep.
+ */
+export function describeRegistration(result: RegisterResult, claimUrl: string | null): RegistrationView {
+  if (result.ok) {
+    if (result.status === "dev") {
+      return {
+        state: "dev",
+        headline: "Dev mode",
+        detail:
+          "This is a local origin, so the agent is registered as a development app: level 0 plus a dev-sized allowance, and nothing to claim. Paste the snippet on the real domain to register it there.",
+        action: null,
+      };
+    }
+    if (result.status === "claimed") {
+      return {
+        state: "claimed",
+        headline: "Claimed",
+        detail: "This agent is yours. You can publish its knowledge and read what visitors send you.",
+        action: null,
+      };
+    }
+    if (!claimUrl) {
+      return {
+        state: "unclaimed",
+        headline: "Registered, not claimed",
+        detail:
+          "The claim link was minted in the browser that first registered this site, and it is held there. Open this site in that browser to finish claiming, or ask the registry's owner to re-issue one.",
+        action: null,
+      };
+    }
+    return {
+      state: "unclaimed",
+      headline: "Registered — now prove it is yours",
+      detail:
+        "Claiming is a signature under your agent's own key, so it is done in the Infinite Agent app. This opens it in a new tab; nothing here holds that key.",
+      action: { label: "Claim it in your agent", url: claimUrl },
+    };
+  }
+
+  if (result.code === "ref_registered") {
+    return {
+      state: "requested",
+      headline: "Another site holds this snippet",
+      detail:
+        "This agent ref is already registered to a different origin, so this one has been queued as requested. Its owner allows it from their own panel — nobody else can.",
+      action: null,
+    };
+  }
+  if (result.code === "not_connected") {
+    return {
+      state: "refused",
+      headline: "Not connected yet",
+      detail: "This build points at no registry, so there is nothing to register with. Level 0 works exactly as it does now.",
+      action: null,
+    };
+  }
+  if (result.code === "no_link_pub") {
+    return {
+      state: "refused",
+      headline: "Your agent key is missing",
+      detail:
+        "Paste your agent's public key above and save the settings again. Registration stores that key, and it is what proves the claim later is yours.",
+      action: null,
+    };
+  }
+  if (result.code === "ip_limited") {
+    const hours = result.retryAfter ? Math.ceil(result.retryAfter / 3600) : 24;
+    return {
+      state: "refused",
+      headline: "One registration a day from this address",
+      detail: `${result.message} Try again in about ${hours} hour(s).`,
+      action: null,
+    };
+  }
+  return { state: "refused", headline: "Not registered", detail: result.message, action: null };
 }
 
 /** The "did it land?" check the flow re-runs until the file answers (§5.2.4, step 4). */

@@ -28,6 +28,9 @@ import { localAiOffer, type LocalAiOffer } from "./local-ai.js";
 import { createDomBridge } from "./page/dom-bridge.js";
 import { createSessionHost, currentAuthState, watchSession } from "./page/session-host.js";
 import { createPanel, park, readParked, setSponsorFooter, type PanelHandle } from "./panel/panel.js";
+import { createRegistryClient } from "./registry/client.js";
+import { createOwnerOutbox } from "./registry/send.js";
+import { pollerFor } from "./registry/poll.js";
 import {
   decodeDataSite,
   resolveSiteConfig,
@@ -129,13 +132,29 @@ export async function start(): Promise<EmbedHandle | null> {
   const fetchImpl = fetch.bind(globalThis);
   const store = createIdbStore();
 
-  // ── settings: the three carriers, in §5.1's order ────────────────────────────────────────
+  // ── the registry, built but not called (§9.1) ─────────────────────────────────────────────
+  // Constructing this costs nothing and reaches nothing. `load()` and `cachedBundle()` read the
+  // browser's own IndexedDB — the same store the site index lives in — so a first visit to a site
+  // whose owner never registered makes no call to us at all, which is level 0's whole promise.
+  const registry = createRegistryClient({
+    origin,
+    ref,
+    store,
+    fetchImpl,
+    linkPub: () => config.linkPub ?? null,
+  });
+  const known = await registry.load();
+
+  // ── settings: the four carriers, in §5.1's order ─────────────────────────────────────────
   const snippetAttr = script.getAttribute("data-site");
   const siteFile = await loadSiteFile(origin, store, fetchImpl);
+  // Carrier 1: the claimed app's signed public bundle (§5.5), from the copy this browser already
+  // holds. NEVER fetched here — a fetch on load would be a backend call at level 0. The copy is
+  // refreshed after something has been reached for, so the NEXT open is already the owner's.
+  const cachedBundle = known.status === "claimed" && known.hasPublicBundle ? await registry.cachedBundle() : null;
+  let bundleFiles: Record<string, string> = cachedBundle?.files ?? {};
   const resolved = resolveSiteConfig({
-    // Phase 3 hook: the claimed app's signed public bundle outranks everything else (§5.5). It is
-    // typed here and fed nothing, because at level 0 there is no registration and no bundle.
-    bundle: null,
+    bundle: cachedBundle?.siteFile ?? null,
     siteFile,
     snippet: snippetAttr ? decodeDataSite(snippetAttr) : null,
     ref,
@@ -191,7 +210,32 @@ export async function start(): Promise<EmbedHandle | null> {
     beforeOpen: () => park(ref, readParked(ref) ?? { open: true, transcript: [] }),
   });
 
-  const knowledge = createKnowledgeReader({ origin, paths: config.knowledge, fetchImpl });
+  const knowledge = createKnowledgeReader({ origin, paths: config.knowledge, fetchImpl, bundle: () => bundleFiles });
+
+  /**
+   * Pull the published bundle down and keep it — only ever after something has been reached for,
+   * and at most once per visit, conditionally on the etag this browser already holds (§5.5).
+   */
+  let bundleFetched = false;
+  const refreshBundle = async (): Promise<void> => {
+    if (bundleFetched) return;
+    bundleFetched = true;
+    const got = await registry.getPublicBundle();
+    if (got.ok) bundleFiles = got.bundle.files;
+  };
+
+  /**
+   * §5.6, for real: confirm, then post. `registry/send.ts` holds the rule and the argument; the
+   * registration of §5.3 happens inside `postInbox`, on first need — an app is created the first
+   * time somebody actually tries to reach the owner, and never on a page load.
+   */
+  const outbox = createOwnerOutbox({
+    post: (input) => registry.postInbox(input),
+    confirm: async (question, detail) => (panel ? panel.confirm(question, detail) : false),
+    // The reply comes back to this device and nowhere else, so the poll starts the moment there is
+    // something to wait for.
+    onSent: () => poller.start(),
+  });
 
   const tools = buildSiteTools({
     origin,
@@ -206,7 +250,17 @@ export async function start(): Promise<EmbedHandle | null> {
       await absorb(round.pages);
       return { added: round.pages, skipped: round.skipped.length };
     },
-    // §5.6 is Phase 3: no inbox exists at level 0, so the tool says "not registered" and sends nothing.
+    // §5.6. Wired only where a registry exists: with none, the tool keeps level 0's honest answer
+    // ("not registered — nothing was sent") instead of a promise nothing can keep.
+    ...(registry.configured() ? { sendToOwner: outbox.send } : {}),
+  });
+
+  /**
+   * The reply poll (§5.6): every 30 s, while the panel is open, and never otherwise. It is created
+   * here so `sendToOwner` can start it the moment there is a message to wait for.
+   */
+  const poller = pollerFor(registry, (message) => {
+    if (message.reply) panel?.ownerMessage(message.reply);
   });
 
   const systemContext = (): string =>
@@ -240,9 +294,12 @@ export async function start(): Promise<EmbedHandle | null> {
       tools,
       systemContext,
       origin,
-      // `send_to_owner` is the only tool above `safe`, and at level 0 it is not registered anyway;
-      // a confirm that nobody can answer is a no, not a dialog nobody asked for.
-      askPermission: async () => ({ allowed: false }),
+      /**
+       * `send_to_owner` is the only tool above `safe`, and this is where it is answered: the panel
+       * asks the visitor, with their own words under the question, and a no is a no. With no panel
+       * built the answer is NO — an unanswerable confirm is a refusal, never a default yes.
+       */
+      askPermission: (req) => outbox.askPermission(req),
       onEvent: (event) => {
         if (event.type === "model_completed" && event.footer) setSponsorFooter(shadow, event.footer);
         panel?.onAgentEvent(event);
@@ -281,6 +338,33 @@ export async function start(): Promise<EmbedHandle | null> {
       },
       fetchImpl,
       needsSetup,
+      // The poll costs a signed GET every 30 s and only earns one while somebody can read the answer.
+      // Opening the panel is also the moment a claimed app's persona is worth re-reading: the visitor
+      // has reached for the agent, so §9.1's rule is satisfied, and the copy is conditional on its etag.
+      onOpenChange: (open) => {
+        if (!open) {
+          poller.stop();
+          return;
+        }
+        if (registry.state().deviceId) poller.start();
+        if (registry.state().status === "claimed") void refreshBundle();
+      },
+      ...(registry.configured()
+        ? {
+            admin: {
+              register: async () => {
+                const result = await registry.register();
+                // A claimed app may already have a persona published; fetch it now that this
+                // browser has a reason to, so the next open resolves carrier 1 with no call.
+                if (result.ok && result.status === "claimed") void refreshBundle();
+                return result;
+              },
+              // The product origin is the loader's OWN src origin: the snippet says where we live,
+              // and nothing in this file has to be told twice.
+              claimUrl: () => registry.claimUrl(productHost),
+            },
+          }
+        : {}),
     });
     return panel;
   };

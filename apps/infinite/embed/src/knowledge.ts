@@ -8,6 +8,14 @@
  *
  * With this in place, an owner has a persona and an FAQ on their embed with no account, no
  * registration and no server of ours (§5.2.4, closing note).
+ *
+ * ── AND THE SECOND SOURCE: THE PUBLIC BUNDLE (§5.5) ────────────────────────────────────────────
+ *
+ * An owner who cannot host files publishes `PERSONA.md` + `workspace/public/` as a signed bundle
+ * instead, and the embed merges it with the site crawl. Those files are ALREADY IN MEMORY when this
+ * reader is built (`registry/bundle.ts` unpacked them, under its own caps), so they are answered
+ * without a fetch and they come FIRST: the bundle is carrier 1 of §5.1's precedence, and a persona
+ * the owner signed outranks a file that whoever can write the site root can change.
  */
 
 import { normalisePath } from "./site-config.js";
@@ -24,6 +32,12 @@ export interface KnowledgeOptions {
   origin: string;
   paths: string[];
   fetchImpl: typeof fetch;
+  /**
+   * `PERSONA.md` and everything under `public/` from the claimed app's public bundle, path → text.
+   * Read on every call rather than captured, so a bundle that arrives after the panel was built is
+   * live without rebuilding the tool table.
+   */
+  bundle?: () => Record<string, string>;
 }
 
 export function createKnowledgeReader(opts: KnowledgeOptions): KnowledgeReader {
@@ -31,9 +45,18 @@ export function createKnowledgeReader(opts: KnowledgeOptions): KnowledgeReader {
   const cache = new Map<string, string>();
   let spent = 0;
 
+  /** A bundle path is `PERSONA.md`, not `/PERSONA.md`: it names a file in an archive, not a URL. */
+  const inBundle = (path: string): string | null => {
+    const files = opts.bundle?.() ?? {};
+    const key = path.replace(/^\/+/, "");
+    return typeof files[key] === "string" ? files[key] : null;
+  };
+
   return {
-    list: () => [...allowed],
+    list: () => [...Object.keys(opts.bundle?.() ?? {}), ...allowed],
     async read(path: string): Promise<string | null> {
+      const fromBundle = inBundle(path);
+      if (fromBundle !== null) return fromBundle.slice(0, KNOWLEDGE_BUDGET_BYTES);
       const wanted = normalisePath(path);
       // Only what the owner declared. An arbitrary path would turn `read_public` into a same-origin
       // reader of the whole site — which is the crawler's job, under the crawler's guards.

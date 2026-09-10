@@ -32,10 +32,14 @@ export interface ToolDeps {
   /** One bounded, targeted round. The loader owns merging it into the index and saving. */
   crawl: (hint: string, urls?: string[]) => Promise<CrawlRound>;
   /**
-   * Phase 3 (§5.6). Left undefined at level 0, which is what makes `send_to_owner` answer
-   * "not registered" rather than pretending to have delivered something.
+   * Phase 3 (§5.6). Left undefined where there is no registry at all, which is what makes
+   * `send_to_owner` answer "not registered" rather than pretending to have delivered something.
+   *
+   * The CONFIRM comes first and comes from the panel, not from here: the runtime asks
+   * `askPermission` for a `confirm` tool before it is ever run, so by the time this is called the
+   * visitor has already said yes to the question with their own words in it.
    */
-  sendToOwner?: (kind: string, text: string, contact?: string) => Promise<string>;
+  sendToOwner?: (kind: string, text: string, contact?: string) => Promise<{ ok: boolean; message: string }>;
 }
 
 const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : fallback);
@@ -248,7 +252,7 @@ export function buildSiteTools(deps: ToolDeps): Tool[] {
       schema: {
         name: "send_to_owner",
         description:
-          "Send a message, a lead or a task to the site's owner. Needs the site to be registered; at level 0 it is not, and this reports that instead of sending.",
+          "Send a message, a lead or a task to the site's owner. The visitor is asked to confirm before anything leaves the device. Needs the site to be registered; where it is not, this reports that instead of sending.",
         parameters: {
           type: "object",
           properties: {
@@ -267,7 +271,10 @@ export function buildSiteTools(deps: ToolDeps): Tool[] {
             "not registered — this site's agent has no inbox yet, so nothing was sent. The owner registers it in the Infinite Agent app.",
           );
         }
-        return ok(await deps.sendToOwner(str(args.kind, "message"), str(args.text), str(args.contact) || undefined));
+        const text = str(args.text).trim();
+        if (!text) return fail("send_to_owner needs the message text.");
+        const sent = await deps.sendToOwner(str(args.kind, "message"), text, str(args.contact) || undefined);
+        return sent.ok ? ok(sent.message) : fail(sent.message);
       },
     },
   ];
