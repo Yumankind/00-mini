@@ -122,9 +122,13 @@ while IFS='|' read -r repo commit file bytes sha licence gated vision; do
   result=""
   for attempt in 1 2 3; do
     log=$(mktemp -t litert-mirror.XXXXXX)
-    status=$(curl -sS -o "$log" -w '%{http_code}' -X POST "$MIRROR_URL" -H "x-mirror-token: $MIRROR_TOKEN" \
+    # Progress as it happens: every part line is a carriage-return overwrite on stderr, so a 4 GB
+    # copy is a moving counter rather than three silent minutes; the verdict lines print whole.
+    status=$(curl -sS -N -o >(tee "$log" | awk '/^part /{printf "\r   %s", $0; fflush(); next} {printf "\n%s\n", $0; fflush()}' >&2) \
+      -w '%{http_code}' -X POST "$MIRROR_URL" -H "x-mirror-token: $MIRROR_TOKEN" \
       -H "content-type: application/json" --data "$payload" || echo 000)
-    grep -v '^part ' "$log" >&2 || true
+    wait
+    printf '\n' >&2
     # The verdict is the last `ok …` / `error …` line the Worker streamed; a non-200 with no such
     # line is the platform, not the copy (a bare 1104 once), and worth one more try.
     result=$(grep -E '^(ok|error) ' "$log" | tail -1 || true)

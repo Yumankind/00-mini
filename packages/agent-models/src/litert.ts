@@ -70,6 +70,9 @@ export interface LiteRtModelInfo extends ModelInfo {
   assetFile: string;
   /** Which turn format to build the prompt in (`templates.ts`). */
   family: PromptFamily;
+  /** Accepts images in the prompt (the runtime's `maxNumImages`). The Gemma 4 web builds are text-only
+   *  per their card; the Gemma 3n web builds are the vision rows. */
+  vision?: boolean;
   /** The publisher's licence, as the Hub declares it. Gemma rows carry use restrictions the app must
    *  show before the download (docs/HANDOFF-infinite-agent.md §12.7); Apache rows do not. */
   license: ModelLicense;
@@ -133,7 +136,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // VERIFIED: named in full in the installed package's README.md.
   {
     id: "gemma-3n-E2B-it-int4-Web",
-    label: "Gemma 3n E2B (int4)",
+    label: "Gemma 3n E2B (int4, vision)",
     class: "small",
     local: true,
     supportsTools: true,
@@ -141,6 +144,21 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     vramMb: 3600,
     assetFile: "gemma-3n-E2B-it-int4-Web.litertlm",
     family: "gemma",
+    vision: true,
+    license: GEMMA_TERMS,
+  },
+  // VERIFIED: the installed README's fourth download link. The larger vision row; desktop-class.
+  {
+    id: "gemma-3n-E4B-it-int4-Web",
+    label: "Gemma 3n E4B (int4, vision)",
+    class: "strong",
+    local: true,
+    supportsTools: true,
+    contextTokens: 4096,
+    vramMb: 5200,
+    assetFile: "gemma-3n-E4B-it-int4-Web.litertlm",
+    family: "gemma",
+    vision: true,
     license: GEMMA_TERMS,
   },
   // VERIFIED: the installed README's first download link. The owner's "Gemma 4" — it exists, and
