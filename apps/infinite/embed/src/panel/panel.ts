@@ -40,7 +40,14 @@ export interface PanelDeps {
     sizeMb: number;
     /** The model's name and its publisher's licence — shown beside the button, before any download. */
     model: { name: string; licenseName: string; licenseUrl: string; useRestrictionsUrl?: string };
-    load: (onProgress: (line: string) => void) => Promise<Brain | null>;
+    /** Something to know before pressing — today, "this browser has no WebGPU". */
+    note?: string;
+    /**
+     * Returns the brain AND the model that actually loaded: the pair of local providers falls
+     * through (LiteRT, then web-llm), so the row named on the button is a prediction and this is
+     * the fact. The panel relabels itself from it.
+     */
+    load: (onProgress: (line: string) => void) => Promise<{ brain: Brain; model: { name: string } } | null>;
   };
   clearMemory: () => Promise<void>;
   applyConfig: (config: SiteConfig) => void;
@@ -263,6 +270,9 @@ export function createPanel(deps: PanelDeps): PanelHandle {
       licence.append(el("span", { textContent: " · " }), el("a", { href: m.useRestrictionsUrl, target: "_blank", rel: "noopener", textContent: "use restrictions" }));
     }
     offer.append(licence);
+    // Said BEFORE the button, not after a failed download: a browser with no WebGPU may manage
+    // neither of the two, and a quarter of a gigabyte is not a thing to find that out with.
+    if (deps.localAi.note) offer.append(el("p", { className: "licence", textContent: deps.localAi.note }));
     const button = el("button", { type: "button", textContent: `Load local AI · ${deps.localAi.sizeMb} MB` });
     button.addEventListener("click", () => {
       button.disabled = true;
@@ -274,10 +284,10 @@ export function createPanel(deps: PanelDeps): PanelHandle {
             button.textContent = "Not available in this browser";
             return;
           }
-          brain = loaded;
+          brain = loaded.brain;
           input.placeholder = "Ask about this site";
           offer.remove();
-          say("status", "Local AI ready. It runs on this device, and the download stays here.");
+          say("status", `${loaded.model.name} is ready. It runs on this device, and the download stays here.`);
         })
         .catch(() => (button.textContent = "Could not load"));
     });
@@ -345,6 +355,14 @@ export function createPanel(deps: PanelDeps): PanelHandle {
       if (event.type === "agent_message" && live) live.textContent = event.text;
       if (event.type === "tool_started" && live && live.textContent === "…") live.textContent = `looking (${event.name})…`;
       if (event.type === "error" && live) live.textContent = event.message;
+      // `agent_delta` is landing in @00/agent-runtime as this is written, and its payload may be
+      // `delta` or `text`. Read through a widened view so the panel compiles and behaves both
+      // before and after the union carries it: a token stream appends, a whole message replaces.
+      const streaming = event as { type: string; delta?: unknown; text?: unknown };
+      if (streaming.type === "agent_delta" && live) {
+        const piece = typeof streaming.delta === "string" ? streaming.delta : typeof streaming.text === "string" ? streaming.text : "";
+        live.textContent = (live.textContent === "…" ? "" : (live.textContent ?? "")) + piece;
+      }
     },
   };
 }

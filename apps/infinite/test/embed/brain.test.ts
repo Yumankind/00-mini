@@ -3,7 +3,7 @@ import { WEBLLM_CATALOG, WEBLLM_DEFAULT_MODEL_ID } from "@00/agent-models";
 import type { ChatChunk, ChatRequest, ChatResponse, ModelProvider } from "@00/agent-models";
 import type { Tool } from "@00/agent-runtime";
 import { createBrain, hasModelProvider, loadLocalProvider, useModelProvider } from "../../embed/src/brain.js";
-import { LOCAL_AI_MB, LOCAL_MODEL_MODULE } from "../../embed/src/loader.js";
+import { LOCAL_AI_MB, LOCAL_AI_MODEL, LOCAL_AI_OFFER, LOCAL_MODEL_MODULE } from "../../embed/src/loader.js";
 
 /** A provider that answers from a script, and keeps every request so the prompt can be inspected. */
 function scriptedProvider(turns: ChatResponse[]): ModelProvider & { seen: ChatRequest[] } {
@@ -104,12 +104,16 @@ describe("the local model is never in the loader", () => {
     expect(lines.join(" ")).toContain("did not load");
   });
 
-  it("names the size the catalogue names — the twin guard for the offer button", () => {
-    // The loader cannot import the catalogue (it would drag the WebGPU runtime into a 60 KB script),
-    // so the number is copied. This is the test that notices when the copy goes stale.
+  it("derives the button's number from the offer, not from a literal", () => {
+    // The loader cannot import the catalogues (it would drag both WebGPU runtimes into a 60 KB
+    // script), so the rows live in `embed/src/local-ai.ts` and `local-ai.test.ts` pins them there.
+    // What this checks is the LOADER's half: node has no `navigator.gpu`, so the offer it derived
+    // at import time is the web-llm fallback — the same row, the same number, nothing retyped.
     const model = WEBLLM_CATALOG.find((m) => m.id === WEBLLM_DEFAULT_MODEL_ID);
     expect(model).toBeDefined();
+    expect(LOCAL_AI_OFFER.provider).toBe("webllm");
     expect(LOCAL_AI_MB).toBe(model!.vramMb);
+    expect(LOCAL_AI_MODEL.name).toBe(model!.label);
     expect(LOCAL_MODEL_MODULE).toBe("/m/m.js");
   });
 });

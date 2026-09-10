@@ -24,6 +24,7 @@ import { SiteIndex } from "./index/site-index.js";
 import { createIdbStore, type Store } from "./index/store.js";
 import { isLogoutNavigation } from "./index/session.js";
 import { createKnowledgeReader } from "./knowledge.js";
+import { localAiOffer, type LocalAiOffer } from "./local-ai.js";
 import { createDomBridge } from "./page/dom-bridge.js";
 import { createSessionHost, currentAuthState, watchSession } from "./page/session-host.js";
 import { createPanel, park, readParked, setSponsorFooter, type PanelHandle } from "./panel/panel.js";
@@ -37,18 +38,18 @@ import { buildSiteTools } from "./tools/index.js";
 import type { AuthState } from "./types.js";
 
 /**
- * The number on the "Load local AI" button. It is `vramMb` of `WEBLLM_DEFAULT_MODEL_ID` in
- * `@00/agent-models`' catalogue, copied rather than imported, because importing the catalogue would
- * pull the WebGPU runtime into a script that must stay under 60 KB. `test/embed/brain.test.ts`
- * reads the real catalogue and fails when the two drift.
+ * The offer this browser will actually be able to take, decided ONCE at load by the one free probe
+ * there is (`navigator.gpu`): Gemma 3 270m over LiteRT where WebGPU exists, web-llm's Llama 3.2 1B
+ * where it does not. Both rows live in `local-ai.ts` — the single place a host or a number about
+ * the model is written down — and `test/embed/local-ai.test.ts` pins them to `LITERT_CATALOG` and
+ * `WEBLLM_CATALOG`, which the loader itself must never import (it would drag the WebGPU runtimes
+ * into a script that has to stay under 60 KB).
  */
-export const LOCAL_AI_MB = 879;
-/** What that number buys, and under whose terms: web-llm's default row (webllm.ts) is Meta's Llama 3.2 1B. */
-export const LOCAL_AI_MODEL = {
-  name: "Llama 3.2 1B",
-  licenseName: "Llama 3.2 Community License",
-  licenseUrl: "https://www.llama.com/llama3_2/license/",
-} as const;
+export const LOCAL_AI_OFFER: LocalAiOffer = localAiOffer();
+/** The number on the "Load local AI" button — derived from the row above, never typed twice. */
+export const LOCAL_AI_MB = LOCAL_AI_OFFER.sizeMb;
+/** What that number buys, and under whose terms. Named beside the button, before any download. */
+export const LOCAL_AI_MODEL = LOCAL_AI_OFFER.model;
 /** Built by `embed/vite.model.config.ts`, served next to the loader, fetched only when asked for. */
 export const LOCAL_MODEL_MODULE = "/m/m.js";
 const WELL_KNOWN = "/.well-known/infinite-agent.json";
@@ -228,10 +229,13 @@ export async function start(): Promise<EmbedHandle | null> {
 
   let panel: PanelHandle | null = null;
 
-  const makeBrain = async (onProgress: (line: string) => void): Promise<Brain | null> => {
-    const provider = await loadLocalProvider(new URL(LOCAL_MODEL_MODULE, productHost).toString(), onProgress);
-    if (!provider) return null;
-    return createBrain({
+  const makeBrain = async (
+    onProgress: (line: string) => void,
+  ): Promise<{ brain: Brain; model: { name: string } } | null> => {
+    const picked = await loadLocalProvider(new URL(LOCAL_MODEL_MODULE, productHost).toString(), onProgress);
+    if (!picked) return null;
+    const { provider, offer } = picked;
+    const brain = createBrain({
       provider,
       tools,
       systemContext,
@@ -244,6 +248,9 @@ export async function start(): Promise<EmbedHandle | null> {
         panel?.onAgentEvent(event);
       },
     });
+    // The row the module reports, not the one the button promised: on a browser that fell through
+    // to web-llm the panel must name Llama, not Gemma.
+    return { brain, model: offer.model };
   };
   const build = (): PanelHandle => {
     panel ??= createPanel({
@@ -259,7 +266,12 @@ export async function start(): Promise<EmbedHandle | null> {
       tools,
       // No brain until the visitor asks for one: level 0 is retrieval plus the page tools (§5.2.3).
       brain: null,
-      localAi: { sizeMb: LOCAL_AI_MB, model: LOCAL_AI_MODEL, load: (onProgress) => makeBrain(onProgress) },
+      localAi: {
+        sizeMb: LOCAL_AI_MB,
+        model: LOCAL_AI_MODEL,
+        ...(LOCAL_AI_OFFER.note ? { note: LOCAL_AI_OFFER.note } : {}),
+        load: (onProgress) => makeBrain(onProgress),
+      },
       clearMemory: async () => {
         // The panel's "clear memory" button: the purge, and then nothing of this site remains.
         await index.clearAll();
