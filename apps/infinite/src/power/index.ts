@@ -19,8 +19,37 @@ export { BuiltinShell, GIT_REMOTE_LINE, NO_NODE_LINE, expandSet, lsLong, parse, 
 export type { ExecResult, ShellGit, BuiltinShellOptions, ParsedCommand, ParsedStage, Token } from "./shell.js";
 export { GIT_UNAVAILABLE, UNSTAGE_UNAVAILABLE, createPowerGit, gitUsable } from "./git-bridge.js";
 export type { PowerGit, RepoCommit, RepoStatus } from "./git-bridge.js";
-export { MAX_INLINE_BYTES, buildPreview, toBase64 } from "./preview.js";
+export { MAX_INLINE_BYTES, buildPortPreview, buildPreview, toBase64 } from "./preview.js";
 export type { PreviewBuild } from "./preview.js";
+/** `node`, `npm run` and the ports they open — the terminal row of §4.2, in a browser tab. */
+export {
+  DEFAULT_TIMEOUT_MS,
+  NO_PACKAGES_LINE,
+  createBlobWorker,
+  createEvalWorker,
+  runScript,
+  snapshotFolder,
+  workerSource,
+} from "./js-runner.js";
+export type { RunScriptOptions, RunScriptResult, RunnerWorker, RunnerWorkerFactory, Snapshot } from "./js-runner.js";
+export {
+  DEFAULT_SERVE_PORT,
+  FILES_ROOT,
+  PortInUseError,
+  answerBridgeMessage,
+  folderHandler,
+  handleVirtualRequest,
+  installServiceWorkerBridge,
+  listPorts,
+  onPortsChanged,
+  portUrl,
+  registerPort,
+  resetPorts,
+  serveFolder,
+  setWorkspaceFs,
+  unregister,
+} from "./virtual-ports.js";
+export type { PortEntry, PortHandler, VirtualRequest, VirtualResponse } from "./virtual-ports.js";
 export { INDENT, changedUnderneath, gutter, indent, lineCount } from "./editor.js";
 export type { EditState } from "./editor.js";
 
