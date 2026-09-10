@@ -126,6 +126,16 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
 12. **Live transfer is wired end to end but the rooms base is a `.invalid` placeholder** until the
     worker deploys; the UI says "not connected yet" rather than spinning.
 
+16. **Live preview on a second origin + element picker** (2026-09-11): `apps/infinite-preview-site`,
+    deployed at `https://infinite-preview.powerhouse.workers.dev` (no bindings, no data): the app posts
+    a folder's files to it, its service worker serves them under `/s/<site>/` and forwards a virtual
+    port's requests back to the app under `/p/<site>/<port>/`, and an inspector injected into every
+    served page posts what the person clicks (selector, role, name, text, trimmed HTML, box, styles,
+    source file) to the app, which shows a chip in the composer and prepends a fenced block to the
+    next prompt. The iframe's sandbox is same-origin to the PREVIEW origin only. The snapshot frame
+    keeps the same picker. The browser pane used for checks blocks service-worker registration
+    (the app's own too), so the live road was proven by executing the service worker's text in a
+    fake worker global and the snapshot road live; a normal browser runs both.
 15. **Scripts and servers in the browser shell** (2026-09-11): `node file.js`, `node -e`, `npm run`,
     `serve`, `ports`, `kill` in a sandboxed Worker with a Node-flavoured prelude; `http.createServer`
     registers a virtual port the service worker routes under `/~/<port>/`; folders serve the same way.
