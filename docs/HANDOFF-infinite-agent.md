@@ -143,6 +143,83 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
 
 ---
 
+## Gap audit — 2026-09-10, late (three read-only auditors over the code, not the docs)
+
+What a person can do today: open the deployed app, get an agent scaffolded into their browser,
+download a Gemma model and talk to it (proven live on the workers.dev link), keep files, seal a
+vault, export and restore a `.00agent`, move it to the Mac by file, put the level-0 guide on a
+website. Everything below is what the plan or the original spec promises beyond that and the code
+does not yet deliver. Ordered by user-visible impact; each item names the evidence.
+
+**A. Broken or misleading today (fix first)**
+1. **The Mac card points at an invented host.** `apps/infinite/src/mac/config.ts` has
+   `RELAY_ORIGIN = "https://api.overblast.com"`; the real relay is the worker origin
+   (`https://brain.deployd.network`). Both directions fail as a bare network error with no "not
+   connected yet" line, unlike the two `.invalid` bases.
+2. **The vault travels in every export, silently**, including a passkey-wrapped one that is dead
+   weight on the far side: `vault.json` classifies `record`, `exportBundle` includes it, and the
+   "carry my secrets" tick of §4.5 exists only as `canCarrySecrets` in a test.
+3. **The iOS target does not compile** (six macOS-only symbols in `EngineSocket.swift`), so the
+   iOS document type and share-sheet door of §7.3 are declared and unreachable.
+4. **The two file-road halves disagree on the secret**: the browser mints and validates a six-word
+   code; the Mac's "move to a browser" accepts any passphrase of eight characters or more.
+5. **The agent claims it can run bash** (seen live: "executing bash commands") while `bash` is
+   `NoShell` and always answers exit 127. The prompt should say what the browser cannot do.
+6. **The chat shows nothing during the first model download** (a run started before the weights
+   arrive sits silent for a minute); the Local AI card does not name the model it loaded.
+
+**B. Promised in the plan, missing in the app**
+7. **No power shell at all**: no terminal pane, no editor (the file viewer is read-only), no
+   browser or preview pane, no git interface, no image or video editor (§1, §4.2).
+8. **Git tools are wired to nothing**: `fullTools()` is called without `git`, so the shipped agent
+   has zero git tools although `agent-fs` implements init, add, commit, log and status; diff is
+   names-only; clone, push, pull refuse by name; no branch or checkout; no OAuth (§4.2).
+9. **Filesystem tools are half the spec**: no delete, move, copy or stat tool, although `AgentFs`
+   has remove, rename and stat; `file_changed` can therefore never say `delete` or `rename`.
+10. **No image reaches any brain**: `ChatMessage.content` is a string; the 3n rows' `vision: true`
+    is decoration; there is no `VisionProvider` (§6, §13 of the spec).
+11. **Nothing streams**: the loop calls `chat()`, never `stream()`; `agent_delta` is declared and
+    never emitted, so a 10 tok/s local answer is a blank pane until the end.
+12. **The vault is unreachable from tools**: the prompt says values resolve at use, but
+    `ToolContext` has no vault and there is no `list_secrets`; BYOK keys can be sealed and never
+    spent by a tool (§4.5).
+13. **The onboarding interview never runs**: `BOOTSTRAP.md` is written and ignored; no
+    `finish_onboarding` tool, no prompt rule, `profile.onboarded` stays false (§4.1).
+14. **No retrieval without a model in the owned agent** (§4.1 says it works with no model); only
+    the embed has BM25.
+15. **The service worker cannot receive a push**: no `push` or `notificationclick` handler, so a
+    subscription is taken and would be revoked for never showing a notification (§4.6).
+16. **The router that recovers from a dead credential is dead code**: `agent-models`'s `ModelRouter`
+    with 402/401 fallthrough has no production consumer; the loop's own picker picks once and a
+    provider failure ends the run.
+17. **Local tool calling is a JSON-scraping fallback** on every local model (no runtime exposes
+    function calling); `high-risk` is a tier no shipped tool uses; no HTTP tool, no network policy.
+18. **No cloud burst, no R2 backup, no schedules or watchers UI** (§4.6, §8.1, §8.3).
+19. **The paid brains do not work from the app**: Sponsored is a disabled button; Overblast only
+    accepts a pasted `sk-obd` token and never mints one via the cloud-brain devices route (§6.1);
+    the embed has no paid path at all (§6.2), and the host's `APPS_ENABLED` is off anyway.
+20. **`RunOptions.brain` and `RunResult.providerId` are never surfaced**; the person cannot see
+    which brain answered.
+
+**C. Built but dark (needs the owner's switches, not code)**
+21. Every server-backed feature on the deployed site points at `.invalid`: registration, claim,
+    inbox, push, Move live, Receive. The worker module (21 routes, 173 tests, push sender) is
+    merged and not enabled: `INFINITE_ENABLED`, the `infinite-public` bucket, the pepper, the
+    Realtime and VAPID secrets, migrations 0141 and 0142.
+22. The landing's `/infinite` page is not deployed and advertises `https://0-0.chat` as the product
+    origin while the app lives on `infinite-site.powerhouse.workers.dev` (§12.1 open).
+23. Decisions §12.1 (origin), §12.2 (name), §12.3 (trial before account), §12.4 (WASM shell) are
+    still open, and the first two key every snippet, OPFS store and push subscription.
+
+**D. Absent capability families from the original spec** (deferred by §11 Phase 6, listed so
+nobody reads §4.2's table as present tense): Python/Pyodide, Whisper voice, image and video tools,
+browser automation and website editing for the owned agent, SSH with the Worker TCP forward,
+remote container execution, multi-agent subagents, semantic memory, session checkpoints. On the
+sponsoredtokens side: per-app BYOK with rotation and per-app country allow/block (§9.3); the purse
+link stores two columns and changes nothing.
+
+---
+
 ## 0. The three rulings this plan rests on
 
 1. **The browser is the fourth engine host, not a new product line.** The Mac engine, the container
@@ -929,7 +1006,8 @@ deterministic, so a signature cannot be the replay latch the way §24's P-256 on
 and the app secret must never reach a browser), so `POST /rooms/:code/join` mints the second
 peer's SFU session server-side; no Turnstile on device registration (the queue is capped and the
 paid brain uses sponsoredtokens' own flow); push subscriptions are stored, not sent (VAPID comes
-later); `inbox.ts::sweepInbox` is exported and unwired. To enable: apply the migration, create the
+later); `inbox.ts::sweepInbox` was unwired in this round and is wired to the cron since the push
+round. To enable: apply the migration, create the
 `infinite-public` bucket and the `INFINITE_IP_PEPPER` / `REALTIME_APP_SECRET` secrets, set
 `INFINITE_ENABLED` and `REALTIME_APP_ID` in vars, redeploy, wire the sweep into `scheduled()`.
 Two follow-up rounds the same evening, both merged: the rooms carry `roomId`, `salt`, `channel`
