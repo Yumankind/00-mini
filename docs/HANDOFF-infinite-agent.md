@@ -922,6 +922,13 @@ paid brain uses sponsoredtokens' own flow); push subscriptions are stored, not s
 later); `inbox.ts::sweepInbox` is exported and unwired. To enable: apply the migration, create the
 `infinite-public` bucket and the `INFINITE_IP_PEPPER` / `REALTIME_APP_SECRET` secrets, set
 `INFINITE_ENABLED` and `REALTIME_APP_ID` in vars, redeploy, wire the sweep into `scheduled()`.
+Two follow-up rounds the same evening, both merged: the rooms carry `roomId`, `salt`, `channel`
+(`ia-<roomId>`, never the code, which is key material), `publisherSessionId` on join, and an SFU
+forwarder under the room token (`/infinite/rooms/:roomId/sfu/sessions/:sid/…`) because Realtime
+has no per-session credential and the app secret stays in the worker; then the five seams the
+browser builders found (`If-None-Match` in CORS, `POST /apps/:id/claim-nonce` for a second browser,
+`since` against `replied_at`, the VAPID public key on the app card, the signed-request header
+corrected). Optional var `INFINITE_VAPID_PUBLIC_KEY` joins the enable list.
 
 ---
 
