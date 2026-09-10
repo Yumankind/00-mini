@@ -50,6 +50,18 @@ the web would load an HTML page as a script.
 There are **no bindings** — no D1, no KV, no R2, no secrets. Phases 0–2 need no backend (§9.1);
 registration, the inbox and push arrive in Phase 3, in moltworker or in a second Worker (§9.4).
 
+## The one thing the asset layer cannot carry: MediaPipe's wasm
+
+The PWA's preferred local brain (LiteRT, `packages/agent-models/src/litert.ts`) loads Google's LLM
+Inference runtime from `/mediapipe/genai/wasm/*` on this origin, never from a CDN. Those are three
+~27 MB binaries plus their loaders, and Cloudflare caps a static asset at 25 MiB, so `build-site.sh`
+deliberately leaves `dist/mediapipe/` out of `public/`. Serving them needs the first binding this
+Worker gets: an R2 bucket (the same one that will hold the Gemma model assets of the plan's §12.7)
+with `mediapipe/genai/wasm/<file>` keys, answered by the Worker with `content-type: application/wasm`
+and a long immutable cache header. Until that bucket exists, LiteRT reports `download` forever on
+this origin and the app falls through to WebLLM, which is the designed failure. Dev and previews from
+`apps/infinite` (`vite dev` / `vite preview`) serve the folder themselves.
+
 ## Preview
 
 ```sh

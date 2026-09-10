@@ -40,8 +40,10 @@ mkdir -p "$public"
 find "$public" -mindepth 1 -delete
 
 if [ -d "$app/dist" ]; then
-  # Everything except dist/embed, which is the loader and lands as one file below.
-  (cd "$app/dist" && find . -mindepth 1 -maxdepth 1 ! -name embed -exec cp -R {} "$public/" \;)
+  # Everything except dist/embed (the loader, one file below) and dist/mediapipe (MediaPipe's wasm:
+  # three ~27 MB binaries, each over Cloudflare's 25 MiB per-asset cap, so they cannot be static assets
+  # here — the Worker serves /mediapipe/genai/wasm/* from R2 instead; see the README).
+  (cd "$app/dist" && find . -mindepth 1 -maxdepth 1 ! -name embed ! -name mediapipe -exec cp -R {} "$public/" \;)
 fi
 
 cp "$app/dist/embed/e.js" "$public/e.js"

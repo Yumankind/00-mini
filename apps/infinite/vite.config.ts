@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, existsSync, cpSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
@@ -58,8 +59,61 @@ function serviceWorkerPrecache(): Plugin {
   };
 }
 
+/**
+ * MEDIAPIPE'S WASM, SERVED BY US. `LiteRtProvider` loads Google's LLM Inference runtime from
+ * `/mediapipe/genai/wasm` on the app's own origin (packages/agent-models/src/litert.ts,
+ * LITERT_DEFAULT_WASM_PATH) — never from a CDN, because a local brain that needs jsdelivr is not a
+ * local brain the day the network is gone. The files live in `@mediapipe/tasks-genai/wasm/`, which is
+ * agent-models' dependency, not this app's, so they are resolved through that package rather than
+ * copied into the repo (three ~27 MB binaries do not belong in git). In dev the folder is served by a
+ * middleware; in a build it is copied beside the bundle, where the service worker caches each file
+ * the first time it is fetched, and the app is offline-capable from then on.
+ *
+ * Deploy note: each binary is over Cloudflare's 25 MiB per-asset cap, so apps/infinite-site cannot ship
+ * them as static assets — its Worker serves this path from R2 (see that README). The copy here is for
+ * dev, previews and self-hosting.
+ */
+function mediapipeWasm(): Plugin {
+  const URL_PREFIX = "/mediapipe/genai/wasm/";
+  // Not `require.resolve`: the package's `exports` map exposes neither package.json nor wasm/, so the
+  // folder is reached the way pnpm lays it out — linked under the depending package's node_modules.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const wasmDir = resolve(here, "../../packages/agent-models/node_modules/@mediapipe/tasks-genai/wasm");
+  const types: Record<string, string> = { ".wasm": "application/wasm", ".js": "text/javascript" };
+  let outDir = "dist";
+  let root = process.cwd();
+  return {
+    name: "infinite-mediapipe-wasm",
+    configResolved(config) {
+      outDir = config.build.outDir;
+      root = config.root;
+    },
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const url = request.url?.split("?")[0] ?? "";
+        if (!url.startsWith(URL_PREFIX)) return next();
+        const name = url.slice(URL_PREFIX.length);
+        // The folder is flat and the names are known: anything with a slash or a dot-segment is not one of them.
+        if (!/^[A-Za-z0-9_]+\.(wasm|js)$/.test(name)) return next();
+        const file = join(wasmDir, name);
+        if (!existsSync(file)) return next();
+        response.setHeader("content-type", types[name.slice(name.lastIndexOf("."))] ?? "application/octet-stream");
+        response.setHeader("cache-control", "public, max-age=31536000, immutable");
+        response.end(readFileSync(file));
+      });
+    },
+    closeBundle() {
+      if (!existsSync(wasmDir)) return;
+      const dest = resolve(root, outDir, "mediapipe", "genai", "wasm");
+      cpSync(wasmDir, dest, { recursive: true });
+      const copied = readdirSync(dest).length;
+      console.log(`mediapipe wasm: ${copied} files copied to dist/mediapipe/genai/wasm`);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), serviceWorkerPrecache()],
+  plugins: [vue(), tailwindcss(), serviceWorkerPrecache(), mediapipeWasm()],
   // The owned agent lives on ONE product origin (§3.1: OPFS and the push subscription are per origin),
   // so the app is always served from the root and every path here is absolute.
   base: "/",

@@ -62,6 +62,17 @@ folder from its own origin and pass a `modelBaseUrl` (decision §12.7).
    the UI should say "unlocking…".
 7. The embed relies on `createAgentRuntime` spreading `opts.context` per turn so the site map stays
    fresh; a guard test pins it.
+8. Move flow edges (from building §7.2): the browser cannot know whether 00 opened after a
+   `zerozero://` navigation, so "I imported it on my Mac" is the person's word — a return link from
+   the app (`zerozero://agent/imported?name=` back to the origin, or a poll) would make it a fact;
+   two moves on one day collide on the date-only file name and the browser suffixes ` (1)`, so the
+   Mac's picker should match the hint loosely; the Mac's export secret is a free passphrase while the
+   browser's is a six-word code — make the Mac generate a word code too so both fields validate the
+   same shape; and Move should say up front when a passkey-wrapped vault will stay behind (§4.5).
+9. MediaPipe's three wasm binaries are ~27 MB each, over Cloudflare's 25 MiB per-asset cap, so
+   `apps/infinite-site` must serve `/mediapipe/genai/wasm/*` from R2 through its Worker (same bucket
+   as the model assets of §12.7); the vite build copies them beside the bundle for dev and
+   self-hosting, and the site's build script leaves them out of `public/`.
 
 ---
 
