@@ -567,7 +567,7 @@ same invariant as containers.
 
 | Level | Provider | Needs | Notes |
 |---|---|---|---|
-| 0 | Local WebGPU (WebLLM; 0.5B–3B) | nothing | offline; phones stay ≤ 1.5B |
+| 0 | Local WebGPU: **LiteRT first** (MediaPipe LLM Inference API, Gemma family), WebLLM as the fallback when LiteRT reports unsupported | nothing | offline; phones stay ≤ 1.5B. Ruling 2026-09-10: LiteRT is faster and more stable than WebLLM's Gemma builds and WebLLM errors on some Windows machines, so it is the preferred runtime; both sit behind the one ModelProvider interface and the router falls through. The PWA must serve MediaPipe's `wasm/` folder itself (offline-first, no CDN), and model assets come from a `modelBaseUrl` the owner hosts (Gemma's terms travel with the redistribution) |
 | 1 | sponsoredtokens personal (`sk-st-`) | a passkey account — no email required | referral ladder tiers 0/1/2; tier 3 paid only; sponsor footer shown |
 | 2 | Overblast workspace credits | Overblast sign-in; mints an `sk-obd` device token for *browser on <name>* | base `<worker>/ai/v1`; revocable per browser like a laptop; credits stream feeds the chip |
 | 3 | BYOK (OpenAI / Anthropic / OpenRouter / custom) | the key, sealed in the vault (§4.5) under password or passkey | travels only password-wrapped and only when the person ticks *carry my secrets*; otherwise re-entered on the far side |
@@ -669,11 +669,31 @@ web UI in the WKWebView (Node has no WebRTC); it posts the received file to a **
 `replace=true`). The engine's `bundle-routes.ts` has only the preview route today; the import is
 `importBundle` in `burst.ts` behind the lease flow, and this door is the second caller.
 
-### 7.2 File transfer (offline)
+### 7.2 File transfer — the road that exists first (2026-09-10)
 
-Export → passphrase → `.00agent` download / share sheet / AirDrop. Import on the other side. An
-offline LAN path (the Mac app as a local room, or QR-encoded SDP) is a V2 item, not a promise; the
-SFU path needs both devices online, which is the common case.
+Built before the SFU room, and kept after it as the offline road. Export → a **6-word code** (the
+bundle secret; readable because a person types it on the other machine) → `.00agent` download /
+share sheet / AirDrop → import on the other side with the code.
+
+**Into the Mac app, without CORS and without a JS blob:** `.00agent` is the app's document type
+(exported UTI `com.yumankind.zerozero.agent-bundle`, Mac and iOS), so the downloaded file opens in
+00 on double-click or from the browser's post-download "open". The app copies it into
+`<dataRoot>/imports/<uuid>.00agent` and tells its web UI `window.__00importAgentBundle({ path, name,
+size })` (or reopens the window at `/?import-bundle=<path>`); the UI asks for the code and calls the
+engine's JSON import variant `POST /api/agents/import-bundle { path, secret, replace? }`, which reads
+ONLY from that folder and deletes the file after. The engine never reads an arbitrary path and
+megabytes never cross a JS string. Two deep links help the browser hand over:
+`zerozero://agent/import?name=<file>` (open the picker in Downloads with the name hinted) and
+`zerozero://agent/receive?code=<six-words>` (Phase 4's live transfer; parsed today, answered with
+"coming"). The code is never in a URL.
+
+**Out of the Mac:** `POST /api/agents/:id/export-bundle { secret }` (settings grant, 409 under a
+lease) answers the file with `host: "mac"`; the PWA's Restore imports it. The browser side locks
+itself into a receipt after "I imported it on my Mac" (one live residence, §7), with *Bring it
+back* and an explicit *Unlock anyway*.
+
+An offline LAN path with no file (the Mac app as a local room, or QR-encoded SDP) is a V2 item,
+not a promise; the SFU path of §7.1 needs both devices online, which is the common case.
 
 ### 7.3 The phone as a holder
 
@@ -897,6 +917,9 @@ runtime inside the mobile app, scheduled work handed to Mac/cloud.
 5. **Unclaimed apps.** How long an `unclaimed` registration lives (recommend 30 days) and whether
    level 0 keeps working after that (recommend yes: level 0 never needed the server).
 6. **Local model on phones.** Cap at 1.5B and ship one model, not a picker, on the mobile browser.
+7. **Hosting the LiteRT assets.** Gemma `.task`/`.litertlm` files are hundreds of MB and carry
+   Gemma's terms; the provider takes a `modelBaseUrl`, so the decision is where we mirror them (R2
+   like the media model store) and which entries the first catalog carries.
 
 ---
 
