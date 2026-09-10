@@ -14,6 +14,12 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       reporter: ["text-summary"],
+      // THE RATCHET (docs/testing.md): floors only ever go up, and they sit a point or two under the
+      // measured value — the slack absorbs the Linux leg, which takes the other side of every
+      // `navigator`/WebGPU gate in this package. Measured on macOS 2026-09-10, first commit:
+      // statements 99.0 · branches 89.0 · functions 98.3 · lines 99.0.
+      // Never lower one to make a change pass: fix or delete the change that dropped it.
+      thresholds: { statements: 96, branches: 85, functions: 95, lines: 96 },
     },
   },
 });
