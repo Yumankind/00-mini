@@ -78,6 +78,49 @@ folder from its own origin and pass a `modelBaseUrl` (decision §12.7).
 
 ---
 
+## For the owner's review — decisions taken on the evening of 2026-09-10, unasked
+
+You said "do everything you can without asking; I'll review all decisions and the UX/UI later".
+This is that list. Every item is committed and pushed on 00Local `main` (moltworker: merged to
+`main`, NOT pushed, NOT deployed); nothing outward-facing beyond the R2 mirror was touched.
+
+**Product and UX (please look at these first)**
+1. **Local AI is a picker on desktop and one model on a phone.** The Local AI card lists the mirror's
+   rows (name, size, vision, licence, "on this device"), a phone silently gets Gemma 3 270m. The
+   default desktop row is Gemma 4 E2B (2 GB, Apache-2.0), not the smaller gated 1B.
+2. **The embed's "Load local AI" is Gemma 3 270m (250 MB) over LiteRT**, Llama 3.2 1B (879 MB, web-llm)
+   only when LiteRT cannot run. The licence line names whichever will load.
+3. **Move has two roads** in one panel: the file road (six-word code → `.00agent` → "Open in 00") and
+   "Move live" (same code, over the SFU, with a four-character confirmation); Connections gains
+   "Receive an agent" and a "Mac" card (drive your Mac's agent / let your phone reach this agent).
+4. **The landing gets `/infinite`** and "Browser agent" in the header and footer, with a preview
+   banner. Copy claims I was unsure about are listed in that page's commit; the nav label is a
+   placeholder for the working name.
+5. **Gemma terms shipped as consent lines** on the Local AI card and the embed offer, plus a "Local
+   models" paragraph in the site's terms and a bullet in acceptable-use.
+
+**Architecture**
+6. **Contract revision** (additive): `setProviders`, `agent_delta` + whole `agent_message`, typed
+   readiness `progress`, `unload`/`unloadAll`, `RunResult.providerId/model`, `brain: auto|small|strong`,
+   `Vault` in the public surface. Details in "Contract revision 2026-09-10" at the end.
+7. **Class-aware brain routing**: light read-only exchanges stay small; anything after a tool
+   result is strong; single-provider setups behave exactly as before (pinned).
+8. **The 00mc/3 wire moved to `@00/shared`**; signing stays per host (WebCrypto in the browser,
+   @noble in the engine). The browser is both a mobile-connect client and an answerer for the phone
+   app, which needs no change. One spelling: the browser's refusal is `kind_unsupported`.
+9. **Phase 3 backend** is one flag-dark module in moltworker (`worker/src/infinite/`, 21 routes,
+   migration 0141), merged to main and not deployed; deviations listed in §9.4. A follow-up adds the
+   room salt, the publisher id and the SFU forwarder the browser client expects.
+10. **The model mirror** lives on `00-downloads` at `dl.0-0.chat/litert` with CORS opened read-only
+    on that bucket, copied at the edge by a throwaway Worker deployed per publish and removed after.
+
+**Things I did NOT do, on purpose**
+- No deploy of the landing, the site Worker, or moltworker (your call each time).
+- No enabling of `INFINITE_ENABLED`, no D1 migration applied, no secrets created.
+- Web Push sending (needs a VAPID keypair decision), Turnstile on embed device registration.
+
+---
+
 ## 0. The three rulings this plan rests on
 
 1. **The browser is the fourth engine host, not a new product line.** The Mac engine, the container
