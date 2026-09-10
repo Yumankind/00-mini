@@ -66,7 +66,7 @@ const EXPECTED = [
   "overblastProvider",
   "byokProvider",
   "BYOK_BASE_URLS",
-  // the local brain
+  // the local brains
   "WebLLMProvider",
   "WEBLLM_VERSION",
   "WEBLLM_CATALOG",
@@ -74,10 +74,28 @@ const EXPECTED = [
   "WEBLLM_NATIVE_TOOL_MODEL_IDS",
   "webllmCatalogFor",
   "supportsNativeTools",
+  "LiteRtProvider",
+  "LITERT_VERSION",
+  "LITERT_NATIVE_TOOLS",
+  "LITERT_MODEL_CACHE",
+  "LITERT_DEFAULT_WASM_PATH",
+  "LITERT_CATALOG",
+  "LITERT_DEFAULT_MODEL_ID",
+  "LITERT_UNVERIFIED_ASSETS",
+  "litertCatalogFor",
+  "litertAssetUrl",
+  // the shared prompt-based tool fallback and the turn formats
   "fallbackToolPrompt",
   "parseFallbackToolCalls",
+  "GEMMA_MARKERS",
+  "PROMPT_TEMPLATES",
+  "TURN_MARKER_MAX_LENGTH",
+  "renderPrompt",
+  "turnMarkerIndex",
+  "stopAtTurnEnd",
   // the router
   "ModelRouter",
+  "localProviders",
 ] as const;
 
 describe("the package's public API", () => {

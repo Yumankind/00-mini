@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { ProviderError } from "../src/errors.js";
-import { ModelRouter } from "../src/router.js";
+import { LiteRtProvider } from "../src/litert.js";
+import { localProviders, ModelRouter } from "../src/router.js";
 import type { SwitchEvent } from "../src/router.js";
 import type { ChatChunk, ChatRequest, ChatResponse, ModelInfo, ModelProvider } from "../src/types.js";
+import { WebLLMProvider } from "../src/webllm.js";
 import { collect } from "./helpers.js";
 
 type Readiness = Awaited<ReturnType<ModelProvider["readiness"]>>;
@@ -296,5 +298,60 @@ describe("chat, past a provider that is not ready", () => {
     });
     await expect(router.chat({ messages: [] }, "small")).resolves.toMatchObject({ message: { content: "cloud" } });
     expect(asleep.seen).toHaveLength(0);
+  });
+});
+
+// ── The two local brains ────────────────────────────────────────────────────────────────────────
+
+describe("localProviders", () => {
+  it("puts LiteRT first and WebLLM behind it, which is the whole of the ruling", () => {
+    const litert = new LiteRtProvider({ modelBaseUrl: "https://models.example/litert", createTask: async () => ({ async generateResponse() { return ""; } }) });
+    const webllm = new WebLLMProvider();
+    expect(localProviders({ litert, webllm }).map((p) => p.id)).toEqual(["local-litert", "local"]);
+    expect(localProviders({ webllm, litert }).map((p) => p.id)).toEqual(["local-litert", "local"]);
+    expect(localProviders({ webllm }).map((p) => p.id)).toEqual(["local"]);
+    expect(localProviders({})).toEqual([]);
+  });
+
+  it("falls through to WebLLM when LiteRT cannot run here, and the turn still happens", async () => {
+    // No `navigator.gpu` is stubbed, so the REAL readiness gate of both providers runs: LiteRT
+    // answers `unsupported`, which is what a browser with no WebGPU — or no served wasm folder —
+    // looks like from the router's side.
+    const litert = new LiteRtProvider({ modelBaseUrl: "https://models.example/litert" });
+    await expect(litert.readiness()).resolves.toMatchObject({ ready: false, reason: "unsupported" });
+
+    const webllm = fake({ id: "local", answer: "from web-llm" });
+    const switches: SwitchEvent[] = [];
+    const router = new ModelRouter({
+      providers: localProviders({ litert, webllm }),
+      preference: { small: ["local-litert", "local"], strong: [] },
+      onSwitch: (event) => switches.push(event),
+    });
+    await expect(router.chat({ messages: [] }, "small")).resolves.toMatchObject({ message: { content: "from web-llm" } });
+    expect(switches).toEqual([{ cls: "small", from: "local-litert", to: "local", reason: "readiness" }]);
+  });
+
+  it("says `no_brain` naming both when neither local brain can run", async () => {
+    const litert = new LiteRtProvider({ modelBaseUrl: "https://models.example/litert" });
+    const webllm = new WebLLMProvider();
+    const router = new ModelRouter({
+      providers: localProviders({ litert, webllm }),
+      preference: { small: ["local-litert", "local"], strong: [] },
+    });
+    await expect(router.chat({ messages: [] }, "small")).rejects.toMatchObject({
+      code: "no_brain",
+      message: expect.stringContaining("local-litert (unsupported), local (unsupported)"),
+    });
+  });
+
+  it("unloads both, twice, without complaint — which is what a settings screen does", async () => {
+    const litert = new LiteRtProvider({ modelBaseUrl: "https://models.example/litert" });
+    const webllm = new WebLLMProvider();
+    for (const provider of localProviders({ litert, webllm })) {
+      await provider.unload?.();
+      await provider.unload?.();
+    }
+    await expect(litert.readiness()).resolves.toMatchObject({ ready: false });
+    await expect(webllm.readiness()).resolves.toMatchObject({ ready: false });
   });
 });

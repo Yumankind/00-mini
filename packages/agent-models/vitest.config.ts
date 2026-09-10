@@ -18,8 +18,12 @@ export default defineConfig({
       // measured value — the slack absorbs the Linux leg, which takes the other side of every
       // `navigator`/WebGPU gate in this package. Measured on macOS 2026-09-10, first commit:
       // statements 99.0 · branches 89.0 · functions 98.3 · lines 99.0.
+      // Re-measured 2026-09-10 with the LiteRT provider (src/litert.ts, src/templates.ts,
+      // src/tool-fallback.ts): statements 98.7 · branches 90.8 · functions 98.1 · lines 98.7 —
+      // branches went UP, so their floor goes up with them; the other three keep their slack, since
+      // the two real dynamic imports (web-llm, MediaPipe) are code no Node run can reach.
       // Never lower one to make a change pass: fix or delete the change that dropped it.
-      thresholds: { statements: 96, branches: 85, functions: 95, lines: 96 },
+      thresholds: { statements: 96, branches: 87, functions: 95, lines: 96 },
     },
   },
 });

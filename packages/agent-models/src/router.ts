@@ -169,3 +169,24 @@ export class ModelRouter {
     throw noBrain(cls, tried);
   }
 }
+
+// ── The two local brains ────────────────────────────────────────────────────────────────────────
+
+/** A local provider is a `ModelProvider` that can also give the GPU back. Additive; see §6 finding 4. */
+export type LocalProvider = ModelProvider & { unload?: () => Promise<void> };
+
+/**
+ * THE LOCAL PAIR, in preference order: LiteRT first, WebLLM second.
+ *
+ * The ruling of 2026-09-10 (§6.1): LiteRT is faster and more stable than web-llm's Gemma builds and
+ * web-llm errors outright on some Windows machines, so LiteRT leads — but a browser that cannot run
+ * it (no WebGPU, no served wasm folder, an asset the owner does not host) must still get an answer,
+ * and `readiness()` returning `unsupported` is exactly what makes the router walk on to the next
+ * one. Nothing here is special-cased in `ModelRouter`: this helper only puts the two in the order
+ * the ruling names, so a caller cannot get it wrong by listing them the other way round.
+ *
+ * A caller with only one of them passes only one; the order of what is left does not change.
+ */
+export function localProviders(options: { litert?: LocalProvider; webllm?: LocalProvider }): LocalProvider[] {
+  return [options.litert, options.webllm].filter((p): p is LocalProvider => Boolean(p));
+}

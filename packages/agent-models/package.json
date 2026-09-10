@@ -2,7 +2,7 @@
   "name": "@00/agent-models",
   "version": "0.0.1",
   "private": true,
-  "description": "Infinite Agent: ModelProvider \u2014 local WebGPU (WebLLM) and OpenAI-compatible providers, and the router.",
+  "description": "Infinite Agent: ModelProvider — two local WebGPU brains (LiteRT preferred, WebLLM behind it), the OpenAI-compatible and device-signed peers, and the router.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
