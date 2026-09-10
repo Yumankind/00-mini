@@ -965,6 +965,12 @@ runtime inside the mobile app, scheduled work handed to Mac/cloud.
    builds (Apache, ungated, but no `-web` variant, so unproven on the browser runtime). The gated
    rows need an `HF_TOKEN` at publish time only; visitors never see the Hub.
 
+   **Live on 2026-09-10:** the three Gemma 4 rows (E2B, E4B, 12B) and MediaPipe's wasm, with
+   `litert/catalog.json` listing them; range requests and CORS verified on the custom domain. The
+   four gated rows (3n E2B and E4B with vision, 270m, 1B) wait for an `HF_TOKEN` at publish time:
+   `HF_TOKEN=… scripts/publish-litert-models.sh`. Measured: a 2 GB copy takes ~2 min and 22 s of
+   Worker CPU, the 6 GB one ~5.5 min and 63 s, well inside the 300 s budget.
+
 ---
 
 ## 13. What is deliberately not in this plan

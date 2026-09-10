@@ -69,6 +69,9 @@ deploy_mirror() {
     i=$((i + 1)); [ $i -le 30 ] || { echo "mirror worker never came up at $MIRROR_URL" >&2; exit 1; }
     sleep 2
   done
+  # Answering 403 is not the same as being settled: the first copy asked within seconds of that
+  # answer has come back as a bare Cloudflare 1104 three times, and never once after a short pause.
+  sleep 8
   echo "· mirror worker up at $MIRROR_URL"
 }
 remove_mirror() {
@@ -109,7 +112,7 @@ while IFS='|' read -r repo commit file bytes sha licence gated vision; do
   # Two tries: the first call after a deploy has answered a bare 500 once (the Worker's own errors
   # arrive as an `error …` line with status 200, so a non-200 is the platform, not the copy).
   result=""
-  for attempt in 1 2; do
+  for attempt in 1 2 3; do
     log=$(mktemp -t litert-mirror.XXXXXX)
     status=$(curl -sS -o "$log" -w '%{http_code}' -X POST "$MIRROR_URL" -H "x-mirror-token: $MIRROR_TOKEN" \
       -H "content-type: application/json" --data "$payload" || echo 000)
@@ -119,7 +122,7 @@ while IFS='|' read -r repo commit file bytes sha licence gated vision; do
     result=$(grep -E '^(ok|error) ' "$log" | tail -1 || true)
     rm -f "$log"
     [ "$status" = "200" ] && [ -n "$result" ] && break
-    echo "! attempt $attempt: status $status, ${result:-no verdict} — retrying in 5 s" >&2; sleep 5
+    echo "! attempt $attempt: status $status, ${result:-no verdict} — retrying in 10 s" >&2; sleep 10
   done
   case "$result" in
     "ok $key $bytes $sha") ;;
