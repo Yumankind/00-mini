@@ -1,0 +1,4 @@
+# public/ is build output: scripts/build-site.sh fills it from apps/infinite's two vite builds and
+# clears it first. Nothing in it is edited by hand, so nothing in it is tracked.
+public/
+.wrangler/

@@ -12,7 +12,7 @@ export default defineConfig({
     coverage: {
       enabled: process.env.COVERAGE === "1",
       provider: "v8",
-      include: ["src/**/*.ts"],
+      include: ["src/**/*.ts", "embed/src/**/*.ts"],
       reporter: ["text-summary"],
     },
   },

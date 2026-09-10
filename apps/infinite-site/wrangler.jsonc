@@ -1,0 +1,27 @@
+{
+  // The Homebrew wrangler serves this one; there is no node_modules here, so the schema is fetched.
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "infinite-site",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+
+  // No custom domain yet — the workers.dev URL is what the snippet points at until the hostname is
+  // decided (docs/HANDOFF-infinite-agent.md §12). Adding a route later changes nothing else here.
+  "workers_dev": true,
+  "observability": { "enabled": true },
+
+  // NO bindings, on purpose. Phases 0–2 need no backend at all (§9.1): the loader and the PWA are
+  // static files, the crawl and the index live in the visitor's browser, and the owner's settings
+  // come from the owner's own site. D1, KV and R2 arrive with registration in Phase 3, or in a
+  // second Worker (§9.4) — not here.
+  //
+  // "none" matters, and for the same reason it matters in apps/skills-site: with SPA or 404-page
+  // handling the asset layer would answer /e/<ref>.js with index.html before the Worker ever ran,
+  // and every embed on the web would load an HTML page as a script. "none" falls through to the
+  // Worker for anything that is not a real file, and src/index.ts decides.
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS",
+    "not_found_handling": "none"
+  }
+}
