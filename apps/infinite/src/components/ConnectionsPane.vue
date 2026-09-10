@@ -9,10 +9,11 @@
  */
 import BackupPanel from "./BackupPanel.vue";
 import BrainCards from "./BrainCards.vue";
+import MacConnectCard from "./MacConnectCard.vue";
 import TablerIcon from "./TablerIcon.vue";
 import VaultPanel from "./VaultPanel.vue";
 import { profile, stubs } from "../state/agent.js";
-import { forgetMoveReceipt, moveReceipt, twoLiveCopies } from "../state/move.js";
+import { askForReceive, forgetMoveReceipt, moveReceipt, twoLiveCopies } from "../state/move.js";
 import { receiptLine } from "../lib/move.js";
 
 // The Move flow is a pane of its own (App.vue owns the switch); this pane is one of its two doors.
@@ -61,8 +62,20 @@ defineEmits<{ (e: "move"): void }>();
             <TablerIcon name="device-laptop" :size="13" />
             Move to my Mac
           </button>
+          <!-- §7.1's other end. It is a door of its own and not a step of the move, because the
+               person who needs it is holding a code from ANOTHER device and has nothing to send. -->
+          <button
+            type="button"
+            class="ia-btn w-full h-8 text-[11px] flex items-center justify-center gap-1.5"
+            @click="askForReceive(); $emit('move')"
+          >
+            <TablerIcon name="download" :size="13" />
+            Receive an agent
+          </button>
         </div>
       </section>
+
+      <MacConnectCard />
 
       <BackupPanel />
 

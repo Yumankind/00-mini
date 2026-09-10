@@ -27,14 +27,32 @@ import {
 } from "../lib/move.js";
 import { MOVE_RECEIPT_KEY, kvDelete, kvGet, kvSet } from "../lib/kv.js";
 import { agent } from "./agent.js";
+import type { OwnedAgent } from "../runtime/bootstrap.js";
+import {
+  mountTransfer,
+  roomsConfigured,
+  type ReceivePhase,
+  type SendPhase,
+  type TransferDeps,
+} from "../transfer/index.js";
 
 const step = ref<MoveStep>("explain");
 const code = ref("");
 const fileName = ref("");
 const busy = ref(false);
 const error = ref<string | null>(null);
-const receipt = ref<MoveReceipt | null>(null);
+const receipt = ref<LiveMoveReceipt | null>(null);
 const restoring = ref(false);
+
+/**
+ * §7 has two roads and one receipt. `via` says which road the agent left by — the file (the default,
+ * and what a receipt written before this field existed means) or the live channel of §7.1. It is
+ * additive on purpose: `moveReceiptReducer` in lib/move.ts spreads the state it is given, so a field
+ * it has never heard of survives "brought back" and "unlock anyway" untouched, and every existing
+ * reader keeps working.
+ */
+export type MoveVia = "file" | "live";
+export type LiveMoveReceipt = MoveReceipt & { via?: MoveVia };
 
 export const moveStep = computed(() => step.value);
 export const moveCode = computed(() => code.value);
@@ -53,11 +71,11 @@ export const moveDeepLink = computed(() => (fileName.value ? importDeepLink(file
 
 /** Read at boot, before the shell decides which pane to paint. */
 export async function loadMoveReceipt(): Promise<MoveReceipt | null> {
-  receipt.value = await kvGet<MoveReceipt>(MOVE_RECEIPT_KEY);
+  receipt.value = await kvGet<LiveMoveReceipt>(MOVE_RECEIPT_KEY);
   return receipt.value;
 }
 
-async function persist(next: MoveReceipt | null): Promise<void> {
+async function persist(next: LiveMoveReceipt | null): Promise<void> {
   receipt.value = next;
   if (next) await kvSet(MOVE_RECEIPT_KEY, next);
   else await kvDelete(MOVE_RECEIPT_KEY);
@@ -155,4 +173,185 @@ export async function unlockAnyway(at = new Date()): Promise<void> {
 /** Drops the record entirely — offered once the lock is off and the note has been read. */
 export async function forgetMoveReceipt(): Promise<void> {
   await persist(moveReceiptReducer(receipt.value, { type: "cleared" }));
+}
+
+// ── The live road (§7.1): a room, a code, a confirmation, and bytes over a DataChannel ────────────
+//
+// WHY IT SHARES THIS STORE WITH THE FILE ROAD. There is one rule to keep — one live residence — and
+// one receipt that keeps it. Two stores would mean two places that can write that receipt, and the
+// day they disagree is the day a person has two live agents. So the file road and the live road are
+// two sets of refs and ONE `persist`.
+//
+// THE CODE AND THE CONFIRMATION ARE MEMORY ONLY. Neither is written to IndexedDB, put in a URL or
+// logged; both are cleared by `resetLive()`, which is what closing the panel calls.
+
+/** Where the live send is. `idle` means the second road has not been taken this session. */
+export type LivePhase = "idle" | SendPhase | ReceivePhase | "failed";
+
+const liveRole = ref<"send" | "receive" | null>(null);
+const livePhaseRef = ref<LivePhase>("idle");
+const liveCodeRef = ref("");
+const liveConfirmRef = ref("");
+const liveSent = ref(0);
+const liveTotal = ref(0);
+const liveErrorRef = ref<string | null>(null);
+const liveIncomingRef = ref<{ name: string; bytes: number } | null>(null);
+const replaceAsk = ref<((allowed: boolean) => void) | null>(null);
+let cancelRequested = false;
+
+export const liveRoad = computed(() => liveRole.value);
+export const livePhase = computed(() => livePhaseRef.value);
+/** The six words, on the sending device only, and only while the flow is open. */
+export const liveCode = computed(() => liveCodeRef.value);
+/** The four characters both screens compare. Empty until the peer is on the channel. */
+export const liveConfirmation = computed(() => liveConfirmRef.value);
+export const liveError = computed(() => liveErrorRef.value);
+export const liveIncoming = computed(() => liveIncomingRef.value);
+/** 0..100, or null when there is nothing to draw yet. */
+export const liveProgress = computed(() =>
+  liveTotal.value > 0 ? Math.min(100, Math.round((liveSent.value / liveTotal.value) * 100)) : null,
+);
+export const liveBusy = computed(
+  () => liveRole.value !== null && livePhaseRef.value !== "done" && livePhaseRef.value !== "failed",
+);
+/** The far side is asking to replace the agent that is already here; the screen shows the question. */
+export const liveNeedsReplace = computed(() => replaceAsk.value !== null);
+/** False while `VITE_INFINITE_API_BASE` is still the placeholder — the card says so instead of hanging. */
+export const liveAvailable = computed(() => roomsConfigured());
+
+export function resetLive(): void {
+  liveRole.value = null;
+  livePhaseRef.value = "idle";
+  liveCodeRef.value = "";
+  liveConfirmRef.value = "";
+  liveSent.value = 0;
+  liveTotal.value = 0;
+  liveErrorRef.value = null;
+  liveIncomingRef.value = null;
+  replaceAsk.value?.(false);
+  replaceAsk.value = null;
+  cancelRequested = false;
+}
+
+/** The person pressed Cancel: the send loop stops at the next chunk and the far side is told. */
+export function cancelLive(): void {
+  cancelRequested = true;
+}
+
+/** The answer to "replace the agent that is already in this browser?", from the screen. */
+export function answerReplace(allowed: boolean): void {
+  const ask = replaceAsk.value;
+  replaceAsk.value = null;
+  ask?.(allowed);
+}
+
+/**
+ * `overrides` on the two entry points below is the ONE seam: the room service and the WebRTC channel
+ * are parameters, so the whole live road can be driven in a node test against a fake room and a pair
+ * of arrays. The panel passes nothing and gets the real ones.
+ *
+ * The two operations a transfer needs, taken from the booted agent — see the note in
+ * `transfer/index.ts` about why this is injected rather than imported.
+ */
+function transferDeps(owned: OwnedAgent): TransferDeps {
+  return {
+    exportBundle: async (secret) => new Uint8Array(await (await owned.exportBundleFile(secret)).arrayBuffer()),
+    importBundle: (bytes, secret) =>
+      owned.importBundleFile(new Blob([bytes.slice().buffer as ArrayBuffer], { type: "application/octet-stream" }), secret),
+    profile: () => owned.profile,
+    // The PWA scaffolds an agent on first visit (§4.1), so there is always one here and replacing it
+    // is always a decision.
+    hasAgent: () => true,
+    confirmReplace: () =>
+      new Promise<boolean>((resolve) => {
+        replaceAsk.value = resolve;
+      }),
+  };
+}
+
+function failLive(err: unknown): false {
+  liveErrorRef.value = err instanceof Error ? err.message : String(err);
+  livePhaseRef.value = "failed";
+  return false;
+}
+
+/**
+ * Move live. Resolves `true` only when the far side acknowledged the import — and only then is the
+ * receipt written, which is the whole of §7's rule as control flow.
+ */
+export async function startLiveMove(overrides: Partial<TransferDeps> = {}): Promise<boolean> {
+  const owned = agent.value;
+  if (!owned) return false;
+  resetLive();
+  liveRole.value = "send";
+  livePhaseRef.value = "opening";
+  try {
+    const result = await mountTransfer({ ...transferDeps(owned), ...overrides }).send({
+      cancelled: () => cancelRequested,
+      hooks: {
+        onCode: (code) => (liveCodeRef.value = code),
+        onConfirmation: (fp) => (liveConfirmRef.value = fp),
+        onPhase: (phase) => (livePhaseRef.value = phase),
+        onProgress: (sent, total) => {
+          liveSent.value = sent;
+          liveTotal.value = total;
+        },
+      },
+    });
+    const moved = moveReceiptReducer(receipt.value, {
+      type: "moved",
+      profile: owned.profile,
+      fileName: result.fileName,
+      at: result.movedAt,
+    });
+    await persist(moved ? { ...moved, via: "live" } : null);
+    // The code dies with the flow; the receipt keeps the name and the date, and nothing that opens
+    // the bundle.
+    liveCodeRef.value = "";
+    livePhaseRef.value = "done";
+    return true;
+  } catch (err) {
+    return failLive(err);
+  }
+}
+
+/** Receive live: the person typed the code they are reading off the other device. */
+export async function startLiveReceive(code: string, overrides: Partial<TransferDeps> = {}): Promise<boolean> {
+  const owned = agent.value;
+  if (!owned) return false;
+  resetLive();
+  liveRole.value = "receive";
+  livePhaseRef.value = "joining";
+  try {
+    await mountTransfer({ ...transferDeps(owned), ...overrides }).receive(code, {
+      onConfirmation: (fp) => (liveConfirmRef.value = fp),
+      onPhase: (phase) => (livePhaseRef.value = phase),
+      onIncoming: (hello) => (liveIncomingRef.value = { name: hello.name, bytes: hello.bytes }),
+      onProgress: (received, total) => {
+        liveSent.value = received;
+        liveTotal.value = total;
+      },
+    });
+    // The agent that just landed is not the one this tab booted: everything downstream of the
+    // filesystem — runtime, sessions, vault — was built from the old tree. A reload is the honest
+    // way to open the new one, and it is the caller's to do (`location.reload()` in the panel).
+    livePhaseRef.value = "done";
+    return true;
+  } catch (err) {
+    return failLive(err);
+  }
+}
+
+/**
+ * Connections has one card for the second road, and App.vue owns the pane switch — so "open the Move
+ * pane ON the receiving road" is one bit of state rather than a prop threaded through a component
+ * this work does not touch.
+ */
+const wantsReceive = ref(false);
+export const receiveWanted = computed(() => wantsReceive.value);
+export function askForReceive(): void {
+  wantsReceive.value = true;
+}
+export function clearReceiveWanted(): void {
+  wantsReceive.value = false;
 }

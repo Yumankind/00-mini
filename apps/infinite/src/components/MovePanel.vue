@@ -1,18 +1,41 @@
 <script setup lang="ts">
 /**
- * Move to my Mac — §7's five steps, one screen each.
+ * Move — §7's two roads, one panel.
  *
- * WHY ONE STEP AT A TIME AND NOT A FORM. Steps 3 and 4 leave the browser: a file lands in Downloads,
- * an OS prompt asks whether to open 00, and neither answers back. A form would show five controls of
- * which four are guesses about what has already happened; a sequence shows the one thing to do now
- * and then asks. The code is shown LARGE because the person types it on the other machine — it is
- * read off this screen, not copied through a clipboard both devices share.
+ * WHY ONE STEP AT A TIME AND NOT A FORM. On the FILE road (§7.2) steps 3 and 4 leave the browser: a
+ * file lands in Downloads, an OS prompt asks whether to open 00, and neither answers back. A form
+ * would show five controls of which four are guesses about what has already happened; a sequence
+ * shows the one thing to do now and then asks. The code is shown LARGE because the person types it
+ * on the other machine — it is read off this screen, not copied through a clipboard both devices
+ * share.
+ *
+ * WHY THE LIVE ROAD (§7.1) IS BESIDE IT AND NOT INSTEAD OF IT. The live road needs both devices
+ * online and a room service that answers; the file road needs neither and works on a plane. So the
+ * first screen is a choice between them, in the person's terms ("both devices here, now" versus "a
+ * file I carry"), and the file road below is untouched.
+ *
+ * THE LIVE SCREEN SHOWS TWO DIFFERENT SECRETS AND THEY ARE NOT INTERCHANGEABLE. The six words are
+ * what the other device TYPES; the four characters are what both screens SHOW so the person can see
+ * that the device that joined is the one in front of them. Neither is ever copied to a clipboard by
+ * this panel and neither is logged.
  */
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import TablerIcon from "./TablerIcon.vue";
 import {
+  answerReplace,
+  cancelLive,
+  clearReceiveWanted,
   confirmMoved,
   downloadMove,
+  liveAvailable,
+  liveBusy,
+  liveCode,
+  liveConfirmation,
+  liveError,
+  liveIncoming,
+  liveNeedsReplace,
+  livePhase,
+  liveProgress,
   moveBusy,
   moveCode,
   moveDeepLink,
@@ -20,15 +43,47 @@ import {
   moveFileName,
   moveStep,
   openIn00,
+  receiveWanted,
+  resetLive,
   resetMove,
+  startLiveMove,
+  startLiveReceive,
   toCodeStep,
 } from "../state/move.js";
+import { isMoveCode } from "../lib/move.js";
 import { profile } from "../state/agent.js";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 
+/** Which road this panel is on. `choose` is the first screen; the other three are the roads. */
+const road = ref<"choose" | "file" | "live" | "receive">("choose");
 const copied = ref(false);
+const typedCode = ref("");
 const words = computed(() => moveCode.value.split("-").filter(Boolean));
+const liveWords = computed(() => liveCode.value.split("-").filter(Boolean));
+const typedLooksRight = computed(() => isMoveCode(typedCode.value.trim().toLowerCase()));
+const liveDone = computed(() => livePhase.value === "done");
+
+// Connections' "Receive an agent" card opens this pane already on the receiving road.
+onMounted(() => {
+  if (receiveWanted.value) {
+    road.value = "receive";
+    clearReceiveWanted();
+  }
+});
+
+const PHASE_LINES: Record<string, string> = {
+  opening: "Opening a room…",
+  packing: "Packing your agent…",
+  waiting: "Waiting for the other device…",
+  sending: "Sending…",
+  landing: "Checking and importing on the other device…",
+  joining: "Finding the room…",
+  receiving: "Receiving…",
+  importing: "Importing…",
+  done: "Done.",
+};
+const phaseLine = computed(() => PHASE_LINES[livePhase.value] ?? "");
 
 async function copyCode(): Promise<void> {
   try {
@@ -44,12 +99,33 @@ async function copyCode(): Promise<void> {
 
 function close(): void {
   resetMove();
+  resetLive();
   emit("close");
 }
 
 async function finish(): Promise<void> {
   await confirmMoved();
   emit("close");
+}
+
+function chooseFile(): void {
+  road.value = "file";
+  toCodeStep();
+}
+
+async function moveLive(): Promise<void> {
+  road.value = "live";
+  // The receipt is written inside the store, and only on the far side's ack — see state/move.ts.
+  await startLiveMove();
+}
+
+async function receiveLive(): Promise<void> {
+  if (!typedLooksRight.value) return;
+  if (await startLiveReceive(typedCode.value)) {
+    // The agent that landed is not the one this tab booted: everything downstream of the filesystem
+    // was built from the old tree, so the honest way to open the new one is to boot again.
+    location.reload();
+  }
 }
 </script>
 
@@ -61,31 +137,178 @@ async function finish(): Promise<void> {
           <TablerIcon name="arrow-left" :size="15" />
         </button>
         <h1 class="text-[14px] font-semibold flex items-center gap-2">
-          <TablerIcon name="device-laptop" :size="16" class="text-[var(--color-phosphor)]" />
-          Move to my Mac
+          <TablerIcon :name="road === 'receive' ? 'download' : 'device-laptop'" :size="16" class="text-[var(--color-phosphor)]" />
+          {{ road === "receive" ? "Receive an agent" : "Move your agent" }}
         </h1>
       </div>
 
-      <!-- 1. What a move is. Two lines, because the rule is short and the consequence is the point. -->
-      <section v-if="moveStep === 'explain'" class="panel px-3 py-3 space-y-3">
+      <!-- 0. The two roads of §7, in the person's terms rather than the protocol's. -->
+      <section v-if="road === 'choose'" class="panel px-3 py-3 space-y-3">
         <p class="text-[12px] leading-relaxed">
-          Your agent lives in one place at a time. Moving it to your Mac makes the Mac its home, and
+          Your agent lives in one place at a time. Moving it makes the other device its home, and
           this browser keeps a receipt instead of a running agent.
         </p>
         <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
-          Everything comes with it — files, memory, sessions, standing answers — as one encrypted
-          file. You can bring it back here whenever you like.
+          Everything comes with it — files, memory, sessions, standing answers — encrypted end to
+          end. You can bring it back here whenever you like.
         </p>
         <button
           type="button"
-          class="ia-btn ia-btn-primary w-full h-9 text-[11px] flex items-center justify-center gap-1.5"
-          @click="toCodeStep()"
+          class="ia-btn ia-btn-primary w-full h-auto py-2 text-[11px] flex items-start gap-2 text-left"
+          :disabled="!liveAvailable"
+          @click="moveLive()"
         >
-          Start the move
-          <TablerIcon name="chevron-right" :size="13" />
+          <TablerIcon name="world" :size="14" class="mt-0.5 shrink-0" />
+          <span>
+            Move live
+            <span class="block text-[10px] opacity-70 leading-relaxed">
+              Both devices open, right now. Six words to type, four characters to compare.
+            </span>
+          </span>
+        </button>
+        <p v-if="!liveAvailable" class="text-[11px] text-[var(--color-amber)] leading-relaxed">
+          Live transfer needs the transfer rooms, which this build is not pointed at yet. The file
+          below works with no server at all.
+        </p>
+        <button
+          type="button"
+          class="ia-btn w-full h-auto py-2 text-[11px] flex items-start gap-2 text-left"
+          @click="chooseFile()"
+        >
+          <TablerIcon name="file" :size="14" class="mt-0.5 shrink-0" />
+          <span>
+            Move as a file
+            <span class="block text-[10px] opacity-70 leading-relaxed">
+              One encrypted <code>.00agent</code> you carry — AirDrop, a share sheet, a USB stick.
+              Works offline.
+            </span>
+          </span>
+        </button>
+        <button type="button" class="ia-btn w-full h-8 text-[11px]" @click="road = 'receive'">
+          I want to RECEIVE an agent instead
         </button>
       </section>
 
+      <!-- ── The live road (§7.1) ─────────────────────────────────────────────────────────────── -->
+      <section v-else-if="road === 'live'" class="panel px-3 py-3 space-y-3">
+        <template v-if="liveCode && !liveDone">
+          <p class="text-[12px] leading-relaxed">
+            On the other device choose <strong>Receive</strong> and type these six words.
+          </p>
+          <div class="rounded-[10px] border border-[var(--color-line)] bg-[var(--color-panel-2)] px-3 py-4">
+            <div class="flex flex-wrap items-baseline justify-center gap-x-1 gap-y-1">
+              <template v-for="(word, i) in liveWords" :key="`live-${i}-${word}`">
+                <span class="font-mono text-[16px] sm:text-[18px] text-[var(--color-phosphor)] tracking-tight">
+                  {{ word }}
+                </span>
+                <span v-if="i < liveWords.length - 1" class="font-mono text-[15px] text-[var(--color-ink-dim)]">-</span>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <!-- The confirmation appears the moment the far side is on the channel, and not before:
+             there is nothing to compare with until somebody is there to compare. -->
+        <div v-if="liveConfirmation" class="rounded-[10px] border border-[var(--color-line)] px-3 py-3 text-center space-y-1">
+          <div class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">
+            Both screens should show
+          </div>
+          <div class="font-mono text-[22px] tracking-[0.3em] text-[var(--color-phosphor)]">{{ liveConfirmation }}</div>
+          <div class="text-[10px] text-[var(--color-ink-dim)] leading-relaxed">
+            If the other device shows something else, stop — that is not your device.
+          </div>
+        </div>
+
+        <p v-if="phaseLine" class="text-[11px] text-[var(--color-ink-dim)]">{{ phaseLine }}</p>
+        <div v-if="liveProgress !== null" class="h-1.5 rounded-full bg-[var(--color-panel-2)] overflow-hidden">
+          <div class="h-full bg-[var(--color-phosphor)]" :style="{ width: `${liveProgress}%` }" />
+        </div>
+
+        <template v-if="liveDone">
+          <div class="flex items-start gap-2">
+            <TablerIcon name="circle-check" :size="16" class="mt-0.5 shrink-0 text-[var(--color-phosphor)]" />
+            <p class="text-[12px] leading-relaxed">
+              {{ profile?.displayName ?? "Your agent" }} is on the other device now. This browser
+              keeps the receipt.
+            </p>
+          </div>
+          <button type="button" class="ia-btn ia-btn-primary w-full h-9 text-[11px]" @click="emit('close')">Done</button>
+        </template>
+        <button v-else-if="liveBusy" type="button" class="ia-btn w-full h-8 text-[11px]" @click="cancelLive()">
+          Cancel
+        </button>
+        <button v-else type="button" class="ia-btn w-full h-8 text-[11px]" @click="road = 'choose'">
+          Try another way
+        </button>
+      </section>
+
+      <!-- ── Receiving (§7.1, the other end) ──────────────────────────────────────────────────── -->
+      <section v-else-if="road === 'receive'" class="panel px-3 py-3 space-y-3">
+        <template v-if="livePhase === 'idle'">
+          <p class="text-[12px] leading-relaxed">
+            On the device that has the agent choose <strong>Move live</strong>, then type its six
+            words here.
+          </p>
+          <input
+            v-model="typedCode"
+            type="text"
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            class="ia-input text-[13px] font-mono"
+            placeholder="six-words-with-dashes-between-them"
+            @keydown.enter.prevent="receiveLive()"
+          />
+          <p class="text-[11px] text-[var(--color-amber)] leading-relaxed">
+            The agent that arrives replaces the one in this browser. You will be asked again before
+            anything is written.
+          </p>
+          <button
+            type="button"
+            class="ia-btn ia-btn-primary w-full h-9 text-[11px]"
+            :disabled="!typedLooksRight || !liveAvailable"
+            @click="receiveLive()"
+          >
+            Receive
+          </button>
+          <button type="button" class="ia-btn w-full h-8 text-[11px]" @click="road = 'choose'">Back</button>
+        </template>
+
+        <template v-else>
+          <div v-if="liveConfirmation" class="rounded-[10px] border border-[var(--color-line)] px-3 py-3 text-center space-y-1">
+            <div class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">
+              Both screens should show
+            </div>
+            <div class="font-mono text-[22px] tracking-[0.3em] text-[var(--color-phosphor)]">{{ liveConfirmation }}</div>
+          </div>
+          <p v-if="liveIncoming" class="text-[11px] font-mono text-[var(--color-ink-dim)] break-all">
+            {{ liveIncoming.name }} · {{ Math.max(1, Math.round(liveIncoming.bytes / 1024)) }} KB
+          </p>
+          <p v-if="phaseLine" class="text-[11px] text-[var(--color-ink-dim)]">{{ phaseLine }}</p>
+          <div v-if="liveProgress !== null" class="h-1.5 rounded-full bg-[var(--color-panel-2)] overflow-hidden">
+            <div class="h-full bg-[var(--color-phosphor)]" :style="{ width: `${liveProgress}%` }" />
+          </div>
+
+          <!-- The destructive question, asked with the bytes already here and proven. -->
+          <template v-if="liveNeedsReplace">
+            <p class="text-[11px] text-[var(--color-amber)] leading-relaxed">
+              Importing this agent overwrites the one in this browser — its memory, its files and its
+              sessions become the ones in the bundle.
+            </p>
+            <div class="flex gap-2">
+              <button type="button" class="ia-btn flex-1 h-8 text-[11px]" @click="answerReplace(false)">Cancel</button>
+              <button type="button" class="ia-btn ia-btn-danger flex-1 h-8 text-[11px]" @click="answerReplace(true)">
+                Replace it
+              </button>
+            </div>
+          </template>
+          <button v-else-if="!liveBusy" type="button" class="ia-btn w-full h-8 text-[11px]" @click="road = 'choose'">
+            Back
+          </button>
+        </template>
+      </section>
+
+      <!-- ── The file road (§7.2), unchanged ──────────────────────────────────────────────────── -->
       <!-- 2. The code. Large, spaced, and the only place it ever appears. -->
       <section v-else-if="moveStep === 'code'" class="panel px-3 py-3 space-y-3">
         <p class="text-[12px] leading-relaxed">
@@ -175,6 +398,7 @@ async function finish(): Promise<void> {
       </section>
 
       <p v-if="moveError" class="text-[11px] text-[var(--color-red)] leading-relaxed">{{ moveError }}</p>
+      <p v-if="liveError" class="text-[11px] text-[var(--color-red)] leading-relaxed">{{ liveError }}</p>
     </div>
   </div>
 </template>

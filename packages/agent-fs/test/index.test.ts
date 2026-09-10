@@ -46,6 +46,23 @@ describe("@00/agent-fs public surface", () => {
       "gitPush",
       "gitPull",
       "GitRemoteUnavailableError",
+      // The live transfer of §7.1 — imported by the PWA and by the 00 web UI, so the barrel is its
+      // contract too.
+      "CHUNK_BYTES",
+      "ChunkAssembler",
+      "WireError",
+      "encodeControl",
+      "decodeControl",
+      "encodeChunk",
+      "decodeChunk",
+      "readFrame",
+      "sendChunks",
+      "deriveTransferKeys",
+      "sha256Hex",
+      "equalStrings",
+      "sendBundle",
+      "receiveBundle",
+      "TransferAborted",
     ]) {
       expect(api, `missing export: ${name}`).toHaveProperty(name);
     }

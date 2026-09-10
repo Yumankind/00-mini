@@ -27,7 +27,20 @@ const chosen = ref<File | null>(null);
 const confirmingUnlock = ref(false);
 
 const receipt = computed(() => moveReceipt.value);
-const line = computed(() => (receipt.value ? receiptLine(receipt.value) : ""));
+/**
+ * §7.1's road leaves the same receipt with one more fact in it: the agent went over a live channel,
+ * not as a file in Downloads. It matters on this screen and nowhere else — "moved to your Mac" and a
+ * file name are the wrong sentence for an agent that walked to a phone in the next room, and "look
+ * for the file" is advice that will not find anything.
+ */
+const wentLive = computed(() => receipt.value?.via === "live");
+const line = computed(() =>
+  !receipt.value
+    ? ""
+    : wentLive.value && receipt.value.releasedAt === null
+      ? `Moved live on ${receipt.value.movedAt.slice(0, 10)}.`
+      : receiptLine(receipt.value),
+);
 const looksWrong = computed(() => chosen.value !== null && !isBundleFilename(chosen.value.name));
 
 function pickFile(event: Event): void {
@@ -57,11 +70,11 @@ async function doRestore(): Promise<void> {
           {{ line }}
         </div>
         <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed max-w-sm">
-          It runs on your Mac now. Its files are still here, untouched and asleep, so that only one
-          copy is ever live.
+          {{ wentLive ? "It runs on the other device now." : "It runs on your Mac now." }} Its files
+          are still here, untouched and asleep, so that only one copy is ever live.
         </p>
         <div v-if="receipt?.fileName" class="text-[11px] font-mono text-[var(--color-ink-dim)] break-all">
-          {{ receipt.fileName }}
+          <span v-if="wentLive">it travelled as </span>{{ receipt.fileName }}
         </div>
       </div>
 
@@ -71,6 +84,10 @@ async function doRestore(): Promise<void> {
           <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
             Export it from 00 on your Mac, then open the file here. This browser becomes its home
             again and the Mac's copy stops being the live one.
+          </p>
+          <p v-if="wentLive" class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+            Or move it back the way it came: on the device that has it choose <strong>Move live</strong>,
+            and receive it here from Connections.
           </p>
           <button
             type="button"

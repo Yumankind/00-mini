@@ -15,3 +15,4 @@ export * from "./tar.js";
 export * from "./bundle.js";
 export * from "./git-fs.js";
 export * from "./git.js";
+export * from "./transfer/index.js";
