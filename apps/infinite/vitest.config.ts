@@ -14,6 +14,10 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts", "embed/src/**/*.ts"],
       reporter: ["text-summary"],
+      // The ratchet of docs/testing.md: measured on 2026-09-10 (50.2 / 84.8 / 69.0 / 50.2) minus slack.
+      // Low on statements because the DOM-bound modules (panel, bridges, OPFS glue) are counted and
+      // cannot run in node; raise as pure modules split out of them.
+      thresholds: { statements: 47, branches: 80, functions: 65, lines: 47 },
     },
   },
 });

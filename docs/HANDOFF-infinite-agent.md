@@ -11,6 +11,51 @@ final it is written as wire; where it is a decision still open it is listed in �
 
 ---
 
+## Status (2026-09-10)
+
+**Phases 0, 1 and 2 are BUILT and committed** (`d5d928de` … `5a8d6580`), nothing deployed, no backend
+touched. Every package carries coverage floors from its first commit and `scripts/ci-local.sh` runs
+them all. What exists:
+
+| Piece | Where | Proof |
+|---|---|---|
+| Travel policy + manifest types in `@00/shared`; engine door `POST /api/agents/import-bundle` (settings grant, `replace`, 409/400 by name) | `packages/shared/src/bundle*.ts`, `apps/00d/src/bundle-routes.ts` | a bundle built with `node:crypto` + the `tar` CLI alone imports; the full engine suite green under COVERAGE=1 |
+| `@00/agent-fs`: OPFS / memory / Node adapters, scaffold (engine text verbatim), the `.00agent` container, git over isomorphic-git | `packages/agent-fs` | bsdtar reads what it writes; an engine-made bundle round-trips byte-exact; `..` refused |
+| `@00/agent-models`: OpenAI-compatible, Anthropic, WebLLM 0.2.85, the device-signed sponsored transport (§24 canonical string), Overblast/BYOK factories, router | `packages/agent-models` | 156 tests; catalog ids pinned to the installed prebuilt list |
+| `@00/agent-runtime`: the loop, pi 0.84.2 tool schemas verbatim, permissions, pi-shaped sessions, the vault | `packages/agent-runtime` | 165 tests |
+| The PWA (simple shell) | `apps/infinite/src` | live: OPFS scaffold, brain cards with real readiness, vault create/unlock gate, 375 px layout |
+| The embed at level 0 + `apps/infinite-site` | `apps/infinite/embed` | live on a fake shop: depth-2 crawl via sitemap, `/logout` guarded, links-out recorded, "where is the basket" outlined the button, closed shadow root; `e.js` 32 KB gz |
+
+**What Phase 0's proof still lacks:** the browser → Mac → browser round trip through the running
+engine. Each side is proven against the format independently (tar CLI + node:crypto); a test that
+exports with `@00/agent-fs` and imports through the engine door needs `apps/00d` to depend on the
+package, which is a deliberate install — do it in the next round.
+
+**Findings the builders reported, to act on (not yet in the contracts):**
+1. No web-llm small model has native function calling (only 7B–8B Hermes builds do): every level-0
+   tool call goes through the marked prompt fallback. Treat local tool use as best-effort; a
+   twin-guard test flags the day a small model joins the list.
+2. The sponsor footer's wire shape is inferred from `attribution.ts` (text after `— sponsored by `),
+   not observed; the CORS-exposed `Sponsored-By` headers may be the better source. Capture live
+   traffic once `APPS_ENABLED` is on and decide.
+3. The sponsored catalog source for a device caller is unnamed (`GET /api/v1/models?tier=` looks
+   intended); Overblast's `models` come from the mint call. Both providers take the catalog as a
+   parameter for now.
+4. `api.ts` gaps found by the PWA: the vault is not in the frozen surface; `agent_message` does not
+   say delta vs whole; `readiness().detail` is free-form (a `progress?: number` is wanted);
+   `ModelProvider` has no `unload`; `RunResult` lacks `providerId`; providers are fixed at
+   construction (a `setProviders` would remove the PWA's façade). Promote these in one contract
+   revision, with both app owners in the loop.
+5. Runtime divergences from the engine, all documented in-module: `grep`/`find` ignore no
+   `.gitignore`; git tools have no engine twin (a Mac agent uses `bash`); no `git_push` by design;
+   the router's class-aware routing of §6 is not implemented (`auto` = first ready provider).
+6. Argon2id at 64 MiB / t=3 makes an unlock cost a visible second or two on a laptop. Intended;
+   the UI should say "unlocking…".
+7. The embed relies on `createAgentRuntime` spreading `opts.context` per turn so the site map stays
+   fresh; a guard test pins it.
+
+---
+
 ## 0. The three rulings this plan rests on
 
 1. **The browser is the fourth engine host, not a new product line.** The Mac engine, the container
