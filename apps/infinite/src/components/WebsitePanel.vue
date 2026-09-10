@@ -23,6 +23,7 @@ import {
   agentRef,
   isClaimed,
   linkKeyRefusal,
+  linkPublicKey,
   loadRegistry,
   registryApp,
   registryCard,
@@ -32,6 +33,21 @@ import {
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const copied = ref(false);
+const copiedKey = ref(false);
+
+// The public half of the link key, for the site's setup step 5: only THIS browser holds the private
+// half, so the site cannot learn the key any other way, and registering with a made-up one would
+// create an app its owner could never claim (§5.3). The private half is never shown; it cannot be.
+async function copyKey(): Promise<void> {
+  if (!linkPublicKey.value) return;
+  try {
+    await navigator.clipboard.writeText(linkPublicKey.value);
+    copiedKey.value = true;
+    setTimeout(() => (copiedKey.value = false), 2000);
+  } catch {
+    // Same as the snippet: the key is on screen in a selectable field.
+  }
+}
 
 onMounted(() => void loadRegistry());
 
@@ -94,6 +110,22 @@ async function copySnippet(): Promise<void> {
 
         <div v-if="agentRef" class="text-[10px] text-[var(--color-ink-dim)] font-mono break-all pt-1">
           {{ agentRef }}
+        </div>
+
+        <!-- The site's setup asks for this in its "Register" step; nothing else can supply it. -->
+        <div v-if="linkPublicKey" class="space-y-1.5 pt-1">
+          <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+            <strong class="text-[var(--color-ink)]">Your agent's key</strong> — the site's setup asks
+            for it when you register; it proves the site is yours to claim from here. It is the public
+            half only.
+          </p>
+          <div class="panel px-3 py-2 flex items-center gap-2" style="background: var(--color-panel-2)">
+            <code class="text-[10px] font-mono break-all leading-relaxed select-all flex-1">{{ linkPublicKey }}</code>
+            <button type="button" class="ia-btn h-7 px-2 text-[11px] flex items-center gap-1 shrink-0" @click="copyKey()">
+              <TablerIcon :name="copiedKey ? 'circle-check' : 'copy'" :size="12" />
+              {{ copiedKey ? "Copied" : "Copy" }}
+            </button>
+          </div>
         </div>
       </section>
 
