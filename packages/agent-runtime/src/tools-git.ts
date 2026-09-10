@@ -14,9 +14,15 @@
  *
  * Tiers follow §4.3: reading is safe, staging and committing change the record, so they confirm.
  * (`push` is absent on purpose — it is an external mutation, i.e. high-risk, and it needs a
- * credential this package has no business holding. It arrives with the auth work, not before.)
+ * credential this package has no business holding. It arrives with the auth work, not before. The
+ * implementation side says the same thing out loud: `gitClone`/`gitPush`/`gitPull` in
+ * @00/agent-fs REFUSE BY NAME with the CORS-proxy sentence, so a host that wires them into a tool
+ * later inherits an honest failure rather than a stub.)
+ *
+ * `git_branch` and `git_checkout` joined the set on 2026-09-10 (gap B8) and brought the first
+ * `high-risk` tier with them — see `tierFor` on the checkout.
  */
-import type { Tool } from "./api.js";
+import type { PermissionTier, Tool } from "./api.js";
 import { resolveInSandbox } from "./sandbox.js";
 
 export interface GitOps {
@@ -25,6 +31,15 @@ export interface GitOps {
   gitDiff(opts: { dir: string; path?: string; staged?: boolean }): Promise<string>;
   gitAdd(opts: { dir: string; paths: string[] }): Promise<string>;
   gitCommit(opts: { dir: string; message: string }): Promise<string>;
+  /**
+   * BRANCHES ARE OPTIONAL ON THE INTERFACE, and the tools appear only when the implementation does
+   * (gap B8, 2026-09-10). `createGitOps` in @00/agent-fs has both; a host with a cut-down ops object
+   * — an embed, a test, a future remote-git bridge that only reads — keeps compiling and simply gets
+   * six tools instead of eight. The alternative, two methods that throw "not implemented", would put
+   * a tool in front of the model that can only ever fail.
+   */
+  gitBranch?(opts: { dir: string; create?: string; checkout?: boolean }): Promise<string>;
+  gitCheckout?(opts: { dir: string; ref: string; force?: boolean }): Promise<string>;
 }
 
 const DEFAULT_LOG_LIMIT = 20;
@@ -134,5 +149,78 @@ export function gitTools(ops: GitOps): Tool[] {
         return { output: await ops.gitCommit({ dir: dirArg(ctx.sandbox, args), message }) };
       },
     },
+    ...(ops.gitBranch
+      ? [
+          {
+            // Listing is a read; creating a branch is a change. One tool, because that is how a
+            // person says it ("branch"), and the tier is decided per call — declared `safe` and
+            // RAISED, because the loop only ever takes the stricter of the two (runtime.ts).
+            tier: "safe" as PermissionTier,
+            // Trimmed, exactly as `run` trims it: the tier must be decided on the same reading of
+            // the argument as the behaviour, or a blank `create` asks a question and then lists.
+            tierFor: (args: Record<string, unknown>): PermissionTier =>
+              typeof args.create === "string" && args.create.trim() ? "confirm" : "safe",
+            schema: {
+              name: "git_branch",
+              description: "List the branches of a git repository, or create a new one.",
+              parameters: {
+                type: "object",
+                properties: {
+                  dir: dirProperty,
+                  create: { type: "string", description: "Name of a new branch to create. Omit to list." },
+                  checkout: { type: "boolean", description: "Switch to the new branch after creating it (default: false)" },
+                },
+              },
+            },
+            async run(args: Record<string, unknown>, ctx: { sandbox: string }) {
+              const create = typeof args.create === "string" ? args.create.trim() : "";
+              return {
+                output: await ops.gitBranch!({
+                  dir: dirArg(ctx.sandbox, args),
+                  ...(create ? { create } : {}),
+                  checkout: args.checkout === true,
+                }),
+              };
+            },
+          } satisfies Tool,
+        ]
+      : []),
+    ...(ops.gitCheckout
+      ? [
+          {
+            tier: "confirm" as PermissionTier,
+            /**
+             * `force` IS THE HIGH-RISK CASE, and it is the reason that tier exists (gap B17). A plain
+             * checkout refuses when it would overwrite uncommitted work; a forced one silently throws
+             * that work away, and there is no reflog an agent could restore it from in a browser.
+             */
+            tierFor: (args: Record<string, unknown>): PermissionTier => (args.force === true ? "high-risk" : "confirm"),
+            schema: {
+              name: "git_checkout",
+              description:
+                "Switch a git repository to another branch or commit. Uncommitted changes stop the switch unless you pass force, which DESTROYS them.",
+              parameters: {
+                type: "object",
+                properties: {
+                  dir: dirProperty,
+                  ref: { type: "string", description: "Branch name or commit to switch to." },
+                  force: {
+                    type: "boolean",
+                    description: "Discard uncommitted changes in the working tree (default: false). There is no undo.",
+                  },
+                },
+                required: ["ref"],
+              },
+            },
+            async run(args: Record<string, unknown>, ctx: { sandbox: string }) {
+              const ref = typeof args.ref === "string" ? args.ref.trim() : "";
+              if (!ref) return { output: "A checkout needs a branch or commit to switch to.", isError: true };
+              return {
+                output: await ops.gitCheckout!({ dir: dirArg(ctx.sandbox, args), ref, force: args.force === true }),
+              };
+            },
+          } satisfies Tool,
+        ]
+      : []),
   ];
 }

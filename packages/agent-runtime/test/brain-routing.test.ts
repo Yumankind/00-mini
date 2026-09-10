@@ -243,7 +243,14 @@ describe("a single-provider setup behaves exactly as it did before class-aware r
         const result = await h.runtime.run({ prompt: "hi", ...(brain ? { brain } : {}) });
         expect(h.brains()).toEqual(["local-litert"]);
         expect(result).toMatchObject({ text: "done", steps: 1, stopped: "final", providerId: "local-litert" });
-        expect(h.events.map((e) => e.type)).toEqual(["model_started", "model_completed", "agent_message"]);
+        // The stream's delta rides between the two, since the loop streams (gap B11); everything
+        // else about a one-provider run is what it was.
+        expect(h.events.map((e) => e.type)).toEqual([
+          "model_started",
+          "agent_delta",
+          "model_completed",
+          "agent_message",
+        ]);
       });
     }
   }

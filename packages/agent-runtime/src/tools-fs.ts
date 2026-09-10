@@ -14,9 +14,29 @@
  *
  * The read-before-overwrite guard is the engine's too, and kept for the same reason: a model that
  * writes a file it has not read this session is replacing something it cannot describe.
+ *
+ * ┌─ THE FOUR WITH NO PI TWIN: delete, move, copy, stat (gap B9, 2026-09-10) ────────────────────┐
+ * │ Pi has none of them — a Mac agent deletes a file by running `rm` through `bash`, and this     │
+ * │ host has no shell to run it in (A5). So `AgentFs` already had `remove`, `rename` and `stat`   │
+ * │ and nothing could reach them: no delete tool, no move tool, and therefore a `file_changed`    │
+ * │ event whose `delete` and `rename` arms could never fire. These four close that, and because   │
+ * │ there is no twin to copy, their SHAPES ARE WRITTEN DOWN HERE so the engine can grow the same  │
+ * │ ones later rather than a second spelling:                                                     │
+ * │                                                                                               │
+ * │   delete { path: string, recursive?: boolean }   confirm — high-risk when `path` is a folder  │
+ * │   move   { from: string, to: string }            confirm — refuses to clobber an existing `to`│
+ * │   copy   { from: string, to: string }            confirm — same refusal, files and folders    │
+ * │   stat   { path: string }                        safe                                         │
+ * │                                                                                               │
+ * │ The names are the shell verbs a person would say, not the API's (`remove`, `rename`): a model │
+ * │ that has read a million shell sessions writes `move`, and `mv`-shaped arguments (`from`/`to`) │
+ * │ are what it reaches for. Deleting a FOLDER is the one file operation with no undo and no      │
+ * │ trace, which is why it is the tier `high-risk` was defined for and never used.                │
+ * └───────────────────────────────────────────────────────────────────────────────────────────────┘
  */
 import type { AgentFs } from "@00/agent-fs";
-import type { Tool } from "./api.js";
+import type { ImagePart } from "@00/agent-models";
+import type { PermissionTier, Tool, ToolContext } from "./api.js";
 import { globToRegExp, relativeToSandbox, resolveInSandbox } from "./sandbox.js";
 import {
   FIND_DEFAULT_LIMIT,
@@ -98,16 +118,40 @@ export class SeenFiles {
   }
 }
 
-// ── read ────────────────────────────────────────────────────────────────────────────────────────
+// ── read, and what it does when the file is a picture ───────────────────────────────────────────
+
+/**
+ * The four formats every vision model on this platform takes, and the cap.
+ *
+ * 4 MB is not about the file: it is about what the picture becomes on the way to a brain. Base64
+ * inflates by a third, an image rides in EVERY subsequent request of the turn, and a phone's local
+ * model has a context measured in thousands of tokens — so a bigger picture is not a slower answer,
+ * it is a turn that stops fitting. Over the cap the tool says so and names the size, which is a
+ * sentence the agent can pass on ("that photo is 11 MB; crop it or hand me a smaller one").
+ */
+export const IMAGE_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+export const IMAGE_MAX_BYTES = 4 * 1024 * 1024;
+
+function imageMime(path: string): string | undefined {
+  const dot = path.lastIndexOf(".");
+  return dot === -1 ? undefined : IMAGE_MIME[path.slice(dot + 1).toLowerCase()];
+}
 
 export function readTool(seen: SeenFiles = new SeenFiles()): Tool {
   return {
     tier: "safe",
     schema: {
       name: "read",
-      // pi's description, with the image half dropped: this host hands text to the loop, and a tool
-      // that promises to attach an image the runtime cannot carry is a promise it cannot keep.
-      description: `Read the contents of a file. Output is truncated to ${MAX_OUTPUT_LINES} lines or ${MAX_OUTPUT_CHARS / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
+      // pi's description, plus the image sentence: since 2026-09-10 this host CAN carry a picture to
+      // a brain (gap B10), so the tool says it — a model that does not know it may look at a png
+      // will describe the filename instead.
+      description: `Read the contents of a file. Images (png, jpg, webp, gif) are attached for you to look at. Output is truncated to ${MAX_OUTPUT_LINES} lines or ${MAX_OUTPUT_CHARS / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
       parameters: {
         type: "object",
         properties: {
@@ -124,6 +168,20 @@ export function readTool(seen: SeenFiles = new SeenFiles()): Tool {
       if (!stat) return fail(`File not found: ${relativeToSandbox(ctx.sandbox, path)}`);
       if (stat.kind === "dir") return fail(`${relativeToSandbox(ctx.sandbox, path)} is a directory — use ls.`);
       seen.mark(path);
+      const shown = relativeToSandbox(ctx.sandbox, path);
+      const mime = imageMime(path);
+      if (mime) {
+        if (stat.size > IMAGE_MAX_BYTES) {
+          return fail(
+            `${shown} is ${(stat.size / 1024 / 1024).toFixed(1)} MB, over the ${IMAGE_MAX_BYTES / 1024 / 1024} MB limit for an image. Ask for a smaller copy.`,
+          );
+        }
+        const data = await ctx.fs.readFile(path);
+        const image: ImagePart = { mime, data, source: shown };
+        // The OUTPUT is a caption, not the bytes: it is what a text-only brain sees (and what lands
+        // in the session file), while `images` is what a vision brain looks at.
+        return { output: `[image ${shown} — ${mime}, ${Math.round(stat.size / 1024)} KB]`, images: [image] };
+      }
       const text = await ctx.fs.readText(path);
       const allLines = text.split("\n");
       const offset = num(args.offset);
@@ -492,6 +550,179 @@ export function readPublicTool(publicDir = "workspace/public"): Tool {
       if (!stat || stat.kind !== "file") return fail("File not found in public folder.");
       const text = await ctx.fs.readText(path);
       return ok(text.slice(0, PUBLIC_READ_MAX_CHARS));
+    },
+  };
+}
+
+// ── delete / move / copy / stat ─────────────────────────────────────────────────────────────────
+//
+// Shapes and tiers: see the box at the top of this file. All four go through `resolveInSandbox` on
+// every path they are given, including the DESTINATION of a move or a copy — a `to` that escapes is
+// the same escape as a `path` that does, and it would be the more dangerous one, since it writes.
+
+const pathProperty = {
+  type: "string",
+  description: "Path relative to your workspace (or agent-root-absolute, e.g. '/workspace/notes.md').",
+} as const;
+
+/** `stat`, in one line a model can read back to a person. */
+function describe(kind: "file" | "dir", size: number, mtime: number, shown: string): string {
+  const when = mtime ? new Date(mtime).toISOString() : "unknown";
+  return kind === "dir" ? `${shown}/  directory  modified ${when}` : `${shown}  file  ${size} bytes  modified ${when}`;
+}
+
+export function statTool(): Tool {
+  return {
+    tier: "safe",
+    schema: {
+      name: "stat",
+      description:
+        "Check whether a path exists and what it is: file or directory, size in bytes, last modified time. Cheaper than reading a file you only need to know about.",
+      parameters: { type: "object", properties: { path: pathProperty }, required: ["path"] },
+    },
+    async run(args, ctx) {
+      const path = resolveInSandbox(ctx.sandbox, required(args, "path"));
+      const shown = relativeToSandbox(ctx.sandbox, path);
+      const stat = await ctx.fs.stat(path);
+      if (!stat) return ok(`${shown} does not exist.`);
+      return ok(describe(stat.kind, stat.size, stat.mtime, shown));
+    },
+  };
+}
+
+/**
+ * `delete`. The one tool in this package that reaches `high-risk`, and only when it is pointed at a
+ * folder: a deleted FILE is one thing a person can describe and often reproduce, a deleted folder is
+ * a subtree nobody can enumerate after the fact. There is no trash in OPFS to restore it from.
+ */
+export function deleteTool(): Tool {
+  return {
+    tier: "confirm",
+    async tierFor(args, ctx): Promise<PermissionTier> {
+      try {
+        const path = resolveInSandbox(ctx.sandbox, str(args.path) ?? "");
+        return (await ctx.fs.stat(path))?.kind === "dir" ? "high-risk" : "confirm";
+      } catch {
+        // A path that will not even resolve is about to be refused by `run`; the tier it is refused
+        // under does not matter, and guessing the stricter one costs the person one dialog.
+        return "high-risk";
+      }
+    },
+    schema: {
+      name: "delete",
+      description:
+        "Delete a file, or a directory and everything in it. There is no undo and no trash — deleting a directory needs `recursive: true` so it cannot happen by accident.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: pathProperty,
+          recursive: { type: "boolean", description: "Required to delete a directory (default: false)" },
+        },
+        required: ["path"],
+      },
+    },
+    async run(args, ctx) {
+      const path = resolveInSandbox(ctx.sandbox, required(args, "path"));
+      const shown = relativeToSandbox(ctx.sandbox, path);
+      const stat = await ctx.fs.stat(path);
+      if (!stat) return fail(`Nothing to delete: ${shown} does not exist.`);
+      if (stat.kind === "dir" && bool(args.recursive) !== true) {
+        return fail(`${shown} is a directory — pass recursive: true if you really mean to delete it and everything in it.`);
+      }
+      await ctx.fs.remove(path);
+      ctx.emit({ type: "file_changed", path, op: "delete" });
+      return ok(`Deleted ${shown}${stat.kind === "dir" ? " and everything in it" : ""}.`);
+    },
+  };
+}
+
+/** The destination guard both `move` and `copy` apply: never silently replace something. */
+async function freeDestination(
+  ctx: ToolContext,
+  to: string,
+): Promise<{ ok: true } | { ok: false; output: string; isError: true }> {
+  const existing = await ctx.fs.stat(to);
+  if (!existing) return { ok: true };
+  return {
+    ok: false,
+    isError: true,
+    output: `${relativeToSandbox(ctx.sandbox, to)} already exists — delete it first, or choose another name. Nothing was changed.`,
+  };
+}
+
+export function moveTool(): Tool {
+  return {
+    tier: "confirm",
+    schema: {
+      name: "move",
+      description:
+        "Move or rename a file or directory. Fails rather than overwriting something that is already at the destination.",
+      parameters: {
+        type: "object",
+        properties: { from: pathProperty, to: pathProperty },
+        required: ["from", "to"],
+      },
+    },
+    async run(args, ctx) {
+      const from = resolveInSandbox(ctx.sandbox, required(args, "from"));
+      const to = resolveInSandbox(ctx.sandbox, required(args, "to"));
+      if (from === to) return fail("The source and the destination are the same path.");
+      if (!(await ctx.fs.stat(from))) return fail(`Nothing to move: ${relativeToSandbox(ctx.sandbox, from)} does not exist.`);
+      const free = await freeDestination(ctx, to);
+      if (!free.ok) return { output: free.output, isError: true };
+      await ensureParent(ctx.fs, to);
+      await ctx.fs.rename(from, to);
+      // ONE event, naming the path that now exists: a rename is one change, not a delete and a write,
+      // and a listener that redraws a tree wants to redraw it once.
+      ctx.emit({ type: "file_changed", path: to, op: "rename" });
+      return ok(`Moved ${relativeToSandbox(ctx.sandbox, from)} → ${relativeToSandbox(ctx.sandbox, to)}`);
+    },
+  };
+}
+
+export function copyTool(): Tool {
+  return {
+    tier: "confirm",
+    schema: {
+      name: "copy",
+      description:
+        "Copy a file, or a directory and everything in it. Fails rather than overwriting something that is already at the destination.",
+      parameters: {
+        type: "object",
+        properties: { from: pathProperty, to: pathProperty },
+        required: ["from", "to"],
+      },
+    },
+    async run(args, ctx) {
+      const from = resolveInSandbox(ctx.sandbox, required(args, "from"));
+      const to = resolveInSandbox(ctx.sandbox, required(args, "to"));
+      if (from === to) return fail("The source and the destination are the same path.");
+      const stat = await ctx.fs.stat(from);
+      if (!stat) return fail(`Nothing to copy: ${relativeToSandbox(ctx.sandbox, from)} does not exist.`);
+      if (to.startsWith(`${from}/`)) return fail("Cannot copy a directory into itself.");
+      const free = await freeDestination(ctx, to);
+      if (!free.ok) return { output: free.output, isError: true };
+
+      // `AgentFs` has no copy — it is a filesystem interface, not a shell — so a directory copy is
+      // this walk. It is bounded by the same WALK_MAX_ENTRIES every other walk here is bounded by.
+      if (stat.kind === "file") {
+        await ensureParent(ctx.fs, to);
+        await ctx.fs.writeFile(to, await ctx.fs.readFile(from));
+        ctx.emit({ type: "file_changed", path: to, op: "write" });
+        return ok(`Copied ${relativeToSandbox(ctx.sandbox, from)} → ${relativeToSandbox(ctx.sandbox, to)}`);
+      }
+      const files = await walkFiles(ctx.fs, from);
+      await ctx.fs.mkdir(to);
+      for (const rel of files) {
+        if (ctx.signal.aborted) break;
+        const target = `${to}/${rel}`;
+        await ensureParent(ctx.fs, target);
+        await ctx.fs.writeFile(target, await ctx.fs.readFile(`${from}/${rel}`));
+      }
+      ctx.emit({ type: "file_changed", path: to, op: "write" });
+      return ok(
+        `Copied ${files.length} file${files.length === 1 ? "" : "s"} from ${relativeToSandbox(ctx.sandbox, from)} to ${relativeToSandbox(ctx.sandbox, to)}`,
+      );
     },
   };
 }

@@ -5,7 +5,7 @@
  * nothing deeper. Change this file only with those owners in the loop.
  */
 import type { AgentFs } from "@00/agent-fs";
-import type { ModelClass, ModelProvider, ToolSchema, ChatMessage, Usage } from "@00/agent-models";
+import type { ImagePart, ModelClass, ModelProvider, ToolSchema, ChatMessage, Usage } from "@00/agent-models";
 
 /**
  * THE VAULT IS PART OF THE SURFACE (contract revision 2026-09-10, finding 4).
@@ -19,18 +19,58 @@ export type { Vault, VaultErrorCode, VaultFile, VaultOptions, VaultStore } from 
 
 export type PermissionTier = "safe" | "confirm" | "high-risk";
 
+/**
+ * THE VAULT, AS A TOOL SEES IT (additive, gap B12 — 2026-09-10).
+ *
+ * Names are readable whether or not the vault is unlocked, because a name is not a secret and an
+ * agent that cannot even say "you have an OPENAI_API_KEY, and your vault is locked" is an agent that
+ * looks broken. `get` answers `null` rather than throwing for both "no such name" and "locked": a
+ * tool asking for a value it cannot have is an ordinary refusal to report, not an exception to crash
+ * on, and the two cases are deliberately indistinguishable to a MODEL (see `resolveSecretArgs`).
+ */
+export interface SecretsAccess {
+  names(): Promise<string[]>;
+  get(name: string): Promise<string | null>;
+}
+
 export interface ToolContext {
   fs: AgentFs;
   /** Workspace-relative sandbox root the tool may touch (`workspace` for the full agent, a thread folder for the light one). */
   sandbox: string;
   signal: AbortSignal;
   emit(event: AgentEvent): void;
+  /** The operator's vault, when the host wired one (additive). Absent = no secrets on this host. */
+  secrets?: SecretsAccess;
+}
+
+/**
+ * What a tool hands back. `images` is additive (gap B10, 2026-09-10): a tool that read a PICTURE
+ * puts the bytes here and the loop carries them to the provider on the tool result message, instead
+ * of a tool inventing a description of an image nobody looked at.
+ */
+export interface ToolResult {
+  output: string;
+  isError?: boolean;
+  images?: ImagePart[];
 }
 
 export interface Tool {
   schema: ToolSchema;
   tier: PermissionTier;
-  run(args: Record<string, unknown>, ctx: ToolContext): Promise<{ output: string; isError?: boolean }>;
+  /**
+   * THE TIER FOR THESE ARGUMENTS, when it is not the same for all of them (additive, gap B17).
+   *
+   * `tier` is what the tool MEANS and stays the answer for most calls. A few tools mean different
+   * things depending on what they are pointed at — deleting a file is `confirm`, deleting a folder
+   * is `high-risk`; a checkout is `confirm`, a FORCED checkout throws away work that was never
+   * committed. Returning a tier per call is how those get the tier they deserve without splitting
+   * one tool into two names the models would then have to choose between.
+   *
+   * It may never LOWER the tier below `tier`: the loop takes the stricter of the two, so a tool
+   * cannot talk its way out of a confirmation.
+   */
+  tierFor?(args: Record<string, unknown>, ctx: ToolContext): PermissionTier | Promise<PermissionTier>;
+  run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }
 
 export type AgentEvent =
@@ -111,6 +151,20 @@ export interface RunResult {
   model?: string;
 }
 
+/**
+ * WHERE A TOOL MAY GO ON THE NETWORK — the first network policy this runtime has (gap B17).
+ *
+ * One field, and it is an ALLOW list rather than a block list, because the only safe default for an
+ * agent in a browser is "nowhere without being asked". A host on it is a `safe` fetch; a host off it
+ * is not refused (an agent that cannot read a page it was given the link to is a poor agent) — it is
+ * a `confirm`, so the person sees the URL before it is dialled. Entries are HOSTS (`example.com`),
+ * matching that host and its subdomains; `*` means every host, which is a thing an owner may
+ * legitimately choose for their own browser and must never be the default.
+ */
+export interface NetworkPolicy {
+  allow: string[];
+}
+
 export interface AgentRuntimeOptions {
   fs: AgentFs;
   providers: ModelProvider[];
@@ -119,6 +173,18 @@ export interface AgentRuntimeOptions {
   askPermission(req: { name: string; tier: PermissionTier; args: Record<string, unknown> }): Promise<PermissionDecision>;
   /** `full` reads the identity files and the operator's memory; `light` reads only `public/` and its thread folder. */
   trust: "full" | "light";
+  /**
+   * The operator's vault, handed to every tool through `ToolContext.secrets` (additive, gap B12).
+   *
+   * It is a runtime option rather than a tool option because the VALUE RESOLUTION is the loop's job,
+   * not a tool's: `${secret:NAME}` in any string argument is replaced immediately before `run`, and
+   * any secret value that comes back in the output is put back to `${secret:NAME}` before the model
+   * or the session file ever sees it. A tool cannot be trusted to do that; the one place that
+   * touches every call can.
+   */
+  secrets?: SecretsAccess;
+  /** Passed to the network tools this runtime registers. Absent = the empty allow list. */
+  network?: NetworkPolicy;
 }
 
 export interface AgentRuntime {

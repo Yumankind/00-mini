@@ -110,3 +110,72 @@ let counter = 0;
 export function call(name: string, args: Record<string, unknown> = {}): ToolCall {
   return { id: `call_${++counter}`, name, arguments: args };
 }
+
+/**
+ * A provider that streams a turn in PIECES — what a real local model does at 10 tokens a second.
+ *
+ * `FakeProvider.stream` is a wrapper around `chat`: it yields the whole answer as one delta, which
+ * proves the loop reads the stream but not that it assembles one. This one yields the pieces the
+ * test wrote, plus any tool calls, plus the closing `done` — so a test can assert on WHAT ARRIVED
+ * WHEN, which is the whole of gap B11.
+ */
+export class ChunkedProvider implements ModelProvider {
+  readonly requests: ChatRequest[] = [];
+  private index = 0;
+  private readonly callsByTurn = new Map<number, ToolCall[]>();
+  /** Throw after this many chunks of the given turn (a stream that dies mid-answer). */
+  private failAt?: { turn: number; afterChunks: number; error: unknown };
+
+  constructor(
+    readonly id: string,
+    private readonly turns: string[][],
+  ) {}
+
+  callsOnTurn(turn: number, calls: ToolCall[]): this {
+    this.callsByTurn.set(turn, calls);
+    return this;
+  }
+
+  failsOnTurn(turn: number, afterChunks: number, error: unknown): this {
+    this.failAt = { turn, afterChunks, error };
+    return this;
+  }
+
+  async models(): Promise<ModelInfo[]> {
+    return [{ id: `${this.id}-strong`, label: this.id, class: "strong", local: true, supportsTools: true }];
+  }
+
+  async readiness(): Promise<{ ready: true }> {
+    return { ready: true };
+  }
+
+  async chat(req: ChatRequest): Promise<ChatResponse> {
+    const turn = this.index;
+    for await (const chunk of this.stream(req)) if (chunk.type === "done") return chunk.response;
+    throw new Error(`ChunkedProvider had no turn ${turn}`);
+  }
+
+  async *stream(req: ChatRequest): AsyncIterable<ChatChunk> {
+    this.requests.push({ ...req, messages: [...req.messages] });
+    const turn = this.index++;
+    const pieces = this.turns[turn] ?? ["(script exhausted)"];
+    const calls = this.callsByTurn.get(turn) ?? [];
+    let emitted = 0;
+    for (const delta of pieces) {
+      if (this.failAt && this.failAt.turn === turn && emitted === this.failAt.afterChunks) throw this.failAt.error;
+      yield { type: "text", delta };
+      emitted++;
+    }
+    if (this.failAt && this.failAt.turn === turn && emitted === this.failAt.afterChunks) throw this.failAt.error;
+    for (const call of calls) yield { type: "tool_call", call };
+    yield {
+      type: "done",
+      response: {
+        // The closing response repeats the text, as a real SSE `done` does. The loop must prefer
+        // what it accumulated, so a test that changes this string would catch a double-append.
+        message: { role: "assistant", content: pieces.join(""), ...(calls.length ? { toolCalls: calls } : {}) },
+        finishReason: calls.length ? "tool_calls" : "stop",
+      },
+    };
+  }
+}

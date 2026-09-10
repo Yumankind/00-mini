@@ -24,7 +24,13 @@
  */
 
 export interface FullRulesOptions {
-  /** What `bash` will actually do here. `none` renders the "wakes on your Mac" sentence. */
+  /**
+   * What a command WOULD do on this host. `none` is the browser's normal answer and, since
+   * 2026-09-10 (gap A5), it also means there is NO `bash` tool registered at all — so the paragraph
+   * it renders names the absence and points at the tools that ARE here, rather than describing a
+   * tool the model can see. `fullTools()` and this option must agree; the runtime passes
+   * `toolNames`, and the paragraph reads it rather than assuming.
+   */
   shell?: "none" | "wasm" | "remote";
   /** True when `workspace/docs/` exists — the same conditional the engine applies (docSlugs()). */
   hasDocs?: boolean;
@@ -34,6 +40,51 @@ export interface FullRulesOptions {
   secretNames?: string[];
   /** Tool names actually registered this run, so the prompt never names one that is absent. */
   toolNames?: string[];
+  /**
+   * True while `workspace/BOOTSTRAP.md` exists and the profile says `onboarded: false` — the
+   * interview of §4.1 has not happened yet (gap B13). Leads the whole prompt, exactly as the
+   * engine's does.
+   */
+  onboarding?: boolean;
+}
+
+/**
+ * THE FIRST-RUN INTERVIEW, mirroring `buildPlatformDoc()`'s onboarding block in
+ * apps/00d/src/platform-doc.ts.
+ *
+ * The engine's version leads the entire prompt with "⚑ FIRST-RUN ONBOARDING — YOUR #1 PRIORITY
+ * RIGHT NOW" and the note that a buried AGENTS.md line was NOT enough: the model would answer "hi"
+ * generically and the interview would never happen. That finding is the reason this is a heading at
+ * the top rather than a bullet in the rules, and it is why the browser's copy keeps the same shape,
+ * the same file list (USER.md / SOUL.md / IDENTITY.md, plus MEMORY.md and public/PERSONA.md) and the
+ * same ending (`finish_onboarding`, exactly once).
+ *
+ * WHERE IT DIVERGES, and why: the engine emits a ```00-ask JSON block that its web UI renders as a
+ * form. This host has no such renderer, so the browser agent ASKS IN THE CONVERSATION — a few
+ * questions at a time, in the person's own language — which is the same interview conducted the way
+ * a chat can conduct it. And there is no "your tools are restricted during setup" sentence, because
+ * they are not: this host has no web search to withhold and no reason to hide `write` from the tool
+ * whose whole job this turn is writing files.
+ */
+export function buildOnboardingRule(): string {
+  return [
+    "# ⚑ FIRST-RUN SETUP — YOUR #1 PRIORITY RIGHT NOW",
+    "You have NOT been set up yet (a BOOTSTRAP.md still exists in your workspace). No matter what the",
+    'person\'s first message says — even just "hi" — do NOT reply as a generic assistant. Run the interview.',
+    "1. Read BOOTSTRAP.md for the specifics.",
+    "2. Interview the person IN THIS CONVERSATION: ask 4–6 short questions, a couple at a time, in their",
+    "   language, and wait for their answers. Cover: their name and how to address them; what they want you",
+    "   for; anything you should know about how they work; the tone and personality they want from you; and",
+    "   a look for your pixel avatar. Keep it brief and human — this is a conversation, not a form.",
+    "3. Write what you learn into your files with your `write` tool, while they are still there to correct",
+    "   you: USER.md (who they are, how to address them, what matters to them), SOUL.md (your persona, tone",
+    "   and boundaries), IDENTITY.md (your name, vibe and emoji), MEMORY.md (facts worth keeping, as an",
+    "   index), and avatar.txt (the short visual description, if they gave one). If anyone beyond this",
+    "   person will ever talk to you, also write public/PERSONA.md — a short public-facing persona with no",
+    "   private detail in it.",
+    "4. Then call `finish_onboarding` exactly once. It deletes BOOTSTRAP.md and marks you as set up.",
+    "   Nothing else ends setup: do not delete BOOTSTRAP.md by hand and do not edit profile.json.",
+  ].join("\n");
 }
 
 /**
@@ -73,12 +124,45 @@ export function buildFullRules(opts: FullRulesOptions = {}): string {
     "  are at this machine — instead of trying another spelling of the same path.",
     "- **Outgoing**: nothing you write leaves this device unless the operator sends it.",
   );
-  if (shell === "none") {
+  /**
+   * Is there a `bash` tool in front of the model THIS RUN? Unlike `has()`, an absent `toolNames`
+   * answers NO here, because that is what `fullTools()` now builds by default (A5). The two
+   * paragraphs below are both true statements; which one is true depends on this, not on `shell`
+   * alone — a host may still register the explaining `bashTool(NoShell)` itself.
+   */
+  const bashRegistered = opts.toolNames?.includes("bash") ?? false;
+  if (shell === "none" && bashRegistered) {
     lines.push(
       "- **Shell**: there is no real shell in this browser. `bash` will tell you so, by name, and the work",
       "  it needs wakes on the operator's Mac or in a cloud computer. Say that plainly instead of pretending",
       "  a command ran, and prefer your file tools — read/write/edit/ls/grep/find do most of what `cat`,",
       "  `sed` and `find` are usually reached for.",
+    );
+  } else if (shell === "none") {
+    // The one paragraph the audit caught the agent contradicting out loud ("executing bash
+    // commands", A5). It now names the absence FIRST, says what you have instead BY THE NAMES THIS
+    // RUN REGISTERED, and only then points at the Mac — in that order, because the model needs the
+    // alternative before it needs the excuse.
+    const fileTools = (opts.toolNames ?? [
+      "read",
+      "write",
+      "edit",
+      "ls",
+      "grep",
+      "find",
+      "stat",
+      "delete",
+      "move",
+      "copy",
+    ]).filter((n) => n !== "bash");
+    lines.push(
+      "- **There is no shell in this browser, and no `bash` tool.** No command can run here — not `npm`,",
+      "  not `git` on the command line, not `python`, not a script you wrote. Never say you ran one, and",
+      "  never say you are about to.",
+      `  What you have instead: ${fileTools.join(", ")}. Between them they do most of what a shell is`,
+      "  usually reached for — reading, writing, moving, searching and checking files.",
+      "  Work that genuinely needs a command line wakes on the operator's Mac (the 00 app) or on a cloud",
+      "  computer: say so plainly, say what you would run, and let them decide.",
     );
   } else if (shell === "wasm") {
     lines.push(
@@ -126,7 +210,19 @@ export function buildFullRules(opts: FullRulesOptions = {}): string {
       `# Vault secret names (values hidden — resolved at use, never printed): ${opts.secretNames.join(", ")}`,
     );
   }
-  return lines.join("\n");
+  if (has("list_secrets")) {
+    lines.push(
+      "",
+      "# Using a secret without seeing it",
+      "`list_secrets` gives you the NAMES. To spend one, put `${secret:NAME}` inside a string argument of",
+      "the tool that needs it — it is filled in at the moment that tool runs and taken back out of anything",
+      "the tool prints, so the value never appears in this conversation. Never ask the person to paste a key",
+      "into the chat; ask them to put it in their vault under a name, then use the name.",
+    );
+  }
+  // The interview LEADS the prompt (see buildOnboardingRule): everything above is the standing rules,
+  // and the standing rules are not what this turn is for.
+  return opts.onboarding ? `${buildOnboardingRule()}\n\n${lines.join("\n")}` : lines.join("\n");
 }
 
 /** The engine's cap on `public/PERSONA.md` (platform-doc.ts::PUBLIC_PERSONA_MAX) — it rides every turn. */

@@ -16,7 +16,7 @@ import {
   type PermissionDecision,
   type Tool,
 } from "../src/index.js";
-import { FakeProvider, call, type ScriptedTurn } from "./fake-provider.js";
+import { ChunkedProvider, FakeProvider, call, type ScriptedTurn } from "./fake-provider.js";
 import { MemoryFs } from "./memory-fs.js";
 
 const now = () => new Date("2026-09-10T10:00:00Z");
@@ -53,7 +53,9 @@ describe("the loop", () => {
 
     expect(result).toMatchObject({ text: "hello there", steps: 1, stopped: "final" });
     expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 2 });
-    expect(events.map((e) => e.type)).toEqual(["model_started", "model_completed", "agent_message"]);
+    // The loop STREAMS (gap B11): the delta goes out while the answer is being written, and the
+    // whole message closes it.
+    expect(events.map((e) => e.type)).toEqual(["model_started", "agent_delta", "model_completed", "agent_message"]);
     expect(events.at(-1)).toMatchObject({ type: "agent_message", final: true });
   });
 
@@ -68,11 +70,13 @@ describe("the loop", () => {
     expect(result).toMatchObject({ steps: 2, stopped: "final", text: "it says: the contents" });
     expect(events.map((e) => e.type)).toEqual([
       "model_started",
+      "agent_delta",
       "model_completed",
       "agent_message",
       "tool_started",
       "tool_completed",
       "model_started",
+      "agent_delta",
       "model_completed",
       "agent_message",
     ]);
@@ -414,7 +418,11 @@ describe("wiring", () => {
     const { runtime, events } = harness({ script: [{ text: "sponsored answer", footer: "answered thanks to ACME" }] });
     await runtime.run({ prompt: "x" });
     expect(events[0]).toMatchObject({ type: "model_started", providerId: "local" });
-    expect(events[1]).toMatchObject({ type: "model_completed", providerId: "local", footer: "answered thanks to ACME" });
+    expect(events.find((e) => e.type === "model_completed")).toMatchObject({
+      type: "model_completed",
+      providerId: "local",
+      footer: "answered thanks to ACME",
+    });
   });
 
   it("sums usage across steps, cents included", async () => {
@@ -518,7 +526,7 @@ describe("the run's receipt", () => {
 });
 
 describe("agent_message and agent_delta", () => {
-  it("emits ONE whole message per assistant turn, `final: true` on each", async () => {
+  it("emits the deltas as they arrive and then ONE whole message per assistant turn", async () => {
     const { runtime, events } = harness({
       script: [{ text: "looking", toolCalls: [call("ls")] }, { text: "here it is" }],
     });
@@ -528,7 +536,50 @@ describe("agent_message and agent_delta", () => {
       { type: "agent_message", text: "looking", final: true },
       { type: "agent_message", text: "here it is", final: true },
     ]);
-    // The loop buffers (`chat()`, not `stream()`), so there is nothing to stream and it says nothing.
+    // This test used to assert the opposite ("the loop buffers, so it says nothing"). The loop now
+    // takes `stream()` (gap B11), so each message arrives twice by design: in pieces, then whole. A
+    // consumer REPLACES its accumulation with the whole one rather than appending it.
+    const deltas = events.filter((e) => e.type === "agent_delta") as { text: string }[];
+    expect(deltas.map((d) => d.text)).toEqual(["looking", "here it is"]);
+    const order = events.map((e) => e.type);
+    expect(order.indexOf("agent_delta")).toBeLessThan(order.indexOf("agent_message"));
+  });
+
+  it("streams a multi-chunk answer in pieces and closes it with the joined whole", async () => {
+    const chunked = new ChunkedProvider("local", [["Hel", "lo ", "there"]]);
+    const { runtime, events } = harness({ providers: [chunked] });
+    const result = await runtime.run({ prompt: "hi" });
+
+    expect((events.filter((e) => e.type === "agent_delta") as { text: string }[]).map((d) => d.text)).toEqual([
+      "Hel",
+      "lo ",
+      "there",
+    ]);
+    expect(events.at(-1)).toEqual({ type: "agent_message", text: "Hello there", final: true });
+    expect(result.text).toBe("Hello there");
+  });
+
+  it("assembles tool calls out of the stream, not out of the closing response", async () => {
+    const chunked = new ChunkedProvider("local", [
+      ["one moment"],
+      ["done"],
+    ]);
+    chunked.callsOnTurn(0, [call("ls")]);
+    const { runtime, provider } = harness({ providers: [chunked] });
+    const result = await runtime.run({ prompt: "list it" });
+    expect(result.steps).toBe(2);
+    expect(chunked.requests[1].messages.at(-1)).toMatchObject({ role: "tool", name: "ls" });
+    expect(provider.requests).toHaveLength(0); // the harness's own provider was not used
+  });
+
+  it("falls back to chat() for a provider that has no stream at all", async () => {
+    const noStream = new FakeProvider("legacy", [{ text: "buffered" }]);
+    // A provider written against an older copy of the interface, or a façade that never had one.
+    (noStream as { stream?: unknown }).stream = undefined;
+    const { runtime, events } = harness({ providers: [noStream] });
+    const result = await runtime.run({ prompt: "hi" });
+    expect(result.text).toBe("buffered");
     expect(events.some((e) => e.type === "agent_delta")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "agent_message", text: "buffered" });
   });
 });

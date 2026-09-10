@@ -23,8 +23,24 @@
  *    person said no, and the correct next move is to say so, not to try a different spelling.
  * 4. ABORT IS CHECKED BETWEEN EVERY STEP AND PASSED INTO EVERY TOOL. `abort()` mid-tool works
  *    because the tool holds the signal, and the loop stops the moment it returns.
+ *
+ * TWO MORE, ADDED 2026-09-10 (gaps B11 and B16), and both are about the same instant — the first
+ * token:
+ *
+ * 5. THE LOOP STREAMS. It calls `provider.stream()` and emits `agent_delta` per chunk, then ONE
+ *    whole `agent_message` when the turn closes. `chat()` is used only by a provider that has no
+ *    `stream` at all. A 10 tok/s local model used to show a blank pane for a minute and then a
+ *    paragraph; the answer is now legible as it is written, which is the difference between "is
+ *    this broken?" and "it is thinking".
+ * 6. A DEAD CREDENTIAL FALLS THROUGH TO THE NEXT BRAIN — BEFORE THE FIRST TOKEN, NEVER AFTER. If a
+ *    provider refuses with `credential` or `insufficient_credits` (`isSwitchable` in
+ *    @00/agent-models) and nothing has been emitted, the loop walks to the next ready provider of
+ *    the same class and emits `model_started` AGAIN, so the UI's chip is never lying about who is
+ *    answering. Once a delta is out, an error is an error: half an answer from one model followed by
+ *    a whole answer from another is not a fallback, it is a corrupted turn. (Same rule, same
+ *    sentence, as the models router's own `stream`.)
  */
-import type { ChatMessage, ChatResponse, ModelProvider, ToolCall, Usage } from "@00/agent-models";
+import { isSwitchable, type ChatMessage, type ChatResponse, type ImagePart, type ModelProvider, type ToolCall, type Usage } from "@00/agent-models";
 import type { AgentFs } from "@00/agent-fs";
 import type {
   AgentEvent,
@@ -43,6 +59,7 @@ import { ModelRouter } from "./model-router.js";
 import { PermissionManager } from "./permissions.js";
 import { SessionManager } from "./sessions.js";
 import { ToolRegistry } from "./tool-registry.js";
+import { redact, resolveSecretArgs } from "./secrets.js";
 import { SeenFiles } from "./tools-fs.js";
 import { MAX_OUTPUT_CHARS, capToolOutput } from "./truncate.js";
 
@@ -80,6 +97,12 @@ export type AgentRuntimeOptionsExt = AgentRuntimeOptions & RuntimeExtensions;
 function nonEmpty(providers: ModelProvider[]): ModelProvider[] {
   if (!providers.length) throw new Error("a runtime needs at least one ModelProvider");
   return providers.slice();
+}
+
+/** Tier order, so `tierFor` can raise a tool's tier for one call and never lower it. */
+const TIER_ORDER: Record<PermissionTier, number> = { safe: 0, confirm: 1, "high-risk": 2 };
+function strictest(a: PermissionTier, b: PermissionTier): PermissionTier {
+  return TIER_ORDER[b] > TIER_ORDER[a] ? b : a;
 }
 
 function usageZero(): Usage {
@@ -216,22 +239,50 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
                 promptChars: run.prompt.length,
                 trust: opts.trust,
               });
-        const { provider, model, brainClass } = await router.pick(run.model, wanted);
-        answeredBy = { providerId: provider.id, model };
-        emit({ type: "model_started", providerId: provider.id, model, brainClass });
-        let response: ChatResponse;
-        try {
-          response = await provider.chat({
-            messages,
-            tools: schemas.length ? schemas : undefined,
-            model,
-            temperature: opts.temperature,
-            maxTokens: opts.maxTokens,
-            signal,
-          });
-        } catch (err) {
-          if (signal.aborted) return finish("aborted");
-          emit({ type: "error", message: `model failed: ${(err as Error).message}` });
+        /**
+         * Rule 6: walk the candidates, not one pick. `walk()` yields lazily, so a run where the
+         * first brain answers costs exactly what `pick()` cost before this existed.
+         */
+        const walker = router.walk(run.model, wanted);
+        let attempt = await walker.next();
+        let response: ChatResponse | undefined;
+        let provider: ModelProvider | undefined;
+        let model: string | undefined;
+        while (!attempt.done) {
+          ({ provider, model } = attempt.value);
+          answeredBy = { providerId: provider.id, model };
+          emit({ type: "model_started", providerId: provider.id, model, brainClass: attempt.value.brainClass });
+          /** Set the instant a token is emitted: after this, this turn belongs to this provider. */
+          let emitted = false;
+          try {
+            response = await callModel(provider, {
+              messages,
+              tools: schemas.length ? schemas : undefined,
+              model,
+              signal,
+              onDelta: (delta) => {
+                emitted = true;
+                emit({ type: "agent_delta", text: delta });
+              },
+            });
+            break;
+          } catch (err) {
+            if (signal.aborted) return finish("aborted");
+            if (!emitted && isSwitchable(err)) {
+              const next = await walker.next();
+              if (!next.done) {
+                attempt = next;
+                continue;
+              }
+            }
+            emit({ type: "error", message: `model failed: ${(err as Error).message}` });
+            return finish("error");
+          }
+        }
+        if (!response || !provider) {
+          // `walk()` always yields at least one candidate, so this is unreachable; it is here so the
+          // types below need no `!` and a future change to the router cannot silently skip a turn.
+          emit({ type: "error", message: "model failed: no provider answered" });
           return finish("error");
         }
         usage.value = addUsage(usage.value, response.usage);
@@ -248,10 +299,10 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
         messages.push({ role: "assistant", content: text, ...(calls.length ? { toolCalls: calls } : {}) });
         if (text) {
           finalText = text;
-          // ONE whole message per assistant turn (contract revision 2026-09-10). `chat()` buffers, so
-          // there is nothing to stream and no `agent_delta` is emitted here; the day the loop takes
-          // the provider's `stream()` instead, the deltas go out as they arrive and THIS event still
-          // closes the message with the whole of it.
+          // ONE whole message per assistant turn, AFTER its deltas and repeating them (contract
+          // revision 2026-09-10): a consumer that accumulated deltas REPLACES its accumulation with
+          // this text rather than appending it. That is what makes a re-render after a reconnect,
+          // or a session replay, land on the same paragraph as the live one.
           emit({ type: "agent_message", text, final: true });
         }
         if (!calls.length) return finish("final");
@@ -260,8 +311,17 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
         for (const call of calls) {
           if (signal.aborted) return finish("aborted");
           const result = await runToolCall(call, { workspace, sessionId, signal });
+          // The SESSION FILE gets the text only: pi's transcript format has no place for bytes, and
+          // a resumed session that re-sent a four-megabyte picture on every turn would be worse than
+          // one that carries the caption and the path the picture came from (gap B10).
           await sessions.appendToolResult(call, result.output, result.isError);
-          messages.push({ role: "tool", content: result.output, toolCallId: call.id, name: call.name });
+          messages.push({
+            role: "tool",
+            content: result.output,
+            toolCallId: call.id,
+            name: call.name,
+            ...(result.images ? { images: result.images } : {}),
+          });
         }
       }
       return finish("max_steps");
@@ -271,17 +331,98 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
     }
   }
 
+  /**
+   * ONE MODEL CALL, streamed when the provider can stream (rule 5).
+   *
+   * The assembly rule, stated because a stream can say the same thing twice: the TEXT is what the
+   * deltas built when any arrived, and the closing `done` response's content only when none did (a
+   * provider whose `stream` is a wrapper around `chat` yields no text chunk before its `done`). Tool
+   * calls are taken from the stream for the same reason and fall back the same way. Everything else
+   * — usage, footer, finishReason — comes from `done`, which is the only chunk that carries them.
+   *
+   * `stream` is REQUIRED by `ModelProvider`, and this still checks: a fake, a façade or a provider
+   * written against an older copy of the interface is a real thing to meet, and falling back to
+   * `chat()` costs one `typeof`.
+   */
+  async function callModel(
+    provider: ModelProvider,
+    req: {
+      messages: ChatMessage[];
+      tools?: ReturnType<ToolRegistry["schemas"]>;
+      model?: string;
+      signal: AbortSignal;
+      onDelta(delta: string): void;
+    },
+  ): Promise<ChatResponse> {
+    const request = {
+      messages: req.messages,
+      tools: req.tools,
+      model: req.model,
+      temperature: opts.temperature,
+      maxTokens: opts.maxTokens,
+      signal: req.signal,
+    };
+    if (typeof provider.stream !== "function") return provider.chat(request);
+
+    let text = "";
+    let sawText = false;
+    const calls: ToolCall[] = [];
+    let done: ChatResponse | undefined;
+    for await (const chunk of provider.stream(request)) {
+      if (chunk.type === "text") {
+        if (!chunk.delta) continue;
+        sawText = true;
+        text += chunk.delta;
+        req.onDelta(chunk.delta);
+      } else if (chunk.type === "tool_call") {
+        calls.push(chunk.call);
+      } else {
+        done = chunk.response;
+      }
+    }
+    const toolCalls = calls.length ? calls : (done?.message.toolCalls ?? []);
+    return {
+      message: {
+        role: "assistant",
+        content: sawText ? text : (done?.message.content ?? ""),
+        ...(toolCalls.length ? { toolCalls } : {}),
+      },
+      usage: done?.usage,
+      footer: done?.footer,
+      finishReason: done?.finishReason ?? (toolCalls.length ? "tool_calls" : "stop"),
+    };
+  }
+
   async function runToolCall(
     call: ToolCall,
     ctx: { workspace: string; sessionId: string; signal: AbortSignal },
-  ): Promise<{ output: string; isError: boolean }> {
+  ): Promise<{ output: string; isError: boolean; images?: ImagePart[] }> {
     const tool: Tool | undefined = registry.get(call.name);
     if (!tool) {
       const message = `No tool named "${call.name}". Available: ${registry.names().join(", ")}`;
       emit({ type: "tool_failed", callId: call.id, name: call.name, error: message });
       return { output: message, isError: true };
     }
-    const tier: PermissionTier = tool.tier;
+    const toolCtx: ToolContext = {
+      fs,
+      sandbox: ctx.workspace,
+      signal: ctx.signal,
+      emit,
+      ...(opts.secrets ? { secrets: opts.secrets } : {}),
+    };
+    /**
+     * The tier for THESE arguments, never lower than the tool's own (api.ts, `tierFor`). A
+     * `tierFor` that throws is treated as "the declared tier", because a tool that cannot decide is
+     * not thereby allowed to skip the question.
+     */
+    let tier: PermissionTier = tool.tier;
+    if (tool.tierFor) {
+      try {
+        tier = strictest(tier, await tool.tierFor(call.arguments ?? {}, toolCtx));
+      } catch {
+        /* the declared tier stands */
+      }
+    }
     const scope = { tool: call.name, origin, workspace: ctx.workspace, sessionId: ctx.sessionId };
     const outcome = await permissions.decide(scope, tier, async () => {
       emit({ type: "permission_requested", callId: call.id, name: call.name, tier, args: call.arguments });
@@ -296,17 +437,30 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
       return { output: message, isError: true };
     }
 
+    /**
+     * `${secret:NAME}` is resolved HERE, between the permission and the run (secrets.ts).
+     *
+     * The event above and the session file carry the PLACEHOLDER — the person confirming the call
+     * sees `${secret:STRIPE_KEY}`, not the key — and only `tool.run` sees the value. On the way back
+     * `redact` puts every resolved value back to its placeholder, so a tool that echoes its own
+     * arguments cannot smuggle the secret into the transcript.
+     */
     emit({ type: "tool_started", callId: call.id, name: call.name, args: call.arguments });
     const started = now().getTime();
-    const toolCtx: ToolContext = { fs, sandbox: ctx.workspace, signal: ctx.signal, emit };
+    const resolved = await resolveSecretArgs(call.arguments ?? {}, opts.secrets);
+    if (resolved.error) {
+      emit({ type: "tool_failed", callId: call.id, name: call.name, error: resolved.error });
+      return { output: resolved.error, isError: true };
+    }
     try {
-      const result = await tool.run(call.arguments ?? {}, toolCtx);
-      const output = capToolOutput(result.output ?? "", maxToolOutput);
+      const result = await tool.run(resolved.args, toolCtx);
+      const output = capToolOutput(redact(result.output ?? "", resolved.used), maxToolOutput);
       emit({ type: "tool_completed", callId: call.id, name: call.name, output, ms: now().getTime() - started });
-      return { output, isError: result.isError === true };
+      return { output, isError: result.isError === true, ...(result.images?.length ? { images: result.images } : {}) };
     } catch (err) {
-      // Rule 2: the model sees what went wrong and gets another turn.
-      const message = (err as Error).message ?? String(err);
+      // Rule 2: the model sees what went wrong and gets another turn — with any secret value taken
+      // back out of the message, since a thrown error loves to quote the argument that caused it.
+      const message = redact((err as Error).message ?? String(err), resolved.used);
       emit({ type: "tool_failed", callId: call.id, name: call.name, error: message });
       return { output: `${call.name} failed: ${message}`, isError: true };
     }

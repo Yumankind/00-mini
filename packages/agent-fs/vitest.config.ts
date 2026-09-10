@@ -17,7 +17,9 @@ export default defineConfig({
       // Floors from the first commit (docs/HANDOFF-infinite-agent.md §10), set just under the
       // measured numbers: a new module under src/ with no test lands in the denominator at 0% and
       // fails the gate, which is the whole job they do.
-      thresholds: { statements: 96, branches: 91, functions: 97, lines: 96 },
+      // Raised 2026-09-10 with git-ops.ts (the prose git layer and the dependency-free unified
+      // diff): measured 98.9 / 93.0 / 100 / 98.9 on macOS with 130 tests.
+      thresholds: { statements: 97, branches: 92, functions: 99, lines: 97 },
     },
   },
 });

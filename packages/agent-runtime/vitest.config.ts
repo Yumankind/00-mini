@@ -15,10 +15,13 @@ export default defineConfig({
       include: ["src/**/*.ts"],
       reporter: ["text-summary"],
       // The ratchet of docs/testing.md, from the package's first commit: floors ~1-2 points under the
-      // measured value (99.1 / 94.0 / 98.8 / 99.1 on 2026-09-10, macOS). Floors only ever go up — a
-      // change that drops below one is fixed or reverted, never accommodated by lowering the number.
-      // The slack absorbs the Linux leg, which takes the other side of every platform gate.
-      thresholds: { statements: 97, lines: 97, branches: 92, functions: 97 },
+      // measured value. Floors only ever go up — a change that drops below one is fixed or reverted,
+      // never accommodated by lowering the number. The slack absorbs the Linux leg, which takes the
+      // other side of every platform gate.
+      // Raised 2026-09-10 with the gap-audit round (B9–B17): measured 99.1 / 93.3 / 99.1 / 99.1 on
+      // macOS with 341 tests. Branches stays at 92 rather than 93 — the new modules are full of
+      // "and when the host wired none of this" arms that a browser exercises and a test does not.
+      thresholds: { statements: 98, lines: 98, branches: 92, functions: 98 },
     },
   },
 });

@@ -58,13 +58,19 @@ export { ToolRegistry } from "./tool-registry.js";
 export { LIGHT_TOOL_NAMES, fullTools, lightTools } from "./tools.js";
 export type { FullToolsOptions, LightToolsOptions } from "./tools.js";
 export {
+  IMAGE_MAX_BYTES,
+  IMAGE_MIME,
   SeenFiles,
+  copyTool,
+  deleteTool,
   editTool,
   findTool,
   grepTool,
   lsTool,
+  moveTool,
   readPublicTool,
   readTool,
+  statTool,
   writeTool,
 } from "./tools-fs.js";
 export { NoShell, bashTool } from "./tools-shell.js";
@@ -73,6 +79,31 @@ export { gitTools } from "./tools-git.js";
 export type { GitOps } from "./tools-git.js";
 export { noteDate, rememberTool } from "./tools-memory.js";
 
+// The gap-audit round of 2026-09-10 (B9–B17): the vault reaching tools, retrieval with no model,
+// the first network policy, the first-run interview, and the honest tool set.
+export { HTTP_GET_MAX_BYTES, hostAllowed, httpGetTool } from "./tools-net.js";
+export type { HttpGetOptions } from "./tools-net.js";
+export { listSecretsTool } from "./tools-secrets.js";
+export { placeholderFor, redact, resolveSecretArgs, secretNamesIn } from "./secrets.js";
+export type { ResolvedArgs } from "./secrets.js";
+export { BOOTSTRAP_FILE, PROFILE_PATH, finishOnboardingTool, onboardingState } from "./tools-onboarding.js";
+export type { OnboardingState, OnboardingToolOptions } from "./tools-onboarding.js";
+export { searchWorkspaceTool } from "./tools-search.js";
+export { Bm25Index, tokens } from "./retrieval/bm25.js";
+export type { Bm25Document, Bm25Result } from "./retrieval/bm25.js";
+export {
+  INDEX_MAX_FILES,
+  INDEX_MAX_FILE_BYTES,
+  createWorkspaceIndex,
+} from "./retrieval/workspace-index.js";
+export type {
+  WorkspaceChunk,
+  WorkspaceHit,
+  WorkspaceIndex,
+  WorkspaceIndexOptions,
+  WorkspaceIndexStats,
+} from "./retrieval/workspace-index.js";
+
 export {
   IDENTITY_FILES,
   MEMORY_INDEX_FILE,
@@ -80,6 +111,7 @@ export {
   WORKSPACE_NOTES,
   buildFullRules,
   buildLightRules,
+  buildOnboardingRule,
 } from "./prompt-text.js";
 export type { FullRulesOptions, LightRulesOptions } from "./prompt-text.js";
 

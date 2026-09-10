@@ -66,6 +66,12 @@ export const READ_ONLY_TOOL_NAMES: readonly string[] = [
   "grep",
   "find",
   "read_public",
+  // Added with the tool round of 2026-09-10 (B9, B14). Both only look: `stat` answers "does this
+  // exist and how big is it", `search_workspace` ranks passages the agent has already written.
+  // `list_secrets`, `http_get` and the four mutating file tools are deliberately NOT here — one
+  // reads the vault's shape, one leaves the page, and the rest change the disk.
+  "stat",
+  "search_workspace",
   "site_pages",
   "site_search",
   "site_grep",

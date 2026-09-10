@@ -208,3 +208,67 @@ describe("git tools", () => {
     expect(await tools.git_commit.run({ message: "   " }, ctx)).toMatchObject({ isError: true });
   });
 });
+
+describe("git branches and checkout (gap B8)", () => {
+  function branchingOps() {
+    const calls: { name: string; args: unknown }[] = [];
+    const record = (name: string) => async (args: unknown) => {
+      calls.push({ name, args });
+      return `${name} ok`;
+    };
+    const ops: GitOps = {
+      gitStatus: record("gitStatus"),
+      gitLog: record("gitLog"),
+      gitDiff: record("gitDiff"),
+      gitAdd: record("gitAdd"),
+      gitCommit: record("gitCommit"),
+      gitBranch: record("gitBranch"),
+      gitCheckout: record("gitCheckout"),
+    };
+    return { ops, calls };
+  }
+
+  it("appears only when the ops object implements it — a cut-down host gets six tools, not eight", () => {
+    const withBranches = gitTools(branchingOps().ops).map((t) => t.schema.name);
+    expect(withBranches).toContain("git_branch");
+    expect(withBranches).toContain("git_checkout");
+
+    const readOnlyOps: GitOps = {
+      gitStatus: async () => "",
+      gitLog: async () => "",
+      gitDiff: async () => "",
+      gitAdd: async () => "",
+      gitCommit: async () => "",
+    };
+    const names = gitTools(readOnlyOps).map((t) => t.schema.name);
+    expect(names).not.toContain("git_branch");
+    expect(names).not.toContain("git_checkout");
+  });
+
+  it("lists as `safe`, creates as `confirm`", async () => {
+    const { ops, calls } = branchingOps();
+    const branch = gitTools(ops).find((t) => t.schema.name === "git_branch")!;
+    const { ctx } = ctxFor(new MemoryFs());
+    expect(branch.tierFor!({}, ctx)).toBe("safe");
+    expect(branch.tierFor!({ create: "feature" }, ctx)).toBe("confirm");
+    expect(branch.tierFor!({ create: "  " }, ctx)).toBe("safe");
+
+    await branch.run({}, ctx);
+    await branch.run({ create: "feature", checkout: true }, ctx);
+    expect(calls[0].args).toEqual({ dir: "workspace", checkout: false });
+    expect(calls[1].args).toEqual({ dir: "workspace", create: "feature", checkout: true });
+  });
+
+  it("makes a FORCED checkout `high-risk` — the first shipped use of that tier", async () => {
+    const { ops, calls } = branchingOps();
+    const checkout = gitTools(ops).find((t) => t.schema.name === "git_checkout")!;
+    const { ctx } = ctxFor(new MemoryFs());
+    expect(checkout.tierFor!({ ref: "main" }, ctx)).toBe("confirm");
+    expect(checkout.tierFor!({ ref: "main", force: true }, ctx)).toBe("high-risk");
+    expect(checkout.schema.description).toContain("DESTROYS");
+
+    await checkout.run({ ref: "feature", force: true }, ctx);
+    expect(calls[0].args).toEqual({ dir: "workspace", ref: "feature", force: true });
+    expect(await checkout.run({ ref: "  " }, ctx)).toMatchObject({ isError: true });
+  });
+});

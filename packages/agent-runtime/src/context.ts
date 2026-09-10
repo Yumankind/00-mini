@@ -27,6 +27,7 @@ import {
   type LightRulesOptions,
 } from "./prompt-text.js";
 import { normalizeSandbox } from "./sandbox.js";
+import { onboardingState } from "./tools-onboarding.js";
 
 /** Identity files ride EVERY turn, so one that grew to a novel would tax every prompt. */
 export const IDENTITY_FILE_MAX_CHARS = 16000;
@@ -44,6 +45,10 @@ export interface ContextManagerOptions {
   /** Full agent only. */
   shell?: FullRulesOptions["shell"];
   secretNames?: string[];
+  /** Force the first-run interview on or off; read from the workspace when absent (see fullBlocks). */
+  onboarding?: boolean;
+  /** Where `profile.json` lives, relative to the agent root. Only a test moves it. */
+  profilePath?: string;
   /** Light agent only. */
   light?: Omit<LightRulesOptions, "persona" | "toolNames" | "nowIso">;
   /** Appended verbatim at the end (the PWA's own additions, a skill's preamble). */
@@ -72,6 +77,16 @@ export class ContextManager {
 
   private async fullBlocks(): Promise<string[]> {
     const docSlugs = await this.docSlugs();
+    /**
+     * WHETHER THE INTERVIEW STILL HAS TO HAPPEN is read off the disk every turn, not cached and not
+     * passed in (gap B13). Two files have to agree — `workspace/BOOTSTRAP.md` exists AND
+     * `profile.json` says `onboarded: false` — and both change during the run that finishes setup,
+     * so the very next turn stops leading with the interview without anything having to invalidate
+     * anything. A host may still force it either way with `onboarding`, which is what a test does.
+     */
+    const onboarding =
+      this.opts.onboarding ??
+      (await onboardingState(this.fs, this.sandbox, this.opts.profilePath).catch(() => ({ pending: false }))).pending;
     const blocks = [
       buildFullRules({
         shell: this.opts.shell,
@@ -79,6 +94,7 @@ export class ContextManager {
         docSlugs,
         secretNames: this.opts.secretNames,
         toolNames: this.opts.toolNames,
+        onboarding,
       }),
     ];
     for (const name of IDENTITY_FILES) {

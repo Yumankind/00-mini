@@ -180,3 +180,74 @@ export function gitPush(): Promise<never> {
 export function gitPull(): Promise<never> {
   return Promise.reject(new GitRemoteUnavailableError("pull"));
 }
+
+// ── Branches ────────────────────────────────────────────────────────────────────────────────────
+//
+// Added 2026-09-10 with the git tools (gap B8). They are here rather than in git-ops.ts for the
+// reason the header gives: this file is the vocabulary over isomorphic-git, and a branch is a
+// primitive, not a policy. The policy — which of these an agent may call, and at what tier — is the
+// runtime's.
+
+/** Local branch names, plus which one HEAD is on (`null` in a repo with no commits yet). */
+export async function gitBranches(fs: AgentFs, root: string): Promise<{ current: string | null; branches: string[] }> {
+  const branches = await isogit.listBranches(ctx(fs, root));
+  const current = (await isogit.currentBranch({ ...ctx(fs, root), fullname: false })) ?? null;
+  return { current, branches: [...branches].sort() };
+}
+
+/** `git branch <name>` — and, when `checkout` is set, `git switch -c <name>`. */
+export async function gitCreateBranch(
+  fs: AgentFs,
+  root: string,
+  name: string,
+  opts: { checkout?: boolean } = {},
+): Promise<void> {
+  await isogit.branch({ ...ctx(fs, root), ref: name, checkout: opts.checkout === true });
+}
+
+/**
+ * `git checkout <ref>`.
+ *
+ * `force` is passed through UNCHANGED and is exactly as dangerous as it is in git: isomorphic-git
+ * overwrites files that differ from the target, so uncommitted work in the working tree is gone.
+ * That is why the tool above it is the one place this package's callers meet a `high-risk` tier.
+ */
+export async function gitCheckout(
+  fs: AgentFs,
+  root: string,
+  ref: string,
+  opts: { force?: boolean } = {},
+): Promise<void> {
+  await isogit.checkout({ ...ctx(fs, root), ref, force: opts.force === true });
+}
+
+/** The bytes of `filepath` as HEAD has them; `null` when HEAD has no such file (or no HEAD at all). */
+export async function gitReadHeadFile(fs: AgentFs, root: string, filepath: string): Promise<Uint8Array | null> {
+  try {
+    const oid = await isogit.resolveRef({ ...ctx(fs, root), ref: "HEAD" });
+    const { blob } = await isogit.readBlob({ ...ctx(fs, root), oid, filepath });
+    return blob;
+  } catch {
+    // A missing file, a missing HEAD and a path that is a directory in HEAD are all "HEAD does not
+    // have this file as a blob", which is the one answer a diff needs.
+    return null;
+  }
+}
+
+/** The bytes of `filepath` as the INDEX has them (`git add`ed), or `null` when it is not staged. */
+export async function gitReadStagedFile(fs: AgentFs, root: string, filepath: string): Promise<Uint8Array | null> {
+  const found = await isogit.walk({
+    ...ctx(fs, root),
+    trees: [isogit.STAGE()],
+    map: async (path, entries) => {
+      if (path !== filepath) return undefined;
+      const entry = entries?.[0];
+      if (!entry || (await entry.type()) !== "blob") return undefined;
+      return entry.oid();
+    },
+  });
+  const oid = (found as string[])[0];
+  if (!oid) return null;
+  const { blob } = await isogit.readBlob({ ...ctx(fs, root), oid });
+  return blob;
+}

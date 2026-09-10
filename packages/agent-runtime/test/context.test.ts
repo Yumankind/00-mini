@@ -78,11 +78,25 @@ describe("full-trust context", () => {
 
   it("says there is no shell when there is none, and names a WASM one when there is", async () => {
     const none = await new ContextManager(fullAgent(), { trust: "full", sandbox: "workspace", now }).system();
-    expect(none).toContain("there is no real shell in this browser");
+    // A5: the paragraph now names the ABSENCE of the tool, not what the tool would say — there is no
+    // `bash` registered when there is no shell (tools.ts), and the prompt must not imply one.
+    expect(none).toContain("There is no shell in this browser, and no `bash` tool.");
+    expect(none).toContain("What you have instead:");
 
     const wasm = await new ContextManager(fullAgent(), { trust: "full", sandbox: "workspace", shell: "wasm", now }).system();
     expect(wasm).toContain("WASM shell in this tab");
-    expect(wasm).not.toContain("there is no real shell");
+    expect(wasm).not.toContain("There is no shell in this browser");
+
+    // A host that registers the explaining stub itself gets the OLD paragraph, because with a
+    // `bash` tool on the table "there is no bash tool" would be the false half of the sentence.
+    const stub = await new ContextManager(fullAgent(), {
+      trust: "full",
+      sandbox: "workspace",
+      toolNames: ["read", "bash"],
+      now,
+    }).system();
+    expect(stub).toContain("there is no real shell in this browser");
+    expect(stub).not.toContain("no `bash` tool");
   });
 
   it("names secrets and never values, and names only the tools this run registered", async () => {

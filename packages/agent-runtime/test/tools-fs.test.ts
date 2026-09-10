@@ -8,11 +8,14 @@ import {
   fullTools,
   grepTool,
   lightTools,
+  NoShell,
+  bashTool,
   lsTool,
   readPublicTool,
   readTool,
   writeTool,
   type AgentEvent,
+  type Shell,
   type Tool,
   type ToolContext,
 } from "../src/index.js";
@@ -312,9 +315,54 @@ describe("read_public", () => {
 });
 
 describe("the two tool sets", () => {
-  it("the full set carries the engine's names", () => {
+  it("the full set carries the engine's names, plus the four with no pi twin", () => {
     const names = fullTools().map((t) => t.schema.name);
-    expect(names).toEqual(["read", "write", "edit", "ls", "grep", "find", "bash", "remember"]);
+    expect(names).toEqual([
+      "read",
+      "write",
+      "edit",
+      "ls",
+      "grep",
+      "find",
+      "stat",
+      "delete",
+      "move",
+      "copy",
+      "remember",
+      "finish_onboarding",
+    ]);
+  });
+
+  it("registers `bash` ONLY when a real shell was passed (A5)", () => {
+    const has = (tools: Tool[]) => tools.some((t) => t.schema.name === "bash");
+    expect(has(fullTools())).toBe(false);
+    // NoShell is not a shell: it is the sentence a shell would have said, and a registered tool is a
+    // claim of ability the agent was caught repeating.
+    expect(has(fullTools({ shell: NoShell }))).toBe(false);
+    const wasm: Shell = { available: true, label: "WASM shell", async run() { return { output: "", exitCode: 0 }; } };
+    expect(has(fullTools({ shell: wasm }))).toBe(true);
+  });
+
+  it("adds retrieval, secrets and the network tool only when the host wires each one", () => {
+    const bare = fullTools().map((t) => t.schema.name);
+    expect(bare).not.toContain("search_workspace");
+    expect(bare).not.toContain("list_secrets");
+    expect(bare).not.toContain("http_get");
+
+    const wired = fullTools({
+      fs: new MemoryFs(),
+      secrets: { async names() { return []; }, async get() { return null; } },
+      network: { allow: [] },
+    }).map((t) => t.schema.name);
+    expect(wired).toContain("search_workspace");
+    expect(wired).toContain("list_secrets");
+    expect(wired).toContain("http_get");
+
+    // `index: false` is the way to say "no retrieval" out loud, and `onboarding: false` the way to
+    // leave the first-run tool out of a host that never scaffolds one.
+    const off = fullTools({ fs: new MemoryFs(), index: false, onboarding: false }).map((t) => t.schema.name);
+    expect(off).not.toContain("search_workspace");
+    expect(off).not.toContain("finish_onboarding");
   });
 
   it("git tools appear only when a GitOps is injected", () => {
@@ -342,7 +390,11 @@ describe("the two tool sets", () => {
     expect(byName.get("read")).toBe("safe");
     expect(byName.get("write")).toBe("confirm");
     expect(byName.get("edit")).toBe("confirm");
-    expect(byName.get("bash")).toBe("confirm");
     expect(byName.get("remember")).toBe("confirm");
+    expect(byName.get("stat")).toBe("safe");
+    for (const mutating of ["delete", "move", "copy", "finish_onboarding"]) {
+      expect(byName.get(mutating)).toBe("confirm");
+    }
+    expect(bashTool().tier).toBe("confirm");
   });
 });
