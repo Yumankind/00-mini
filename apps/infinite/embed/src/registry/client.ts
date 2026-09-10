@@ -60,6 +60,8 @@ export type RefusalCode =
   | "bad_link_pub"
   | "ref_registered"
   | "ip_limited"
+  // §5.4 the re-issued claim code
+  | "already_claimed"
   // §5.6 devices
   | "origin_not_allowed"
   | "bad_public_key"
@@ -100,6 +102,7 @@ export interface Refusal {
 
 const KNOWN_CODES = new Set<string>([
   "origin_required", "bad_request", "bad_ref", "bad_link_pub", "ref_registered", "ip_limited",
+  "already_claimed",
   "origin_not_allowed", "bad_public_key", "app_not_available", "device_limited",
   "bad_kind", "text_required", "text_too_long", "contact_too_long", "inbox_full", "rate_limited",
   "signature_required", "signature_headers_incomplete", "app_mismatch", "stale_signature",
@@ -133,6 +136,16 @@ export interface AppCard {
   status: AppStatus;
   hasPublicBundle: boolean;
   originStanding: OriginStanding;
+}
+
+/** A fresh claim code, minted for this browser because it holds none (§5.4's re-issue door). */
+export interface ReissuedClaim {
+  ok: true;
+  appId: string;
+  status: AppStatus;
+  claimNonce: string;
+  /** The app's REGISTRATION origin — what the claim signature is taken over, so nothing guesses it. */
+  origin: string;
 }
 
 export interface RegisteredDevice {
@@ -172,6 +185,7 @@ export interface LoadedBundle {
 
 export type RegisterResult = RegisteredApp | Refusal;
 export type AppCardResult = AppCard | Refusal;
+export type ClaimNonceResult = ReissuedClaim | Refusal;
 export type DeviceResult = RegisteredDevice | Refusal;
 export type InboxResult = PostedItem | Refusal;
 export type MessagesResult = Messages | Refusal;
@@ -205,6 +219,8 @@ export interface RegistryClient {
   /** Read the persisted record. No network, ever — the loader calls this at level 0. */
   load(): Promise<RegistryState>;
   register(): Promise<RegisterResult>;
+  /** A fresh claim code for THIS browser, on the site's own door (§5.4). See the implementation. */
+  requestClaimNonce(): Promise<ClaimNonceResult>;
   getApp(appId: string): Promise<AppCardResult>;
   registerDevice(): Promise<DeviceResult>;
   postInbox(input: InboxInput): Promise<InboxResult>;
@@ -336,9 +352,10 @@ export function createRegistryClient(opts: ClientOptions): RegistryClient {
    * name; `requested` means somebody pasted this snippet on another site (or ours on theirs), which
    * is §5.3's own scenario and stays a refusal the panel shows as *requested*.
    *
-   * NOTE the one thing a browser cannot recover this way: the CLAIM NONCE is minted once, at
-   * registration, and handed only to the browser that registered. A second browser therefore gets
-   * `claimNonce: null` and the admin flow says so — there is no re-issue route on the worker today.
+   * NOTE what a browser does not learn this way: the CLAIM NONCE is minted once, at registration,
+   * and handed only to the browser that registered. A second browser therefore gets
+   * `claimNonce: null` here — and then asks for one of its own through `requestClaimNonce`, which is
+   * the site's door rather than this call's answer.
    */
   const register = async (): Promise<RegisterResult> => {
     if (base.includes(".invalid")) return notConnected();
@@ -374,7 +391,15 @@ export function createRegistryClient(opts: ClientOptions): RegistryClient {
       const appId = typeof answer.body.appId === "string" ? answer.body.appId : "";
       if (!appId || !status) return refuse("bad_response", "The registry created an app it did not name.");
       const claimNonce = typeof answer.body.claimNonce === "string" ? answer.body.claimNonce : null;
-      await state.write({ appId, status, claimNonce, originStanding: "allowed" });
+      await state.write({
+        appId,
+        status,
+        claimNonce,
+        originStanding: "allowed",
+        // The worker echoes the REGISTRATION origin, which is the string the claim is signed over.
+        // `www.shop.example` running a snippet registered at `shop.example` must not sign its own.
+        ...(typeof answer.body.origin === "string" ? { claimOrigin: answer.body.origin } : {}),
+      });
       return { ok: true, appId, status, claimNonce, originStanding: "allowed", fresh: true };
     }
 
@@ -421,6 +446,60 @@ export function createRegistryClient(opts: ClientOptions): RegistryClient {
       originStanding: readStanding(answer.body.origin),
     };
   }
+
+  /**
+   * §5.4's re-issue: a claim code for THIS browser, because the one from registration is gone.
+   *
+   * WHY THE DOOR IS THE SITE'S AND NOT A SIGNATURE. The unclaimed app is exactly the one whose owner
+   * cannot prove anything yet, so there is nothing to sign with. The call is therefore
+   * UNAUTHENTICATED and ORIGIN-GATED: the worker answers only a browser standing on an origin the
+   * app already answers (`allowed` or `verified`), which is this very admin flow. That gives nothing
+   * away — the nonce is not a credential on its own, and claiming still takes an ed25519 signature
+   * under the link key, which nobody on the site's origin has.
+   *
+   * NO BODY AND NO SIGNATURE, deliberately: a partial header set is `signature_headers_incomplete`
+   * at the worker, refused before the call is ever looked at.
+   *
+   * The new nonce REPLACES the stored one at the worker — two live nonces would be two live claims —
+   * so the old one stops verifying, and this browser overwrites its own copy in the same breath.
+   * `origin` comes back from the worker rather than being assumed, because it is the app's
+   * REGISTRATION origin and the claim signature is taken over that string.
+   */
+  const requestClaimNonce = async (): Promise<ClaimNonceResult> => {
+    if (base.includes(".invalid")) return notConnected();
+    const appId = state.current().appId;
+    if (!appId) {
+      return refuse("not_registered", "This site has no agent registered here yet, so there is no claim to re-issue.");
+    }
+    const answer = await call("POST", `/apps/${encodeURIComponent(appId)}/claim-nonce`);
+    if (isRefusal(answer)) return answer;
+
+    if (answer.status === 200) {
+      const claimNonce = typeof answer.body.claimNonce === "string" ? answer.body.claimNonce : "";
+      if (!claimNonce) return refuse("bad_response", "The registry issued a claim code it did not send.");
+      const status = asStatus(answer.body.status) ?? state.current().status ?? "unclaimed";
+      const origin = typeof answer.body.origin === "string" ? answer.body.origin : opts.origin;
+      await state.write({ claimNonce, status, claimOrigin: origin });
+      return { ok: true, appId, status, claimNonce, origin };
+    }
+
+    const refusal = fromAnswer(answer);
+    if (refusal.code === "already_claimed") {
+      // The answer is not an error to argue with: somebody has claimed this app since this browser
+      // last looked. Re-read the card so the panel shows what is true now rather than a dead button,
+      // and drop the nonce this browser was holding — it can never be spent.
+      const card = await getApp(appId);
+      if (card.ok) {
+        await state.write({
+          status: card.status,
+          originStanding: card.originStanding,
+          hasPublicBundle: card.hasPublicBundle,
+          claimNonce: null,
+        });
+      }
+    }
+    return refusal;
+  };
 
   /** The app id, registering first if this browser has not got one. */
   const ensureApp = async (): Promise<{ appId: string } | Refusal> => {
@@ -524,10 +603,16 @@ export function createRegistryClient(opts: ClientOptions): RegistryClient {
    * This device's own conversation. There is no parameter in which to ask for somebody else's — the
    * device id comes from the SIGNATURE, which is the point of the path being `devices/me/messages`.
    *
-   * `since` is left optional and unused by the poller ON PURPOSE. The worker filters on
-   * `created_at > since`, which is the item's own timestamp and not its reply's, so a cursor moved
-   * past an unanswered item would hide the answer when it finally came. The device's items are
-   * capped at twenty an hour and the page at a hundred, so re-reading them is cheap and correct.
+   * `since` HERE IS A `repliedAt`, not a `createdAt` — this route's cursor is the only one in the
+   * module that is. The visitor's cursor moves forward as they SEE things, so an item posted an hour
+   * ago is behind it long before the owner answers; compared against `createdAt` the poll would hide
+   * that item, and its reply whenever it landed, for ever. An item with no reply yet is returned
+   * whatever the cursor says, which is what lets the page still show a person their own open
+   * question.
+   *
+   * The poller sends none anyway: the device's items are capped at twenty an hour and the page at a
+   * hundred, so re-reading its own short list is cheap, and dedupe by `mid` is what decides a reply
+   * has been shown once. The parameter is here for a caller that wants the narrower read.
    */
   const pollMessages = async (since?: string | null): Promise<MessagesResult> => {
     if (base.includes(".invalid")) return notConnected();
@@ -568,12 +653,17 @@ export function createRegistryClient(opts: ClientOptions): RegistryClient {
   /**
    * Fetch it, conditionally, and keep the copy.
    *
-   * `If-None-Match` is NOT a CORS-safelisted request header, so a conditional GET is a preflight —
-   * and the worker's `Access-Control-Allow-Headers` names the five `X-Infinite-*` and `content-type`
-   * and not `if-none-match`. That preflight therefore fails on a browser today, which would turn a
-   * cheap 304 into no bundle at all. So the conditional GET is TRIED, and the first refusal at the
-   * network layer permanently drops back to an unconditional one for this page: correctness first,
-   * bytes second, and the mismatch is written down here rather than papered over.
+   * `If-None-Match` is NOT a CORS-safelisted request header, so a conditional GET is a PREFLIGHT,
+   * and a preflight whose `Access-Control-Allow-Headers` omits it fails inside the browser where no
+   * log of ours can see it — every visitor of every site would then re-download up to 256 KB. The
+   * worker now names `if-none-match` in that list and exposes `ETag` in
+   * `Access-Control-Expose-Headers` (both halves are needed: a browser cannot read a response header
+   * it was not told it may), so the FIRST attempt is conditional again whenever there is an etag.
+   *
+   * THE FALLBACK STAYS, because a worker deployed before that change is still a worker somebody is
+   * pointing at: the first refusal at the network layer permanently drops this page back to an
+   * unconditional GET. Correctness first, bytes second — losing the 304 must never mean losing the
+   * bundle.
    */
   const getPublicBundle = async (): Promise<BundleResult> => {
     if (base.includes(".invalid")) return notConnected();
@@ -642,6 +732,7 @@ export function createRegistryClient(opts: ClientOptions): RegistryClient {
     state: () => state.current(),
     load: () => state.read(),
     register,
+    requestClaimNonce,
     getApp,
     registerDevice,
     postInbox,
@@ -654,7 +745,10 @@ export function createRegistryClient(opts: ClientOptions): RegistryClient {
       const url = new URL("/", productOrigin);
       url.searchParams.set("claim", known.appId);
       url.searchParams.set("nonce", known.claimNonce);
-      url.searchParams.set("origin", opts.origin);
+      // The REGISTRATION origin when the worker has named it, this page's origin only as a last
+      // resort: the claim signature is over `appId‖origin‖nonce`, and an allowed-but-different host
+      // (`www.` of the registered one) signing its own address would sign a string nobody holds.
+      url.searchParams.set("origin", known.claimOrigin ?? opts.origin);
       return url.toString();
     },
   };

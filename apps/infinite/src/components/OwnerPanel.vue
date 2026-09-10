@@ -44,6 +44,7 @@ import {
   unpublishPublicBundle,
   verifyOrigin,
   pushIsSending,
+  registryVapidKey,
 } from "../state/registry.js";
 
 const replyFor = ref<string | null>(null);
@@ -52,7 +53,10 @@ const stAppId = ref("");
 const overblastCid = ref("");
 
 const bundle = computed(() => publicBundlePreview.value);
-const pushSentence = computed(() => pushRefusal());
+// Both read the key off the app card, so the button turns real the moment a registry publishes one —
+// no rebuild, no env var. The env var is only the fallback for a worker too old to answer the field.
+const pushSentence = computed(() => pushRefusal(registryVapidKey.value));
+const canSubscribe = computed(() => pushPossible(registryVapidKey.value));
 
 onMounted(async () => {
   await openOwnerPanel();
@@ -236,8 +240,12 @@ const originIcon = (status: string) =>
       <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Notifications</h2>
       <div class="panel px-3 py-3 space-y-2">
         <p v-if="pushSentence" class="text-[11px] text-[var(--color-amber)] leading-relaxed">{{ pushSentence }}</p>
+        <!-- The key exists, so subscribing is real: a permission prompt and a subscription minted
+             against that key. Sending is not — the routes still answer `sending: false`, and this
+             sentence is that answer rather than a guess. -->
         <p v-else-if="!pushIsSending" class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
-          Subscribing stores this browser. Nothing is sent until the worker can send.
+          Subscribing stores this browser against your registry's notification key. Nothing is sent
+          yet: the worker keeps subscriptions this round and gains a sender in the next.
         </p>
         <div v-for="row in registryPush" :key="row.endpoint" class="flex items-start gap-2">
           <div class="min-w-0 flex-1 text-[10px] font-mono break-all text-[var(--color-ink-dim)]">{{ row.endpoint }}</div>
@@ -248,7 +256,7 @@ const originIcon = (status: string) =>
         <button
           type="button"
           class="ia-btn w-full h-8 text-[11px]"
-          :disabled="registryBusy || !pushPossible()"
+          :disabled="registryBusy || !canSubscribe"
           @click="subscribeBrowser()"
         >
           Notify this browser

@@ -11,10 +11,11 @@
  * starts this when the panel opens and stops it when it closes or the tab goes away, so a site with
  * a thousand readers and no open panels makes no calls at all — the same rule as the rest of Phase 3.
  *
- * WHY REPLIES ARE DEDUPED BY `mid` AND NOT BY A CURSOR: the worker filters `created_at > since`,
- * which is the ITEM's timestamp and not its reply's, so a cursor advanced past an unanswered item
- * would hide its answer for ever. The poller therefore re-reads its own short list and remembers
- * which replies it has already shown.
+ * WHY REPLIES ARE DEDUPED BY `mid` AND NOT BY A CURSOR: what the poller has to decide is "have I
+ * already SHOWN this reply", and no timestamp answers that — the worker's own `since` on this route
+ * is a `repliedAt` and always returns an unanswered item whatever the cursor says, which is right for
+ * the wire and says nothing about what reached the panel. So the poller re-reads its own short list
+ * (twenty items an hour at the outside) and remembers the mids it has spoken.
  */
 
 import type { MessagesResult, RegistryClient, VisitorMessage } from "./client.js";

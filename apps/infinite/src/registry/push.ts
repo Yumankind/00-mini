@@ -1,20 +1,32 @@
 /**
- * SUBSCRIBING THIS BROWSER FOR NOTIFICATIONS (§5.7) — and the reason the button is off.
+ * SUBSCRIBING THIS BROWSER FOR NOTIFICATIONS (§5.7) — and where the key comes from.
  *
  * `PushManager.subscribe()` takes an `applicationServerKey`: the PUBLIC half of a VAPID keypair. A
  * subscription is minted AGAINST that key, so a key introduced later invalidates every subscription
- * taken before it — which is why the order has to be key first, subscribe second, and why this file
- * refuses rather than subscribing to nothing.
+ * taken before it. That ordering is the whole reason the worker publishes the public half a round
+ * ahead of the sender, on the app card (`GET /infinite/apps/:id` → `push.vapidPublicKey`): the rows
+ * already in its table have to be usable on the day it can send.
  *
- * The worker does not publish one. `worker/src/infinite/push.ts` stores subscriptions and every one
- * of its routes answers `"sending": false`, and says so in its own header: sending needs a VAPID
- * keypair, which is a new secret and a deployment decision. So `vapidPublicKey()` answers null
- * today, `pushPossible()` is false, and the panel says *notifications come with a later worker
- * round* instead of showing a control that would produce a subscription nobody can send to.
+ * ── THE KEY'S TWO SOURCES, IN ORDER ────────────────────────────────────────────────────────────
  *
- * `VITE_INFINITE_VAPID_PUBLIC_KEY` is the one carrier this app will read when that round lands — the
- * same shape `VITE_INFINITE_API_BASE` has, set at build time beside it. If the worker later serves
- * the key on a route instead, this is the one function to change.
+ * THE CARD FIRST, the build's `VITE_INFINITE_VAPID_PUBLIC_KEY` only when the card carries none. The
+ * card is the registry this browser is actually talking to and it can change without a rebuild; the
+ * env var is what a build pointed at a worker too old to answer the field still has. A key of the
+ * WRONG registry is worse than no key at all — every subscription taken under it is unsendable — so
+ * the one the registry itself named wins, and `null` on the card (an explicit "no key here") does
+ * NOT fall through to the env var of a build that guessed.
+ *
+ * The key is passed IN rather than read out of a module variable, because the card arrives on the
+ * wire and the panel is reactive: a function of its argument recomputes when the card does, and a
+ * cached global would leave the button disabled a round behind the answer.
+ *
+ * ── WHAT IS STILL NOT ON ───────────────────────────────────────────────────────────────────────
+ *
+ * SENDING. `worker/src/infinite/push.ts` stores subscriptions and every one of its routes answers
+ * `"sending": false`; the private half and the sender are a later round. So subscribing is real as
+ * soon as a key exists — it takes a real permission and mints a real subscription — and the panel
+ * says out loud that nothing will arrive yet, reading `sending` from the answer rather than from a
+ * belief of its own.
  *
  * ── AND THE THING iOS MAKES US SAY ─────────────────────────────────────────────────────────────
  *
@@ -32,10 +44,23 @@ export function decodeVapidKey(base64Url: string): Uint8Array {
   return out;
 }
 
-/** The build's VAPID public key, or null while the worker has none. */
-export function vapidPublicKey(): string | null {
+/** The build's own carrier, for a worker whose card has no `push` field at all. */
+function envKey(): string | null {
   const raw = (import.meta.env?.VITE_INFINITE_VAPID_PUBLIC_KEY as string | undefined)?.trim();
   return raw && raw.length > 0 ? raw : null;
+}
+
+/**
+ * The key to subscribe against: the app card's, else the build's, else none.
+ *
+ * `fromCard` is `undefined` when no card has been read (or the worker is older than the field) and
+ * `null` when the card explicitly says this host publishes no key — the first falls back, the second
+ * does not.
+ */
+export function vapidPublicKey(fromCard?: string | null): string | null {
+  if (fromCard === undefined) return envKey();
+  const trimmed = fromCard?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
 }
 
 export function pushApiAvailable(): boolean {
@@ -48,14 +73,14 @@ export function pushApiAvailable(): boolean {
 }
 
 /** Both halves: a key to subscribe against, and a browser that can. */
-export function pushPossible(): boolean {
-  return !!vapidPublicKey() && pushApiAvailable();
+export function pushPossible(fromCard?: string | null): boolean {
+  return !!vapidPublicKey(fromCard) && pushApiAvailable();
 }
 
 /** The sentence to show when it is not possible — the two reasons are not the same problem. */
-export function pushRefusal(): string | null {
-  if (!vapidPublicKey()) {
-    return "Notifications come with a later worker round: it has nowhere to send from yet, so there is nothing to subscribe to.";
+export function pushRefusal(fromCard?: string | null): string | null {
+  if (!vapidPublicKey(fromCard)) {
+    return "This registry publishes no notification key yet, so there is nothing to subscribe against. It comes with a later worker round.";
   }
   if (!pushApiAvailable()) {
     return "This browser has no Web Push. On iPhone, add this app to the Home Screen first — iOS delivers notifications only to an installed app.";
@@ -72,10 +97,10 @@ export type SubscribeResult =
  * user-gesture-gated in every browser that matters, and a permission prompt a person did not ask for
  * is a permission prompt they deny.
  */
-export async function subscribeThisBrowser(): Promise<SubscribeResult> {
-  const key = vapidPublicKey();
-  if (!key) return { ok: false, code: "no_key", message: pushRefusal() ?? "No VAPID key." };
-  if (!pushApiAvailable()) return { ok: false, code: "unavailable", message: pushRefusal() ?? "No Web Push here." };
+export async function subscribeThisBrowser(fromCard?: string | null): Promise<SubscribeResult> {
+  const key = vapidPublicKey(fromCard);
+  if (!key) return { ok: false, code: "no_key", message: pushRefusal(fromCard) ?? "No VAPID key." };
+  if (!pushApiAvailable()) return { ok: false, code: "unavailable", message: pushRefusal(fromCard) ?? "No Web Push here." };
   try {
     const permission = await Notification.requestPermission();
     if (permission !== "granted") {

@@ -15,8 +15,14 @@ import { MemoryStore } from "../../embed/src/index/store.js";
 import { createRegistryState, registryKey, toState } from "../../embed/src/registry/state.js";
 import { createOwnerOutbox, CONFIRM_QUESTION } from "../../embed/src/registry/send.js";
 import { POLL_INTERVAL_MS, createReplyPoller } from "../../embed/src/registry/poll.js";
-import { describeRegistration } from "../../embed/src/panel/setup-model.js";
-import type { InboxResult, MessagesResult, RegisterResult, VisitorMessage } from "../../embed/src/registry/client.js";
+import { describeClaimNonce, describeRegistration } from "../../embed/src/panel/setup-model.js";
+import type {
+  ClaimNonceResult,
+  InboxResult,
+  MessagesResult,
+  RegisterResult,
+  VisitorMessage,
+} from "../../embed/src/registry/client.js";
 
 const ORIGIN = "https://shop.example";
 const REF = "ia_ktb4qz_abcdefghijkl";
@@ -51,15 +57,20 @@ describe("what this browser remembers about this app (§5.3)", () => {
   it("re-types whatever was in storage, and treats nonsense as nothing known", () => {
     expect(toState(null).appId).toBeNull();
     expect(toState("a string").status).toBeNull();
-    expect(toState({ appId: "not-an-app-id", status: "president", deviceId: "iad_ok", hasPublicBundle: "yes" })).toEqual({
+    expect(
+      toState({ appId: "not-an-app-id", status: "president", deviceId: "iad_ok", hasPublicBundle: "yes", claimOrigin: "shop.example" }),
+    ).toEqual({
       appId: null,
       status: null,
       claimNonce: null,
+      // A claim origin goes into a link and is then signed, so a bare word is nothing known.
+      claimOrigin: null,
       deviceId: "iad_ok",
       originStanding: "unknown",
       hasPublicBundle: false,
       at: 0,
     });
+    expect(toState({ claimOrigin: "https://shop.example" }).claimOrigin).toBe("https://shop.example");
   });
 
   it("forgets on demand", async () => {
@@ -268,31 +279,37 @@ describe("the admin flow's branches (§5.3, §5.4)", () => {
   });
   const CLAIM = "https://infinite.test/?claim=iaa_shop&nonce=n1&origin=https%3A%2F%2Fshop.example";
 
-  it("says dev mode on a local origin, and offers nothing to claim", () => {
+  it("says dev mode on a local origin, and offers a claim code it has not got", () => {
     const view = describeRegistration(ok("dev"), null);
     expect(view.state).toBe("dev");
     expect(view.detail).toContain("development app");
     expect(view.action).toBeNull();
+    // A dev app has not been claimed either, and the worker answers it a code like any other.
+    expect(view.reissue).toBe(true);
   });
 
   it("offers the ONE button that opens the owned agent, when unclaimed", () => {
     const view = describeRegistration(ok("unclaimed"), CLAIM);
     expect(view.state).toBe("unclaimed");
     expect(view.action).toEqual({ label: "Claim it in your agent", url: CLAIM });
+    // A browser that HOLDS a code is not offered another: a second would replace this one.
+    expect(view.reissue).toBe(false);
   });
 
-  it("says where the claim link went when this browser is not the one that registered", () => {
+  it("says where the claim link went, and offers a fresh one, when this browser is not the one that registered", () => {
     const registered: RegisterResult = { ok: true, appId: "iaa_shop", status: "unclaimed", claimNonce: null, originStanding: "allowed", fresh: false };
     const view = describeRegistration(registered, null);
     expect(view.state).toBe("unclaimed");
     expect(view.action).toBeNull();
     expect(view.detail).toContain("browser that first registered");
+    expect(view.reissue).toBe(true);
   });
 
   it("says claimed, and stops asking", () => {
     const view = describeRegistration(ok("claimed"), CLAIM);
     expect(view.state).toBe("claimed");
     expect(view.action).toBeNull();
+    expect(view.reissue).toBe(false);
   });
 
   it("shows the requested state when another site holds the ref", () => {
@@ -328,5 +345,65 @@ describe("the admin flow's branches (§5.3, §5.4)", () => {
     const view = describeRegistration({ ok: false, code: "unexpected", message: "The moon is wrong." }, null);
     expect(view.state).toBe("refused");
     expect(view.detail).toBe("The moon is wrong.");
+    expect(view.reissue).toBe(false);
+  });
+});
+
+describe("the re-issued claim code (§5.4)", () => {
+  const CLAIM = "https://infinite.test/?claim=iaa_shop&nonce=fresh-1&origin=https%3A%2F%2Fshop.example";
+  const issued: ClaimNonceResult = {
+    ok: true,
+    appId: "iaa_shop",
+    status: "unclaimed",
+    claimNonce: "fresh-1",
+    origin: "https://shop.example",
+  };
+
+  it("shows the button, and warns that an older link has just died", () => {
+    const view = describeClaimNonce(issued, CLAIM);
+    expect(view.state).toBe("unclaimed");
+    expect(view.action).toEqual({ label: "Claim it in your agent", url: CLAIM });
+    // The worker keeps ONE nonce per app, so re-issuing is not free: a link already sent stops
+    // verifying, and a person who has one open in another tab needs telling.
+    expect(view.detail).toContain("replaces any earlier claim link");
+    expect(view.reissue).toBe(false);
+  });
+
+  it("shows no button when the code arrived but no link could be built", () => {
+    const view = describeClaimNonce(issued, null);
+    expect(view.action).toBeNull();
+    expect(view.reissue).toBe(false);
+  });
+
+  it("reads `already_claimed` as the job being done, not as an error", () => {
+    const view = describeClaimNonce({ ok: false, code: "already_claimed", message: "already claimed" }, null);
+    expect(view.state).toBe("claimed");
+    expect(view.action).toBeNull();
+    expect(view.reissue).toBe(false);
+  });
+
+  it("sends an origin the agent does not answer to the owner's panel, which is the only door", () => {
+    const view = describeClaimNonce({ ok: false, code: "origin_not_allowed", message: "not allowed" }, null);
+    expect(view.state).toBe("refused");
+    expect(view.headline).toContain("not on the agent's list");
+    expect(view.detail).toContain("owner's panel");
+    expect(view.reissue).toBe(false);
+  });
+
+  it("turns the address cap into minutes, and keeps the button for when they pass", () => {
+    const view = describeClaimNonce(
+      { ok: false, code: "rate_limited", message: "Five claim codes an hour from one address.", retryAfter: 900 },
+      null,
+    );
+    expect(view.state).toBe("refused");
+    expect(view.detail).toContain("15 minute(s)");
+    expect(view.reissue).toBe(true);
+  });
+
+  it("shows any other refusal in the registry's own words, and lets them try again", () => {
+    const view = describeClaimNonce({ ok: false, code: "network", message: "The registry could not be reached." }, null);
+    expect(view.state).toBe("refused");
+    expect(view.detail).toBe("The registry could not be reached.");
+    expect(view.reissue).toBe(true);
   });
 });

@@ -8,7 +8,7 @@
  * ends by handing them a file to save or a tag to paste, and never by storing anything anywhere.
  */
 
-import type { RegisterResult } from "../registry/client.js";
+import type { ClaimNonceResult, RegisterResult } from "../registry/client.js";
 import type { SiteConfig } from "../site-config.js";
 import {
   SETUP_STEPS,
@@ -16,11 +16,13 @@ import {
   buildSiteConfig,
   checkSiteFile,
   defaultAnswers,
+  describeClaimNonce,
   describeRegistration,
   isDevOrigin,
   sessionKindHelp,
   siteFileText,
   snippetFor,
+  type RegistrationView,
   type SetupAnswers,
 } from "./setup-model.js";
 
@@ -35,6 +37,12 @@ import {
 export interface AdminFlow {
   register(): Promise<RegisterResult>;
   claimUrl(): string | null;
+  /**
+   * Ask the registry for a fresh claim code (§5.4). Absent ⇒ the button is not shown at all, which
+   * is what a build pointed at a worker without the route should do: the card says where the one
+   * claim link went and stops there, rather than offering a door that answers 404.
+   */
+  reissueClaim?(): Promise<ClaimNonceResult>;
   openTab?(url: string): void;
 }
 
@@ -257,7 +265,10 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
     const registerDetail = el("p", { className: "note" });
     const registerBtn = el("button", { className: "copy", type: "button", textContent: "Register this site" });
     const claimBtn = el("button", { className: "copy", type: "button", textContent: "Claim it in your agent" });
+    const REISSUE_LABEL = "Get a new claim link";
+    const reissueBtn = el("button", { className: "copy", type: "button", textContent: REISSUE_LABEL });
     claimBtn.hidden = true;
+    reissueBtn.hidden = true;
     registerOut.hidden = true;
 
     registerBtn.addEventListener("click", () => {
@@ -276,12 +287,14 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
         });
     });
 
-    const show = (result: RegisterResult): void => {
-      const view = describeRegistration(result, admin.claimUrl());
+    // The claim link is asked for AFTER the answer, never before: `requestClaimNonce` is what puts
+    // the new code in this browser, so `claimUrl()` only has one to build once that has resolved.
+    const render = (view: RegistrationView): void => {
       registerOut.hidden = false;
       registerOut.textContent = view.headline;
       registerDetail.textContent = view.detail;
       claimBtn.hidden = !view.action;
+      reissueBtn.hidden = !view.reissue || !admin.reissueClaim;
       if (view.action) {
         claimBtn.textContent = view.action.label;
         claimBtn.onclick = () => {
@@ -293,6 +306,25 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
         };
       }
     };
+
+    const show = (result: RegisterResult): void => render(describeRegistration(result, admin.claimUrl()));
+
+    reissueBtn.addEventListener("click", () => {
+      const ask = admin.reissueClaim;
+      if (!ask) return;
+      reissueBtn.disabled = true;
+      reissueBtn.textContent = "Asking the registry…";
+      void ask()
+        .then((result) => render(describeClaimNonce(result, admin.claimUrl())))
+        .catch((err: unknown) => {
+          registerOut.hidden = false;
+          registerOut.textContent = `That did not work (${String(err)}).`;
+        })
+        .finally(() => {
+          reissueBtn.disabled = false;
+          reissueBtn.textContent = REISSUE_LABEL;
+        });
+    });
 
     step5.append(
       el("label", { textContent: "Your agent's public key (from the Infinite Agent app)" }),
@@ -306,6 +338,7 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
       registerOut,
       registerDetail,
       claimBtn,
+      reissueBtn,
     );
   }
 

@@ -16,7 +16,7 @@
  *   5. Optional, later — register, claim, publish, messages, a stronger brain. None required.
  */
 
-import type { RegisterResult } from "../registry/client.js";
+import type { ClaimNonceResult, RegisterResult } from "../registry/client.js";
 import { DEFAULT_SITE_CONFIG, LINK_PUB_RE, encodeDataSite, normalisePath, type SessionKind, type SiteConfig } from "../site-config.js";
 
 export interface SetupStep {
@@ -174,6 +174,12 @@ export interface RegistrationView {
   detail: string;
   /** The ONE button, when there is one: opening the owned agent to sign the claim. */
   action: { label: string; url: string } | null;
+  /**
+   * True when the card should also offer "Get a new claim link" — an app that is not claimed and a
+   * browser holding no code for it. The call behind it is the site's own door, not a signature; see
+   * `requestClaimNonce` in `registry/client.ts`.
+   */
+  reissue: boolean;
 }
 
 /**
@@ -191,8 +197,11 @@ export function describeRegistration(result: RegisterResult, claimUrl: string | 
         state: "dev",
         headline: "Dev mode",
         detail:
-          "This is a local origin, so the agent is registered as a development app: level 0 plus a dev-sized allowance, and nothing to claim. Paste the snippet on the real domain to register it there.",
-        action: null,
+          "This is a local origin, so the agent is registered as a development app: level 0 plus a dev-sized allowance. Paste the snippet on the real domain to register it there.",
+        // A dev app has not been claimed either, and the worker answers it a claim code like any
+        // other — so the two claim controls are the same ones, offered on the same rule.
+        action: claimUrl ? { label: "Claim it in your agent", url: claimUrl } : null,
+        reissue: !claimUrl,
       };
     }
     if (result.status === "claimed") {
@@ -201,6 +210,7 @@ export function describeRegistration(result: RegisterResult, claimUrl: string | 
         headline: "Claimed",
         detail: "This agent is yours. You can publish its knowledge and read what visitors send you.",
         action: null,
+        reissue: false,
       };
     }
     if (!claimUrl) {
@@ -208,8 +218,9 @@ export function describeRegistration(result: RegisterResult, claimUrl: string | 
         state: "unclaimed",
         headline: "Registered, not claimed",
         detail:
-          "The claim link was minted in the browser that first registered this site, and it is held there. Open this site in that browser to finish claiming, or ask the registry's owner to re-issue one.",
+          "The claim link was minted in the browser that first registered this site, and it is held there — a reload, a closed tab or a different browser and that copy is gone. This site can ask the registry for a fresh one.",
         action: null,
+        reissue: true,
       };
     }
     return {
@@ -218,6 +229,7 @@ export function describeRegistration(result: RegisterResult, claimUrl: string | 
       detail:
         "Claiming is a signature under your agent's own key, so it is done in the Infinite Agent app. This opens it in a new tab; nothing here holds that key.",
       action: { label: "Claim it in your agent", url: claimUrl },
+      reissue: false,
     };
   }
 
@@ -228,6 +240,7 @@ export function describeRegistration(result: RegisterResult, claimUrl: string | 
       detail:
         "This agent ref is already registered to a different origin, so this one has been queued as requested. Its owner allows it from their own panel — nobody else can.",
       action: null,
+      reissue: false,
     };
   }
   if (result.code === "not_connected") {
@@ -236,6 +249,7 @@ export function describeRegistration(result: RegisterResult, claimUrl: string | 
       headline: "Not connected yet",
       detail: "This build points at no registry, so there is nothing to register with. Level 0 works exactly as it does now.",
       action: null,
+      reissue: false,
     };
   }
   if (result.code === "no_link_pub") {
@@ -245,6 +259,7 @@ export function describeRegistration(result: RegisterResult, claimUrl: string | 
       detail:
         "Paste your agent's public key above and save the settings again. Registration stores that key, and it is what proves the claim later is yours.",
       action: null,
+      reissue: false,
     };
   }
   if (result.code === "ip_limited") {
@@ -254,9 +269,76 @@ export function describeRegistration(result: RegisterResult, claimUrl: string | 
       headline: "One registration a day from this address",
       detail: `${result.message} Try again in about ${hours} hour(s).`,
       action: null,
+      reissue: false,
     };
   }
-  return { state: "refused", headline: "Not registered", detail: result.message, action: null };
+  return { state: "refused", headline: "Not registered", detail: result.message, action: null, reissue: false };
+}
+
+/**
+ * The same card, after "Get a new claim link" (§5.4's re-issue).
+ *
+ * FOUR ANSWERS, FOUR DIFFERENT NEXT MOVES, which is why this is its own function rather than a
+ * boolean on the one above: a fresh code opens the agent; `already_claimed` means the job is done and
+ * the card should stop asking; `origin_not_allowed` is the site's own standing and is fixed in the
+ * OWNER'S panel, not here; `rate_limited` is a wait, and a wait a person can act on is a number of
+ * minutes rather than a shrug.
+ */
+export function describeClaimNonce(result: ClaimNonceResult, claimUrl: string | null): RegistrationView {
+  if (result.ok) {
+    if (!claimUrl) {
+      // The code arrived and this browser still cannot build the link — a state only a bug reaches,
+      // and one that must not show a button that goes nowhere.
+      return {
+        state: "unclaimed",
+        headline: "A new claim link was issued",
+        detail: "The registry issued a fresh claim code, but this browser could not build the link. Try registering again.",
+        action: null,
+        reissue: false,
+      };
+    }
+    return {
+      state: "unclaimed",
+      headline: "A new claim link is ready",
+      detail:
+        "This replaces any earlier claim link — the registry keeps one at a time, so a link you opened before this will no longer work. Claiming itself still happens in the Infinite Agent app, under your agent's own key.",
+      action: { label: "Claim it in your agent", url: claimUrl },
+      reissue: false,
+    };
+  }
+
+  if (result.code === "already_claimed") {
+    return {
+      state: "claimed",
+      headline: "Claimed",
+      detail:
+        "This agent has already been claimed, so there is no claim left to make. If that was not you, block this site's address from the owner's panel.",
+      action: null,
+      reissue: false,
+    };
+  }
+  if (result.code === "origin_not_allowed") {
+    return {
+      state: "refused",
+      headline: "This address is not on the agent's list",
+      detail:
+        "The registry only issues a claim code to a browser standing on an address the agent already answers. Allow this one from the owner's panel first — that is the only door.",
+      action: null,
+      reissue: false,
+    };
+  }
+  if (result.code === "rate_limited") {
+    const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : 60;
+    return {
+      state: "refused",
+      headline: "Too many claim links from this address",
+      detail: `${result.message} Try again in about ${minutes} minute(s).`,
+      action: null,
+      // Still offered: the button is what the person presses when the wait is over.
+      reissue: true,
+    };
+  }
+  return { state: "refused", headline: "No new claim link", detail: result.message, action: null, reissue: true };
 }
 
 /** The "did it land?" check the flow re-runs until the file answers (§5.2.4, step 4). */

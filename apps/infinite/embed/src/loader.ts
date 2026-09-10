@@ -362,6 +362,9 @@ export async function start(): Promise<EmbedHandle | null> {
               // The product origin is the loader's OWN src origin: the snippet says where we live,
               // and nothing in this file has to be told twice.
               claimUrl: () => registry.claimUrl(productHost),
+              // §5.4's re-issue, on the site's own door: this browser is standing on an origin the
+              // app answers, which is the whole credential that call takes.
+              reissueClaim: () => registry.requestClaimNonce(),
             },
           }
         : {}),

@@ -38,17 +38,48 @@ describe("the claim link", () => {
   });
 });
 
-describe("notifications, and why the button is off", () => {
-  it("has no VAPID key, because the worker publishes none this round", () => {
+describe("notifications: where the key comes from, and why the button is off", () => {
+  it("has no key at all in this build, so the card says so rather than showing a dead control", () => {
+    // `undefined` is "no card read, and no env var in this build" — the state every test runs in.
     expect(vapidPublicKey()).toBeNull();
     expect(pushPossible()).toBe(false);
     expect(pushRefusal()).toContain("later worker round");
+  });
+
+  it("prefers the app card's key, which is the registry actually being talked to", () => {
+    expect(vapidPublicKey("BCardKey-_9w")).toBe("BCardKey-_9w");
+    // A subscription is minted AGAINST the key, so the wrong registry's key is worse than none:
+    // every row taken under it is unsendable. The one the registry named wins.
+    expect(pushRefusal("BCardKey-_9w")).toContain("Home Screen");
+  });
+
+  it("treats an explicit `null` on the card as 'this host publishes none', not as 'ask the build'", () => {
+    // The worker sends the field with a null rather than omitting it precisely so a loader can tell
+    // "no key here" from "old worker" — only the second is allowed to fall back to the env var.
+    expect(vapidPublicKey(null)).toBeNull();
+    expect(pushPossible(null)).toBe(false);
+    expect(pushRefusal(null)).toContain("later worker round");
+  });
+
+  it("reads whitespace as unset, on either carrier", () => {
+    expect(vapidPublicKey("   ")).toBeNull();
+  });
+
+  it("says the iPhone sentence once a key exists, because that is then the only thing missing", () => {
+    // Node has a `navigator`, and no `serviceWorker` on it — the same shape as a browser that
+    // cannot do Web Push, which on iOS means a tab that was never added to the Home Screen.
+    expect(pushRefusal("BCardKey-_9w")).toContain("installed app");
   });
 
   it("decodes a base64url key into the bytes applicationServerKey wants", () => {
     // 65 bytes is an uncompressed P-256 point, which is what a VAPID public key is.
     const bytes = decodeVapidKey("BOTest-_9w");
     expect(bytes).toBeInstanceOf(Uint8Array);
-    expect(bytes.length).toBeGreaterThan(0);
+    expect(bytes.length).toBe(7);
+  });
+
+  it("translates `-_` and restores the padding, which plain atob would refuse", () => {
+    // `-_8` is base64url for two bytes; as base64 it is `+/8=`, and without the `=` atob throws.
+    expect([...decodeVapidKey("-_8")]).toEqual([251, 255]);
   });
 });

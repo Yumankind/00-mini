@@ -198,6 +198,131 @@ describe("§5.3 registration", () => {
   });
 });
 
+describe("§5.4 a fresh claim code", () => {
+  /** A browser that knows the app and holds no nonce: the second tab, the reload, the other laptop. */
+  const knowing = async (routes: Record<string, Route | Route[]>): Promise<Wire> => {
+    const w = wire(routes);
+    await w.store.set(`registry:${ORIGIN}:${REF}`, { appId: "iaa_shop", status: "unclaimed" });
+    await w.client.load();
+    expect(w.client.claimUrl("https://infinite.test")).toBeNull();
+    return w;
+  };
+
+  it("asks the site's own door — POST, no body, no signature — and keeps the code that comes back", async () => {
+    const w = await knowing({
+      "POST /apps/iaa_shop/claim-nonce": {
+        status: 200,
+        body: { appId: "iaa_shop", status: "unclaimed", claimNonce: "fresh-1", origin: ORIGIN },
+      },
+    });
+    const result = await w.client.requestClaimNonce();
+    expect(result.ok && result.claimNonce).toBe("fresh-1");
+    expect(w.calls[0]!.method).toBe("POST");
+    expect(w.calls[0]!.url).toBe(`${BASE}/apps/iaa_shop/claim-nonce`);
+    // No body and no signature: the origin IS the credential, and a partial header set would be
+    // refused as `signature_headers_incomplete` before the call was ever read.
+    expect(w.calls[0]!.body).toBeNull();
+    expect(w.calls[0]!.headers["X-Infinite-Signature"]).toBeUndefined();
+    expect(w.calls[0]!.headers["content-type"]).toBeUndefined();
+    // And now the button exists, because the nonce is this browser's.
+    const url = new URL(w.client.claimUrl("https://infinite.test")!);
+    expect(url.searchParams.get("nonce")).toBe("fresh-1");
+    expect(w.client.state().claimNonce).toBe("fresh-1");
+  });
+
+  it("carries the REGISTRATION origin the worker named, not the page's own", async () => {
+    // The snippet is on www., the app was registered without it. The claim signature is over the
+    // string the worker stores, so guessing this one would sign something nobody holds.
+    const w = await knowing({
+      "POST /apps/iaa_shop/claim-nonce": {
+        status: 200,
+        body: { appId: "iaa_shop", status: "unclaimed", claimNonce: "fresh-2", origin: "https://www.shop.example" },
+      },
+    });
+    await w.client.requestClaimNonce();
+    const url = new URL(w.client.claimUrl("https://infinite.test")!);
+    expect(url.searchParams.get("origin")).toBe("https://www.shop.example");
+  });
+
+  it("reads `already_claimed` as news: it re-reads the card and stops offering a claim", async () => {
+    const w = await knowing({
+      "POST /apps/iaa_shop/claim-nonce": {
+        status: 409,
+        body: { error: "This agent has already been claimed.", code: "already_claimed" },
+      },
+      "GET /apps/iaa_shop": {
+        status: 200,
+        body: { appId: "iaa_shop", ref: REF, status: "claimed", hasPublicBundle: true, origin: { origin: ORIGIN, status: "verified" } },
+      },
+    });
+    const result = await w.client.requestClaimNonce();
+    expect(!result.ok && result.code).toBe("already_claimed");
+    expect(w.calls.map((c) => `${c.method} ${c.url.slice(BASE.length)}`)).toEqual([
+      "POST /apps/iaa_shop/claim-nonce",
+      "GET /apps/iaa_shop",
+    ]);
+    expect(w.client.state().status).toBe("claimed");
+    expect(w.client.state().originStanding).toBe("verified");
+    expect(w.client.claimUrl("https://infinite.test")).toBeNull();
+  });
+
+  it("names an origin the agent does not answer, and keeps no code", async () => {
+    const w = await knowing({
+      "POST /apps/iaa_shop/claim-nonce": {
+        status: 403,
+        body: { error: "This agent does not answer calls from that site.", code: "origin_not_allowed" },
+      },
+    });
+    const result = await w.client.requestClaimNonce();
+    expect(!result.ok && result.code).toBe("origin_not_allowed");
+    expect(w.client.state().claimNonce).toBeNull();
+    expect(w.calls).toHaveLength(1);
+  });
+
+  it("carries `rate_limited` through with its Retry-After", async () => {
+    const w = await knowing({
+      "POST /apps/iaa_shop/claim-nonce": {
+        status: 429,
+        body: { error: "Five claim codes an hour from one address.", code: "rate_limited", retryAfter: 900 },
+        headers: { "retry-after": "900" },
+      },
+    });
+    const result = await w.client.requestClaimNonce();
+    expect(!result.ok && result.code).toBe("rate_limited");
+    expect(!result.ok && result.retryAfter).toBe(900);
+  });
+
+  it("asks for nothing when this browser has no app yet", async () => {
+    const w = wire({});
+    const result = await w.client.requestClaimNonce();
+    expect(!result.ok && result.code).toBe("not_registered");
+    expect(w.calls).toHaveLength(0);
+  });
+
+  it("says `not_connected` while the build points at the placeholder", async () => {
+    const client = createRegistryClient({
+      origin: ORIGIN,
+      ref: REF,
+      store: new MemoryStore(),
+      fetchImpl: (() => {
+        throw new Error("nothing may be fetched");
+      }) as unknown as typeof fetch,
+      linkPub: () => LINK_PUB,
+    });
+    const result = await client.requestClaimNonce();
+    expect(!result.ok && result.code).toBe("not_connected");
+  });
+
+  it("refuses a code the registry did not send, rather than minting a link to nothing", async () => {
+    const w = await knowing({
+      "POST /apps/iaa_shop/claim-nonce": { status: 200, body: { appId: "iaa_shop", status: "unclaimed" } },
+    });
+    const result = await w.client.requestClaimNonce();
+    expect(!result.ok && result.code).toBe("bad_response");
+    expect(w.client.claimUrl("https://infinite.test")).toBeNull();
+  });
+});
+
 describe("§5.6 the device, and the inbox", () => {
   const withApp = {
     "POST /apps/register": REGISTERED,
@@ -321,6 +446,31 @@ describe("§5.5 the public bundle", () => {
     expect(w.client.state().hasPublicBundle).toBe(true);
   });
 
+  it("sends If-None-Match on the FIRST call when it already holds an etag", async () => {
+    // The worker's allow-list carries `if-none-match` now, so there is nothing to try-and-see: a
+    // browser holding an etag asks conditionally straight away and pays for a 304, not for 256 KB.
+    const store = new MemoryStore();
+    await store.set(`registry:${ORIGIN}:${REF}`, { appId: "iaa_shop", status: "claimed", hasPublicBundle: true });
+    await store.set(`registry:bundle:${ORIGIN}:${REF}`, { etag: '"v1"', siteFile: null, files: { "PERSONA.md": "held" }, at: 1 });
+    const seen: (string | undefined)[] = [];
+    const client = createRegistryClient({
+      origin: ORIGIN,
+      ref: REF,
+      store,
+      base: BASE,
+      linkPub: () => LINK_PUB,
+      fetchImpl: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push((init?.headers as Record<string, string> | undefined)?.["if-none-match"]);
+        return new Response(null, { status: 304 });
+      }) as unknown as typeof fetch,
+    });
+    await client.load();
+    const got = await client.getPublicBundle();
+    expect(seen).toEqual(['"v1"']);
+    expect(got.ok && got.cached).toBe(true);
+    expect(got.ok && got.bundle.files["PERSONA.md"]).toBe("held");
+  });
+
   it("sends If-None-Match next time and reads a 304 out of the cache", async () => {
     const w = wire({
       "POST /apps/register": REGISTERED,
@@ -338,9 +488,10 @@ describe("§5.5 the public bundle", () => {
   });
 
   it("falls back to an unconditional GET when the conditional one is refused", async () => {
-    // `If-None-Match` is NOT CORS-safelisted, and the worker's Access-Control-Allow-Headers names
-    // the five X-Infinite-* headers and `content-type` — not this one. So a conditional GET is a
-    // preflight the browser will refuse today. Losing the 304 must not mean losing the bundle.
+    // `If-None-Match` is NOT CORS-safelisted, so a conditional GET is a preflight. The worker now
+    // names it in `Access-Control-Allow-Headers` (and exposes `ETag`), so the FIRST attempt is
+    // conditional — this is the older worker that does not, where the preflight fails inside the
+    // browser. Losing the 304 must not mean losing the bundle, so the page drops back, once.
     const calls: { url: string; conditional: boolean }[] = [];
     const store = new MemoryStore();
     await store.set(`registry:${ORIGIN}:${REF}`, { appId: "iaa_shop", status: "claimed", hasPublicBundle: true });

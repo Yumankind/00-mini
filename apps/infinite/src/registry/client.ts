@@ -68,6 +68,14 @@ export interface AppCard {
   hasPublicBundle: boolean;
   /** Null when the caller sent neither `Origin` nor `Referer` — which a `fetch` from a page never does. */
   origin: { origin: string; status: OriginStatus } | null;
+  /**
+   * The `applicationServerKey` a browser must pass to `PushManager.subscribe()` (§5.7).
+   *
+   * A FIELD RATHER THAN AN OMISSION, on the worker's side: `vapidPublicKey: null` is "this host sets
+   * no key", and it is what every host answers today. ABSENT is a different fact — a worker older
+   * than the field — so it is optional here and `push.ts` falls back to the build's env var for it.
+   */
+  push?: { vapidPublicKey: string | null } | null;
 }
 
 export interface OriginRow {

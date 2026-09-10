@@ -37,6 +37,14 @@ export interface RegistryState {
    * admin flow says so rather than opening a claim link that cannot be signed.
    */
   claimNonce: string | null;
+  /**
+   * The app's REGISTRATION origin, as the worker echoed it (§5.3's answer, §5.4's re-issue).
+   *
+   * It is NOT this page's origin: an app registered at `shop.example` legitimately answers
+   * `www.shop.example` too, and the claim signature is over the origin the worker stores. Null until
+   * a worker has said which it is, and then `claimUrl` carries that one.
+   */
+  claimOrigin: string | null;
   /** `iad_…` — this browser's device of this app (§5.6). */
   deviceId: string | null;
   originStanding: OriginStanding;
@@ -50,6 +58,7 @@ export const EMPTY_STATE: RegistryState = {
   appId: null,
   status: null,
   claimNonce: null,
+  claimOrigin: null,
   deviceId: null,
   originStanding: "unknown",
   hasPublicBundle: false,
@@ -78,6 +87,10 @@ export function toState(input: unknown): RegistryState {
       typeof raw.claimNonce === "string" && raw.claimNonce.length > 0 && raw.claimNonce.length <= 128
         ? raw.claimNonce
         : null,
+    // Re-typed as an ORIGIN, not as a string: this one is put in a link and then signed, so a
+    // record carrying `javascript:…` or a bare word reads as "nothing known" like any other.
+    claimOrigin:
+      typeof raw.claimOrigin === "string" && /^https?:\/\/[^\s/?#]+$/.test(raw.claimOrigin) ? raw.claimOrigin : null,
     deviceId: id(raw.deviceId, "iad_"),
     originStanding: STANDINGS.includes(raw.originStanding as OriginStanding)
       ? (raw.originStanding as OriginStanding)

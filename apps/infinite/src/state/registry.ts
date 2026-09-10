@@ -64,6 +64,13 @@ export const linkKeyRefusal = computed(() => keyRefused.value);
 export const registryReady = computed(() => loaded.value);
 export const isClaimed = computed(() => memo.value?.status === "claimed");
 
+/**
+ * The VAPID public key as the registry itself names it (§5.7), for `push.ts` to prefer over the
+ * build's env var. `undefined` means no card has been read or the worker predates the field — the
+ * two cases that are allowed to fall back; `null` is this host saying it publishes no key.
+ */
+export const registryVapidKey = computed<string | null | undefined>(() => card.value?.push?.vapidPublicKey);
+
 /** The `<script>` tag a site owner pastes, on THIS app's origin (§9.1: the site Worker serves `/e/<ref>.js`). */
 export const snippet = computed(() =>
   refValue.value ? embedSnippet(refValue.value, typeof location === "undefined" ? "" : location.origin) : "",
@@ -318,6 +325,15 @@ let poll: ReturnType<typeof setInterval> | null = null;
  * One drain. Every item is filed into the agent's `escalations/` BEFORE it is shown, because the
  * worker has already marked it delivered by the time this promise resolves: if the tab closes
  * between the answer and the write, the item is gone from the queue and must still be on disk.
+ *
+ * `since` HERE IS A `createdAt` — the owner's route and the visitor's poll spell the parameter the
+ * same way and mean different things, and this is the ordinary one: the page comes back OLDEST
+ * FIRST, ≤ 100 items, and `cursor` is the `createdAt` of the last of them. So the cursor only ever
+ * moves forward over items this browser has actually been handed, and a page that filled up is read
+ * again on the next tick from where it stopped.
+ *
+ * The page is REVERSED on the way into the list, because the list reads newest first and the wire
+ * does not.
  */
 export async function drainInbox(): Promise<void> {
   const api = client();
@@ -329,7 +345,8 @@ export async function drainInbox(): Promise<void> {
     }
     if (page.items.length) {
       const known = new Set(inboxItems.value.map((i) => i.mid));
-      inboxItems.value = [...page.items.filter((i) => !known.has(i.mid)), ...inboxItems.value];
+      const fresh = page.items.filter((i) => !known.has(i.mid)).reverse();
+      inboxItems.value = [...fresh, ...inboxItems.value];
     }
     cursor.value = page.cursor ?? cursor.value;
   });
@@ -380,7 +397,9 @@ export async function subscribeBrowser(): Promise<boolean> {
   const api = client();
   if (!api) return false;
   clearBanner();
-  const made = await subscribeThisBrowser();
+  // The key the REGISTRY named, so a subscription is never minted against a key this build guessed:
+  // an `applicationServerKey` that is not the sender's is a row nothing can ever push to.
+  const made = await subscribeThisBrowser(registryVapidKey.value);
   if (!made.ok) {
     failure.value = { ok: false, code: made.code, message: made.message, status: 0 };
     return false;
@@ -388,6 +407,8 @@ export async function subscribeBrowser(): Promise<boolean> {
   busy.value = true;
   try {
     const done = await absorb(await api.subscribePush(made.subscription), (answer) => {
+      // `sending` is the ROUTE's answer, never an assumption: the panel says what the worker says.
+      pushSending.value = answer.sending;
       notice.value = answer.sending
         ? "This browser will be notified."
         : "Stored. The worker does not send notifications yet, so nothing will arrive until it does.";
