@@ -17,7 +17,8 @@
 # and the Gemma entries carry Google's Gemma terms (redistribution allowed with the terms attached).
 #
 # Usage:  scripts/publish-litert-models.sh [--only <substring>] [--dry-run]
-#   HF_TOKEN     needed for the gated repos (Gemma 3 / 3n / 270m); ungated ones stream anonymously.
+#   HF_TOKEN     needed for the gated repos (Gemma 3 / 3n / 270m); spent on this machine only, to
+#                resolve the Hub's redirect to its pre-signed CDN URL — it never reaches the Worker.
 #   R2_BUCKET    default 00-downloads          DL_URL  default https://dl.0-0.chat
 #
 # Keys are FLAT under litert/ so `LiteRtProvider({ modelBaseUrl: "https://dl.0-0.chat/litert" })`
@@ -95,10 +96,17 @@ while IFS='|' read -r repo commit file bytes sha licence gated vision; do
     echo "= $key already mirrored ($bytes bytes)"; mirrored+=("$repo|$commit|$file|$bytes|$sha|$licence|$gated|$vision"); continue
   fi
 
-  auth=()
+  # A gated file: the token stays ON THIS MAC. The Hub's resolve URL answers a redirect to a
+  # pre-signed CDN URL (good for about an hour, no auth needed), so the token is spent here, once, to
+  # learn that URL, and the Worker copies from it exactly as it copies an ungated file. Sending the
+  # token through the Worker also tripped Cloudflare's 1042 on the authenticated hop.
   if [ "$gated" = "yes" ]; then
     [ -n "${HF_TOKEN:-}" ] || { echo "! $file is gated on the Hub and HF_TOKEN is not set — skipped" >&2; continue; }
-    auth=(-H "Authorization: Bearer $HF_TOKEN")
+    final=$(curl -sIL -H "Authorization: Bearer $HF_TOKEN" -o /dev/null -w '%{http_code} %{url_effective}' "$url")
+    case "$final" in
+      "200 https://"*) url=${final#200 } ;;
+      *) echo "! $file: the Hub did not hand out a download URL (${final%% *}) — is the token's account approved for $repo?" >&2; continue ;;
+    esac
   fi
 
   echo "→ $file ($((bytes / 1048576)) MB) from $repo@$commit"
@@ -108,7 +116,7 @@ while IFS='|' read -r repo commit file bytes sha licence gated vision; do
   # never come here: scripts/r2-mirror is a tool Worker with the bucket bound, deployed for this run
   # and deleted at the end, that fetches the Hub URL into a multipart upload and hashes it on the way.
   # The last line of its streamed answer is `ok <key> <bytes> <sha256>` or `error …`.
-  payload=$(python3 -c 'import json,sys; print(json.dumps({"url":sys.argv[1],"key":sys.argv[2],"sha256":sys.argv[3],"bytes":int(sys.argv[4]),"contentType":"application/octet-stream","auth":(("Bearer "+sys.argv[5]) if len(sys.argv)>5 and sys.argv[5] else None)}))' "$url" "$key" "$sha" "$bytes" "${HF_TOKEN:-}")
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"url":sys.argv[1],"key":sys.argv[2],"sha256":sys.argv[3],"bytes":int(sys.argv[4]),"contentType":"application/octet-stream"}))' "$url" "$key" "$sha" "$bytes")
   # Two tries: the first call after a deploy has answered a bare 500 once (the Worker's own errors
   # arrive as an `error …` line with status 200, so a non-200 is the platform, not the copy).
   result=""

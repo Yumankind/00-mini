@@ -12,7 +12,8 @@
  *
  * It is a TOOL, not a product surface: deployed by scripts/publish-litert-models.sh for the length of
  * a publish and deleted after, gated by a per-deploy token, POST only, no listing, no reads. The
- * token is a `--var` at deploy time; there is no way to call this without it.
+ * token is a `--var` at deploy time; there is no way to call this without it. It holds no other
+ * credential: a gated source reaches it as the pre-signed CDN URL the publisher resolved locally.
  *
  * The response streams one progress line per part, so a 6 GB copy is not one silent request that a
  * proxy on the way might give up on.
@@ -29,9 +30,10 @@ interface MirrorRequest {
   sha256: string;
   bytes: number;
   contentType?: string;
-  /** Full `Authorization` header value for the source (a gated Hub repo). Never logged. */
-  auth?: string;
 }
+
+/** Where a copy may come from: the Hub itself, or the pre-signed CDN URLs its redirects hand out. */
+const SOURCE_HOST_RE = /^https:\/\/([a-z0-9-]+\.)*(huggingface\.co|hf\.co)\//;
 
 const PART_BYTES = 32 * 1024 * 1024;
 const MAX_PARTS = 10_000;
@@ -55,7 +57,7 @@ export default {
       return new Response("bad json", { status: 400 });
     }
     const { url, key, sha256, bytes } = body;
-    if (typeof url !== "string" || !/^https:\/\/huggingface\.co\//.test(url)) return new Response("url must be a huggingface.co https url", { status: 400 });
+    if (typeof url !== "string" || !SOURCE_HOST_RE.test(url)) return new Response("url must be on huggingface.co or hf.co", { status: 400 });
     if (typeof key !== "string" || !KEY_RE.test(key) || key.includes("..")) return new Response("bad key", { status: 400 });
     if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) return new Response("bad sha256", { status: 400 });
     if (!Number.isInteger(bytes) || bytes <= 0 || bytes > PART_BYTES * MAX_PARTS) return new Response("bad bytes", { status: 400 });
@@ -68,7 +70,9 @@ export default {
     const work = (async () => {
       let upload: R2MultipartUpload | null = null;
       try {
-        const src = await fetch(url, { headers: body.auth ? { authorization: body.auth } : {} });
+        // No credentials, ever: a gated file arrives as the pre-signed CDN URL the publisher's
+        // machine resolved with its own token (publish-litert-models.sh). Nothing secret is here.
+        const src = await fetch(url);
         if (!src.ok || !src.body) {
           await say(`error source answered ${src.status}`);
           return;
