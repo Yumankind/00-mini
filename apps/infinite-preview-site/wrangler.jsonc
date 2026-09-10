@@ -1,0 +1,24 @@
+{
+  // The Homebrew wrangler serves this one; there is no node_modules here, so the schema is fetched.
+  // Same arrangement as apps/infinite-site, apps/skills-site and apps/models-site: these folders sit
+  // OUTSIDE the pnpm workspace on purpose (see the comments in pnpm-workspace.yaml).
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "infinite-preview",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+
+  // No custom domain: the workers.dev URL is what the app's VITE_PREVIEW_ORIGIN points at. Which
+  // hostname this ends up on matters less than that it is NOT the app's — the whole point of this
+  // deploy is that its origin is a different one (see src/index.ts).
+  "workers_dev": true,
+  "observability": { "enabled": true },
+
+  // NO BINDINGS, and this is a feature rather than an omission. No KV, no D1, no R2, no queue, no
+  // secret: the preview host is asked to hold a person's project files for the life of a browser tab,
+  // and the only place they are ever written is that browser's own Cache Storage. A binding here
+  // would be a place they could accidentally land instead.
+  //
+  // NO ASSETS EITHER. The three files this serves are strings in src/, so that the headers they need
+  // — Service-Worker-Allowed, no-store, Cross-Origin-Resource-Policy — are set in one place by code
+  // that can be read, rather than negotiated with an asset layer that answers before the Worker runs.
+}

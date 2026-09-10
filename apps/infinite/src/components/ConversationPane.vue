@@ -12,6 +12,8 @@ import ModelChip from "./ModelChip.vue";
 import { toolRowLabel, toolRowState, type Row } from "../lib/conversation.js";
 import { answeredByLine } from "../lib/model-chip.js";
 import { busy, composerError, rows, send, stop } from "../state/conversation.js";
+import { clearSelection, selection, selectionChip } from "../state/preview.js";
+import { SELECTION_NOTE, selectionBlock } from "../power/inspector-context.js";
 import { openChip, primeBrains } from "../state/model-choice.js";
 import { profile } from "../state/agent.js";
 
@@ -35,9 +37,14 @@ function toolTone(row: Row & { kind: "tool" }): string {
   return "text-[var(--color-ink-dim)]";
 }
 
+/**
+ * A message can be nothing but a selection. Clicking an element in the preview and pressing send
+ * without typing is a real thing a person does — "this one" — and the agent can ask what about it.
+ */
 async function submit(): Promise<void> {
   const text = draft.value;
-  if (!text.trim() || busy.value) return;
+  if (busy.value) return;
+  if (!text.trim() && !selection.value) return;
   draft.value = "";
   await send(text);
 }
@@ -164,6 +171,28 @@ watch(
       <!-- The composer's control row, the 00 shape: what will answer, where the message is written. -->
       <div class="max-w-2xl mx-auto flex items-center gap-2 mb-1.5 min-w-0">
         <ModelChip />
+        <!-- What was picked in the preview pane, and the ✕ that un-picks it. The whole block that
+             will be sent is the tooltip, so nothing travels that the person has not been shown. -->
+        <div
+          v-if="selectionChip"
+          class="min-w-0 h-7 flex items-center gap-1 rounded-lg px-2 text-[11px] text-[var(--color-cyan)] bg-[var(--color-panel-2)]"
+          :title="`${SELECTION_NOTE}\n\n${selection ? selectionBlock(selection) : ''}`"
+        >
+          <!-- The preview pane's own glyph: this chip is a thing that came from that pane. A real
+               pointer icon would be better and is not in TablerIcon.vue's set — the house rule is
+               that path data is copied from @tabler/icons, never typed, so adding one is its own
+               change rather than a guess made here. -->
+          <TablerIcon name="world" :size="11" class="shrink-0" />
+          <span class="truncate">{{ selectionChip }}</span>
+          <button
+            type="button"
+            class="shrink-0 opacity-70 hover:opacity-100"
+            title="Do not send this element"
+            @click="clearSelection()"
+          >
+            <TablerIcon name="x" :size="11" />
+          </button>
+        </div>
       </div>
       <div class="max-w-2xl mx-auto flex items-end gap-2">
         <textarea
@@ -187,7 +216,7 @@ watch(
           v-else
           type="button"
           class="ia-btn ia-btn-primary h-[38px] px-3 flex items-center gap-1.5 text-[12px] shrink-0"
-          :disabled="!draft.trim()"
+          :disabled="!draft.trim() && !selection"
           @click="submit()"
         >
           <TablerIcon name="send" :size="15" />

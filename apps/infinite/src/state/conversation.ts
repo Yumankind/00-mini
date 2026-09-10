@@ -18,7 +18,9 @@ import {
   settle,
   type ConversationState,
 } from "../lib/conversation.js";
+import { withSelection } from "../power/inspector-context.js";
 import { agent } from "./agent.js";
+import { selection, takeSelection } from "./preview.js";
 import {
   brainPreference,
   primeBrains,
@@ -77,12 +79,27 @@ export function openSession(id: string, history: { role: string; content: string
   lastError.value = null;
 }
 
+/**
+ * A message, plus whatever was picked in the preview.
+ *
+ * WHY THE FULL TEXT GOES INTO THE ROW. The selected element becomes a fenced block at the top of the
+ * prompt (`power/inspector-context.ts` says why it cannot be a side channel), and the transcript
+ * shows exactly that — not the typed words with the block hidden behind them. Two reasons: a person
+ * can see what their agent was actually told, and a session REOPENED later replays the stored message,
+ * which is the full text; a row that showed less live than it shows after a reload would be a lie in
+ * one of the two.
+ *
+ * The selection is SPENT here, not read: `takeSelection()` clears it, so a pick never rides along on
+ * the message after the one it was made for.
+ */
 export async function send(prompt: string): Promise<void> {
   const owned = agent.value;
   const text = prompt.trim();
-  if (!owned || !text || running.value) return;
+  if (!owned || running.value) return;
+  if (!text && !selection.value) return;
+  const message = withSelection(text, takeSelection());
   listen();
-  state.value = pushUser(state.value, text);
+  state.value = pushUser(state.value, message);
 
   // A6's second half: a run that CANNOT start says which brain refused and why, with a button to the
   // chip, instead of a bare failure a minute later. Readiness is asked for first, because a composer
@@ -112,7 +129,7 @@ export async function send(prompt: string): Promise<void> {
   );
   try {
     const result = await owned.runtime.run({
-      prompt: text,
+      prompt: message,
       sessionId: sessionId.value ?? undefined,
       // B20's other half: the segmented control in the chip's picker sets the class of brain the
       // next turns ask for. `auto` is the contract's own default and is passed all the same, so the

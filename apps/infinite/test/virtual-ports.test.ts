@@ -444,16 +444,28 @@ describe("the store the panes read", () => {
 describe("the preview pane's sandbox", () => {
   const pane = readFileSync(fileURLToPath(new URL("../src/components/PreviewPane.vue", import.meta.url)), "utf8");
 
-  it("never lets a served page have this origin's storage", () => {
-    // `allow-scripts` + `allow-same-origin` together are documented as equivalent to removing the
-    // sandbox — and a served page IS on this origin, so that pair would hand it our OPFS and our
-    // vault's IndexedDB. Measured in Chrome 152: with `allow-same-origin` the frame reads
-    // `localStorage` and OPFS; without it the service worker does not serve the frame at all. Hence
-    // ONE frame, `srcdoc`, opaque, fed by the page — and this assertion as the guard rail.
-    expect(pane).not.toMatch(/sandbox="[^"]*allow-same-origin/);
-    expect(pane).toContain('sandbox="allow-scripts"');
+  /**
+   * THIS GUARD CHANGED WHEN THE PREVIEW ORIGIN ARRIVED, and the reason it changed is the whole point
+   * of that origin. `allow-scripts` + `allow-same-origin` together are documented as equivalent to
+   * removing the sandbox: on THIS origin that pair would hand a previewed page our OPFS and our
+   * vault's IndexedDB, so the snapshot frame still may not have it, and the literal
+   * `sandbox="allow-scripts"` is still the only sandbox written into this file. The live frame's
+   * sandbox is `PREVIEW_SANDBOX`, bound as a prop from `power/preview-host.ts`, and the origin it
+   * applies to is the PREVIEW HOST's — a Worker with no bindings and no storage — never ours. So the
+   * assertion is now: no hard-coded `allow-same-origin` anywhere in the template, and the one frame
+   * that gets it gets it from that constant and is pointed at `hostSrc`.
+   */
+  it("never lets a page have THIS origin's storage", () => {
+    // The TEMPLATE only: the module header quotes the live frame's sandbox in prose, and prose is
+    // not what ships to a browser.
+    const template = pane.slice(pane.indexOf("<template>"));
+    expect(template).not.toMatch(/sandbox="[^"]*allow-same-origin/);
+    expect(template).toContain('sandbox="allow-scripts"');
     expect(pane).not.toContain(':src="portSrc"');
     expect(pane).toContain("buildPortPreview");
+    // The live frame: someone else's origin, and its sandbox comes from the module that explains why.
+    expect(pane).toContain(':sandbox="PREVIEW_SANDBOX"');
+    expect(pane).toContain(':src="hostSrc"');
   });
 });
 
