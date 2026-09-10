@@ -31,6 +31,7 @@ import { downloadPercent } from "../lib/readiness.js";
 import { agent } from "./agent.js";
 import { brains, chooseBrain, refreshBrains, selectedBrain, settings } from "./connections.js";
 import { chooseLocalModel, loadLocalRows, localRowsLoaded, syncLocalBrain } from "./local-models.js";
+import { chosenMacLabel } from "../mac/transport.js";
 
 /**
  * WHAT A LOCAL PROVIDER CAN DO THAT THE FROZEN CONTRACT DOES NOT PROMISE.
@@ -85,6 +86,8 @@ const chipBrains = computed<ChipBrain[]>(() =>
 const names = computed(() => ({
   localModel: settings.value.localModel?.label ?? null,
   byokVendor: settings.value.byok?.vendor ?? null,
+  // §8.4: the far agent's name as its Mac calls it, so the chip says "Claude Code · via my Mac".
+  macAgent: chosenMacLabel() ?? null,
 }));
 
 /** The chip's own line: the brain answering next, and how ready it is. */

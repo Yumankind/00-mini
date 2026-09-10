@@ -127,6 +127,17 @@ const EXPECTED = [
   // vision-aware routing (gap B10, 2026-09-10)
   "providerVision",
   "visionActuallyUsed",
+  // the brain that thinks on the person's own Mac (§8.4, 2026-09-10)
+  "RemoteBrainProvider",
+  "REMOTE_PROVIDER_ID",
+  "REMOTE_MODEL_ID",
+  "REMOTE_DEFAULT_LABEL",
+  "REMOTE_BUSY",
+  "NO_REMOTE_VISION",
+  "TOOL_RESULT_HEADER",
+  "renderRemotePrompt",
+  "remoteErrorCode",
+  "isRemoteBusy",
 ] as const;
 
 describe("the package's public API", () => {

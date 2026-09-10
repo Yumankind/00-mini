@@ -48,6 +48,14 @@ describe("naming the brain that answers next", () => {
   it("names the local brain generically until a row has been chosen", () => {
     expect(brainName(LOCAL)).toBe("Local AI · local");
   });
+
+  it("names the Mac's own agent, and says where the thinking happens (§8.4)", () => {
+    const mac = brain({ id: "remote-mac", peer: "remote" });
+    expect(brainName(mac, { macAgent: "Claude Code" })).toBe("Claude Code · via my Mac");
+    // Until this browser has been admitted at a Mac there is no name to use, so it says the truth.
+    expect(brainName(mac)).toBe("Your Mac's agent · via my Mac");
+    expect(brainShortName(mac, { macAgent: "  " })).toBe("Your Mac's agent");
+  });
 });
 
 describe("the chip's label rule", () => {

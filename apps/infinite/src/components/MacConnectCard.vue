@@ -42,6 +42,7 @@ import {
   startAnswering,
   stopAnswering,
 } from "../mac/state.js";
+import { chooseBrain, refreshBrains, selectedBrain } from "../state/connections.js";
 import { ed25519Available } from "../mac/wire.js";
 import { RELAY_NOT_CONFIGURED_LINE, relayConfigured } from "../mac/config.js";
 
@@ -70,6 +71,19 @@ watch(
 );
 
 const chosen = computed(() => macChosen.value);
+/** §8.4's second door: the same admitted session, used as a BRAIN rather than as a chat box. */
+const brainOn = computed(() => selectedBrain.value === "remote" || selectedBrain.value === "remote-mac");
+
+/**
+ * "Use as a brain" is one call and no new machinery: the provider is built from the session that is
+ * already chosen (`src/mac/transport.ts`), so this only tells the app which brain answers next — the
+ * same thing pressing a row in the model picker does. `refreshBrains` is what makes the new provider
+ * exist before it is selected, because the boot built the list before there was a Mac to ask.
+ */
+async function useAsBrain(): Promise<void> {
+  await refreshBrains();
+  await chooseBrain("remote");
+}
 
 onMounted(() => void loadRelayToken());
 onUnmounted(() => {
@@ -171,6 +185,25 @@ async function send(): Promise<void> {
             </div>
 
             <div v-if="chosen.agentId" class="space-y-2">
+              <!-- The second door: the Mac's agent as this browser's brain. The sentence under it is
+                   the whole legitimacy argument in one line, and it is shown before the button is
+                   pressed rather than in a doc nobody opens. -->
+              <button
+                type="button"
+                class="ia-btn w-full h-8 text-[11px] flex items-center justify-between"
+                :class="brainOn ? 'ring-1' : ''"
+                :disabled="macBusy"
+                @click="useAsBrain()"
+              >
+                <span class="truncate">{{ brainOn ? "Answering with your Mac" : "Use as a brain" }}</span>
+                <TablerIcon name="brain" :size="13" class="shrink-0" />
+              </button>
+              <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+                Your Mac's subscription is used on your Mac, by the app you signed in there — Claude
+                Code, Codex, or whatever that agent runs. This browser only asks it a question and
+                shows the answer. Its tools are its own; nothing here runs on that machine.
+              </p>
+
               <button type="button" class="ia-btn w-full h-8 text-[11px]" :disabled="macBusy" @click="loadMacSessions()">
                 Its sessions
               </button>

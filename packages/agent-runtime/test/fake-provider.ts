@@ -44,6 +44,8 @@ export class FakeProvider implements ModelProvider {
       /** An empty catalogue, the shape a BYOK provider built without one has. */
       emptyCatalog?: boolean;
       modelsThrows?: boolean;
+      /** A brain that brings its own tools (the agent on the person's Mac) says false here. */
+      supportsTools?: boolean;
     } = {},
   ) {}
 
@@ -63,7 +65,7 @@ export class FakeProvider implements ModelProvider {
       label: `${this.id} ${cls}`,
       class: cls,
       local: true,
-      supportsTools: true,
+      supportsTools: this.opts.supportsTools ?? true,
     }));
   }
 

@@ -99,6 +99,39 @@ function nonEmpty(providers: ModelProvider[]): ModelProvider[] {
   return providers.slice();
 }
 
+/**
+ * WHAT A BRAIN THAT BRINGS ITS OWN TOOLS IS TOLD — the sentence, and the line under the answer.
+ *
+ * `ModelInfo.supportsTools` has always been in the contract and the loop has always ignored it,
+ * which cost nothing while every peer was a bare model: a model that cannot call a function simply
+ * ignores the schemas, and the marked-prompt fallback of `@00/agent-models` picks up the local ones.
+ * It stops being free the moment a peer is a WHOLE AGENT — the browser talking to the agent on the
+ * person's own Mac (`RemoteBrainProvider`). That one has a shell, a filesystem and a git of its own,
+ * on a machine this browser cannot see; handing it forty JSON schemas for tools that only exist here
+ * invites it to call one, and the best case is that it wastes the turn describing a call nobody can
+ * run. So a provider whose catalogue says `supportsTools: false` is asked WITHOUT them, and the
+ * transcript says whose tools ran instead, because "it did not use my tools" is a thing a person
+ * should be told rather than left to infer from a shell that never opened.
+ */
+export const OWN_TOOLS_FOOTER = "This brain ran its own tools; the tools in this browser were not offered to it.";
+
+/**
+ * Does this provider want our tool schemas? Yes unless its catalogue says otherwise, ALWAYS.
+ *
+ * The three "I do not know" answers — an empty catalogue, a `models()` that throws, a row with the
+ * field absent — all mean YES, because that is what the loop did before this existed and a silent
+ * loss of every tool is the worst way to be wrong. Only an explicit `supportsTools: false` on every
+ * row it lists drops them.
+ */
+export async function providerOffersTools(provider: ModelProvider): Promise<boolean> {
+  try {
+    const rows = await provider.models();
+    return rows.length === 0 || rows.some((row) => row.supportsTools !== false);
+  } catch {
+    return true;
+  }
+}
+
 /** Tier order, so `tierFor` can raise a tool's tier for one call and never lower it. */
 const TIER_ORDER: Record<PermissionTier, number> = { safe: 0, confirm: 1, "high-risk": 2 };
 function strictest(a: PermissionTier, b: PermissionTier): PermissionTier {
@@ -174,6 +207,16 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
     const signal = linked.signal;
 
     const router = new ModelRouter(providers);
+    /** One catalogue read per provider per run — the same budget the class question already has. */
+    const toolsCache = new Map<string, Promise<boolean>>();
+    const offersTools = (provider: ModelProvider): Promise<boolean> => {
+      let pending = toolsCache.get(provider.id);
+      if (!pending) {
+        pending = providerOffersTools(provider);
+        toolsCache.set(provider.id, pending);
+      }
+      return pending;
+    };
     const usage = { value: usageZero() };
     let steps = 0;
     let finalText = "";
@@ -248,16 +291,19 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
         let response: ChatResponse | undefined;
         let provider: ModelProvider | undefined;
         let model: string | undefined;
+        /** True when this attempt's brain brings its own tools and ours were withheld. */
+        let ownTools = false;
         while (!attempt.done) {
           ({ provider, model } = attempt.value);
           answeredBy = { providerId: provider.id, model };
           emit({ type: "model_started", providerId: provider.id, model, brainClass: attempt.value.brainClass });
           /** Set the instant a token is emitted: after this, this turn belongs to this provider. */
           let emitted = false;
+          ownTools = schemas.length > 0 && !(await offersTools(provider));
           try {
             response = await callModel(provider, {
               messages,
-              tools: schemas.length ? schemas : undefined,
+              tools: schemas.length && !ownTools ? schemas : undefined,
               model,
               signal,
               onDelta: (delta) => {
@@ -286,7 +332,10 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
           return finish("error");
         }
         usage.value = addUsage(usage.value, response.usage);
-        emit({ type: "model_completed", providerId: provider.id, usage: response.usage, footer: response.footer });
+        // The provider's own footer wins — a far agent names itself better than this loop can — and
+        // the generic sentence stands in when a tool-less brain gave none.
+        const footer = response.footer ?? (ownTools ? OWN_TOOLS_FOOTER : undefined);
+        emit({ type: "model_completed", providerId: provider.id, usage: response.usage, footer });
 
         const text = response.message.content ?? "";
         const calls = response.message.toolCalls ?? [];

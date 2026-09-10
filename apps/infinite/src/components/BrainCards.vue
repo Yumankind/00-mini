@@ -41,6 +41,7 @@ const ICONS: Record<BrainId, string> = {
   sponsored: "sparkles",
   overblast: "cloud",
   byok: "key",
+  remote: "device-laptop",
 };
 
 const TONE_CLASS = {
@@ -303,6 +304,25 @@ const keyProblem = computed(() =>
               @click="run(() => saveOverblast(obBase, obModel, obToken).then(() => 'Token sealed in your vault.'))"
             >
               Save the token
+            </button>
+          </template>
+
+          <!-- The Mac (§8.4): nothing to set up HERE by design. The session is opened at the Mac by
+               the person sitting in front of it, so this card explains and points; the two doors and
+               the "Use as a brain" button live on the Mac card below. -->
+          <template v-else-if="card.peer.id === 'remote'">
+            <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+              The subscription is used on your Mac, by the app you signed in there. This browser only
+              asks its agent a question and shows the answer — and it can only ask a Mac that admitted
+              it, on the "00 on your Mac and phone" card below.
+            </p>
+            <button
+              type="button"
+              class="ia-btn w-full h-8 text-[11px]"
+              :disabled="!card.handle?.provider || !!card.unreachable"
+              @click="run(() => chooseBrain('remote').then(() => 'Your Mac answers the next message.'))"
+            >
+              Answer with my Mac
             </button>
           </template>
 

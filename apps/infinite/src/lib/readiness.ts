@@ -28,6 +28,10 @@ export function brainLabel(providerId: string): string {
     // The card exists before a vendor is picked, and "byok" is jargon on a screen that has none.
     case "byok":
       return "Your key";
+    // §8.4's brain: the agent on the person's own Mac, named by where it is rather than what it runs.
+    case "remote-mac":
+    case "remote":
+      return "Your Mac";
     default:
       return providerId;
   }

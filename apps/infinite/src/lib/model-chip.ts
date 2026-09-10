@@ -33,6 +33,8 @@ export interface ChipNames {
   localModel?: string | null;
   /** The BYOK vendor, so the chip can say "Claude" rather than "byok:anthropic". */
   byokVendor?: string | null;
+  /** The far agent's own name on the Mac (§8.4), so the chip says what is actually thinking. */
+  macAgent?: string | null;
 }
 
 export interface ChipInput extends ChipNames {
@@ -60,6 +62,8 @@ export function brainShortName(brain: ChipBrain, names: ChipNames = {}): string 
     return VENDOR_NAME[vendor] ?? (vendor || "Your key");
   }
   if (brain.peer === "overblast") return "Overblast";
+  // The Mac names its own agent; until this browser has been admitted there, it has no name to use.
+  if (brain.peer === "remote") return names.macAgent?.trim() || "Your Mac's agent";
   return "Sponsored";
 }
 
@@ -73,6 +77,9 @@ export function brainName(brain: ChipBrain, names: ChipNames = {}): string {
       return `${short} · your key`;
     case "overblast":
       return `${short} · credits`;
+    case "remote":
+      // Where the thinking happens is the whole point of this one, so it is the half that is named.
+      return `${short} · via my Mac`;
     default:
       // "Sponsored · sponsored" says nothing twice.
       return short;

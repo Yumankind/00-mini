@@ -24,7 +24,7 @@ export type {
   Usage,
 } from "@00/agent-models";
 
-export { createAgentRuntime, DEFAULT_MAX_STEPS, DEFAULT_WORKSPACE } from "./runtime.js";
+export { createAgentRuntime, DEFAULT_MAX_STEPS, DEFAULT_WORKSPACE, OWN_TOOLS_FOOTER, providerOffersTools } from "./runtime.js";
 export type { AgentRuntimeOptionsExt, RuntimeExtensions } from "./runtime.js";
 
 export { ContextManager, IDENTITY_FILE_MAX_CHARS, MEMORY_INDEX_MAX_CHARS } from "./context.js";
