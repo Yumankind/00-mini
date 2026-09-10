@@ -12,6 +12,7 @@
 import { computed, ref } from "vue";
 import { backupFilename, passphraseMismatch, passphraseProblem } from "../lib/backup.js";
 import { agent, forgetAgent } from "./agent.js";
+import { releaseAfterRestore } from "./move.js";
 
 const busy = ref(false);
 const error = ref<string | null>(null);
@@ -63,6 +64,10 @@ export async function importBackup(file: File, passphrase: string): Promise<stri
   note.value = null;
   try {
     const { agentId } = await owned.importBundleFile(file, passphrase);
+    // §7: a restore is how a moved agent comes home, so it is also what takes the lock off the
+    // receipt. Released BEFORE the reload the caller does, or the shell would paint the receipt over
+    // the agent that has just arrived.
+    await releaseAfterRestore();
     note.value = `Restored ${agentId}. Reopening…`;
     forgetAgent();
     return agentId;

@@ -38,15 +38,18 @@ import type { ModelInfo, ModelProvider } from "@00/agent-models";
 import {
   BYOK_BASE_URLS,
   IndexedDbDeviceKeyStore,
+  LiteRtProvider,
   WEBLLM_DEFAULT_MODEL_ID,
   WebLLMProvider,
   byokProvider,
+  localProviders,
   overblastProvider,
   registerDevice,
   sponsoredProvider,
   type ByokVendor,
 } from "@00/agent-models";
 import type { StepId, StepState } from "../lib/boot-steps.js";
+import { AGENT_ID_KEY, CREDENTIAL_KEY, SETTINGS_KEY, kvGet, kvSet } from "../lib/kv.js";
 import type { BrainId } from "../lib/brains.js";
 import { byokSecretName } from "../lib/brains.js";
 import { newAgentId } from "../lib/id.js";
@@ -121,56 +124,12 @@ export interface OwnedAgent {
   stubs: string[];
 }
 
-// ── A tiny IndexedDB key/value, for what §3.1 says lives there ────────────────────────────────────
-// Which agent this origin holds, the connection settings, the passkey credential id. (The vault
-// itself lives in the agent folder, where @00/agent-runtime's `createVault` puts it, so it travels
-// with the agent; permissions likewise.) Three operations is not worth a dependency.
+// ── What this origin remembers, beside the agent itself ───────────────────────────────────────────
+// Which agent lives here, the connection settings, the passkey credential id. (The vault itself lives
+// in the agent folder, where @00/agent-runtime's `createVault` puts it, so it travels with the agent;
+// permissions likewise.) The store is `lib/kv.ts` — shared with the move receipt of §7, which has to
+// land in the same database or a cleared browser would forget one and not the other.
 
-const DB_NAME = "00-infinite";
-const KV_STORE = "kv";
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(KV_STORE)) db.createObjectStore(KV_STORE);
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error("indexedDB refused to open"));
-  });
-}
-
-async function kvGet<T>(key: string): Promise<T | null> {
-  try {
-    const db = await openDb();
-    return await new Promise<T | null>((resolve, reject) => {
-      const req = db.transaction(KV_STORE, "readonly").objectStore(KV_STORE).get(key);
-      req.onsuccess = () => resolve((req.result as T) ?? null);
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    // A private window with storage blocked has no settings. That is a state, not a failure.
-    return null;
-  }
-}
-
-async function kvSet(key: string, value: unknown): Promise<void> {
-  try {
-    const db = await openDb();
-    await new Promise<void>((resolve, reject) => {
-      const req = db.transaction(KV_STORE, "readwrite").objectStore(KV_STORE).put(value, key);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    /* a browser that refuses to remember still runs the session in front of it */
-  }
-}
-
-const AGENT_ID_KEY = "agentId";
-const SETTINGS_KEY = "connections";
-const CREDENTIAL_KEY = "vaultCredentialId";
 const DEFAULT_SETTINGS: ConnectionSettings = { selected: "auto" };
 
 // ── Providers: the four peers of §6.1 ─────────────────────────────────────────────────────────────
@@ -306,13 +265,33 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
   // refuses to exist without a provider (`a runtime needs at least one ModelProvider`), and the one
   // peer that is always constructible is the one that needs nothing. Its own refusal — no WebGPU, not
   // downloaded — is then what a person sees, in the provider's words, instead of a boot failure.
+  //
+  // TWO LOCAL BRAINS, IN THE ORDER THE 2026-09-10 RULING NAMES (§6.1): LiteRT leads because it is
+  // faster and because web-llm errors outright on some Windows machines, and WebLLM stands behind it
+  // so a browser LiteRT cannot serve still answers. `localProviders()` is what puts them in that
+  // order — the router then walks past a provider whose readiness is `unsupported` on its own.
+  //
+  // LiteRT is built ONLY when the owner has named a host for the Gemma weights. The package refuses
+  // to invent one (their terms travel with whoever serves them) and so does this app: with no
+  // `VITE_LITERT_MODEL_BASE` there is one local brain, WebLLM, and nothing anywhere claims otherwise.
   let localPct: number | null = null;
-  const local = new WebLLMProvider({
-    modelId: WEBLLM_DEFAULT_MODEL_ID,
-    onProgress: (report) => {
-      localPct = Math.round((report.progress ?? 0) * 100);
-    },
-  });
+  const onLocalProgress = (report: { progress?: number }): void => {
+    localPct = Math.round((report.progress ?? 0) * 100);
+  };
+  const webllm = new WebLLMProvider({ modelId: WEBLLM_DEFAULT_MODEL_ID, onProgress: onLocalProgress });
+  const litertBase = (import.meta.env?.VITE_LITERT_MODEL_BASE as string | undefined)?.trim();
+  const litert = litertBase ? new LiteRtProvider({ modelBaseUrl: litertBase, onProgress: onLocalProgress }) : null;
+  const localChain = localProviders({ litert: litert ?? undefined, webllm });
+  /** What the ONE "Local AI" card shows: the leader, unless this browser cannot run it at all. */
+  const preferredLocal = async (): Promise<{ provider: ModelProvider; readiness: Readiness }> => {
+    const first = localChain[0];
+    const readiness = await readinessOf(first, { ready: false, reason: "unsupported" });
+    const cannotRunHere = !readiness.ready && readiness.reason === "unsupported";
+    if (!cannotRunHere || localChain.length === 1) return { provider: first, readiness };
+    const second = localChain[1];
+    return { provider: second, readiness: await readinessOf(second, { ready: false, reason: "unsupported" }) };
+  };
+  if (!litert) stubs.push("Local AI is web-llm only — no host is configured for the LiteRT model weights");
   const deviceStore = new IndexedDbDeviceKeyStore();
 
   opts.onStep("runtime", "active", "starting");
@@ -329,19 +308,17 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
         origin: typeof location === "undefined" ? "local" : location.origin,
         context: { secretNames },
       }),
-    [local],
+    localChain,
   );
   opts.onStep("runtime", "done", `${tools.length} tools`);
 
   const buildProviders = async (): Promise<ProviderHandle[]> => {
     const out: ProviderHandle[] = [];
 
-    out.push({
-      id: "local",
-      peer: "local",
-      provider: local,
-      readiness: await readinessOf(local, { ready: false, reason: "unsupported" }),
-    });
+    const chosenLocal = await preferredLocal();
+    // The card's id stays `local`: it is the PEER of §6.1, and the two implementations behind it are
+    // the router's business, not a second row on a settings screen.
+    out.push({ id: "local", peer: "local", provider: chosenLocal.provider, readiness: chosenLocal.readiness });
 
     const appId = settings.sponsored?.appId;
     const sponsored = appId ? sponsoredProvider({ appId, deviceKeyStore: deviceStore, catalog: [] }) : null;
@@ -417,14 +394,16 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
       settings.selected === "auto"
         ? [...usable.filter((h) => h.readiness.ready), ...usable.filter((h) => !h.readiness.ready)]
         : usable.filter((h) => h.id === settings.selected || h.peer === settings.selected);
-    const providers = chosen.map((h) => h.provider!).filter(Boolean);
-    runtime.rebuild(providers.length ? providers : [local]);
+    // The local peer expands back into its ordered pair here: the CARD shows one brain, the router
+    // gets both, so a LiteRT that turns out to be unusable mid-session falls through to WebLLM.
+    const providers = chosen.flatMap((h) => (h.peer === "local" ? localChain : h.provider ? [h.provider] : []));
+    runtime.rebuild(providers.length ? providers : localChain);
     return handles;
   };
 
   // 5. Local AI's boot line — the readiness of the local provider, verbatim, never a guess.
   opts.onStep("local-ai", "active");
-  const localReadiness = await readinessOf(local, { ready: false, reason: "unsupported" });
+  const localReadiness = (await preferredLocal()).readiness;
   if (localReadiness.ready) opts.onStep("local-ai", "done", "ready");
   else if (localReadiness.reason === "unsupported") opts.onStep("local-ai", "failed", "unsupported here");
   else if (localReadiness.reason === "download") opts.onStep("local-ai", "done", "not downloaded yet");

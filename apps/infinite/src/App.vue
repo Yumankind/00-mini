@@ -17,6 +17,8 @@ import ConnectionsPane from "./components/ConnectionsPane.vue";
 import ConversationPane from "./components/ConversationPane.vue";
 import FilesPane from "./components/FilesPane.vue";
 import InstallNag from "./components/InstallNag.vue";
+import MovePanel from "./components/MovePanel.vue";
+import MovedReceipt from "./components/MovedReceipt.vue";
 import OfflineBanner from "./components/OfflineBanner.vue";
 import SessionsList from "./components/SessionsList.vue";
 import TablerIcon from "./components/TablerIcon.vue";
@@ -26,13 +28,17 @@ import { refuseAll } from "./state/approvals.js";
 import { listen } from "./state/conversation.js";
 import { refreshFiles } from "./state/files.js";
 import { nextTheme, startInstallWatch, startTheme, applyTheme, themeChoice } from "./state/install.js";
+import { loadMoveReceipt, movedAway } from "./state/move.js";
 import { startOffline } from "./state/offline.js";
 import { lockNow, needsUnlock, refreshVault, startVaultClock, touchVault, vaultState } from "./state/vault.js";
 
-type Pane = "chat" | "files" | "settings";
+// `move` is a destination, not a tab: it is reached from the header menu and from Connections, and a
+// fourth icon in a bottom bar sized for a thumb would cost more than it is worth (§7 is a rare trip).
+type Pane = "chat" | "files" | "settings" | "move";
 
 const pane = ref<Pane>("chat");
 const drawer = ref(false);
+const menu = ref(false);
 const teardown: (() => void)[] = [];
 
 const TABS: { id: Pane; label: string; icon: string }[] = [
@@ -48,6 +54,8 @@ const themeIcon = computed(() =>
 onMounted(async () => {
   startTheme();
   teardown.push(startOffline(), startInstallWatch(), startVaultClock());
+  // Before the agent, because a moved-away agent must never flash its shell on the way to its receipt.
+  await loadMoveReceipt();
   await boot();
   await refreshVault();
   listen();
@@ -69,6 +77,7 @@ onBeforeUnmount(() => {
 
 watch(pane, (next) => {
   drawer.value = false;
+  menu.value = false;
   if (next === "files") void refreshFiles();
 });
 </script>
@@ -76,6 +85,10 @@ watch(pane, (next) => {
 <template>
   <div class="h-full flex flex-col min-h-0">
     <BootScreen v-if="!ready" />
+
+    <!-- §7: one live residence. A receipt is not an agent, so it is shown before the vault is asked
+         about — there is nothing here to unlock until the agent comes home. -->
+    <MovedReceipt v-else-if="movedAway" />
 
     <VaultGate v-else-if="needsUnlock" />
 
@@ -110,6 +123,32 @@ watch(pane, (next) => {
         </nav>
 
         <div class="ml-auto flex items-center gap-1">
+          <div class="relative">
+            <button
+              type="button"
+              class="ia-btn w-8 h-8 flex items-center justify-center"
+              title="More"
+              @click="menu = !menu"
+            >
+              <TablerIcon name="dots-vertical" :size="15" />
+            </button>
+            <template v-if="menu">
+              <button type="button" class="fixed inset-0 z-40 cursor-default" @click="menu = false" />
+              <div
+                class="absolute right-0 top-9 z-50 w-52 panel py-1 shadow-lg"
+                style="background: var(--color-panel)"
+              >
+                <button
+                  type="button"
+                  class="w-full text-left px-3 py-2 text-[12px] flex items-center gap-2 hover:bg-[var(--color-panel-2)]"
+                  @click="pane = 'move'"
+                >
+                  <TablerIcon name="device-laptop" :size="14" />
+                  Move to my Mac
+                </button>
+              </div>
+            </template>
+          </div>
           <button
             v-if="vaultState.unlocked"
             type="button"
@@ -149,7 +188,8 @@ watch(pane, (next) => {
         <main class="flex-1 min-w-0 min-h-0">
           <ConversationPane v-if="pane === 'chat'" />
           <FilesPane v-else-if="pane === 'files'" />
-          <ConnectionsPane v-else />
+          <MovePanel v-else-if="pane === 'move'" @close="pane = 'settings'" />
+          <ConnectionsPane v-else @move="pane = 'move'" />
         </main>
       </div>
 

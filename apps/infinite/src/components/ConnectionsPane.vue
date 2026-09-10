@@ -12,6 +12,11 @@ import BrainCards from "./BrainCards.vue";
 import TablerIcon from "./TablerIcon.vue";
 import VaultPanel from "./VaultPanel.vue";
 import { profile, stubs } from "../state/agent.js";
+import { forgetMoveReceipt, moveReceipt, twoLiveCopies } from "../state/move.js";
+import { receiptLine } from "../lib/move.js";
+
+// The Move flow is a pane of its own (App.vue owns the switch); this pane is one of its two doors.
+defineEmits<{ (e: "move"): void }>();
 </script>
 
 <template>
@@ -25,8 +30,40 @@ import { profile, stubs } from "../state/agent.js";
         </div>
       </div>
 
+      <!-- §7's second live copy, when the person chose one: never hidden, and easy to end. -->
+      <div v-if="twoLiveCopies && moveReceipt" class="panel px-3 py-3 space-y-2">
+        <div class="flex items-start gap-2">
+          <TablerIcon name="alert-triangle" :size="15" class="mt-0.5 shrink-0 text-[var(--color-amber)]" />
+          <div class="min-w-0 text-[11px] leading-relaxed text-[var(--color-amber)]">
+            {{ receiptLine(moveReceipt) }} Two copies of an agent drift apart and nothing merges them.
+          </div>
+        </div>
+        <button type="button" class="ia-btn w-full h-8 text-[11px]" @click="forgetMoveReceipt()">
+          The Mac's copy is gone — forget this
+        </button>
+      </div>
+
       <BrainCards />
       <VaultPanel />
+
+      <section>
+        <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">This machine</h2>
+        <div class="panel px-3 py-3 space-y-2">
+          <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+            Your agent lives in one place at a time. Move it to 00 on your Mac and this browser keeps
+            a receipt — you can bring it back whenever you like.
+          </p>
+          <button
+            type="button"
+            class="ia-btn w-full h-8 text-[11px] flex items-center justify-center gap-1.5"
+            @click="$emit('move')"
+          >
+            <TablerIcon name="device-laptop" :size="13" />
+            Move to my Mac
+          </button>
+        </div>
+      </section>
+
       <BackupPanel />
 
       <section>
