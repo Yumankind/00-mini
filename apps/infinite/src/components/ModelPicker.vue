@@ -40,7 +40,7 @@ import {
 
 const props = withDefaults(defineProps<{ section?: "all" | "local" }>(), { section: "all" });
 
-const ICONS: Record<string, string> = { local: "cpu", sponsored: "sparkles", overblast: "cloud", byok: "key" };
+const ICONS: Record<string, string> = { local: "cpu", sponsored: "sparkles", overblast: "cloud", byok: "key", remote: "device-laptop" };
 const TONE_CLASS = {
   ok: "text-[var(--color-phosphor)]",
   busy: "text-[var(--color-cyan)]",

@@ -38,4 +38,5 @@ export * from "./tool-fallback.js";
 export * from "./templates.js";
 export * from "./webllm.js";
 export * from "./litert.js";
+export * from "./remote.js";
 export * from "./router.js";

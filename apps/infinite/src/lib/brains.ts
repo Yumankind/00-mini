@@ -11,12 +11,19 @@
  * names a price, a tier or a plan. Those come from the worker when a peer is actually reached for.
  */
 
-export type BrainId = "local" | "sponsored" | "overblast" | "byok";
+export type BrainId = "local" | "sponsored" | "overblast" | "byok" | "remote";
 
 export interface BrainPeer {
   id: BrainId;
-  /** §6.1's level column, kept because the router orders by it. */
-  level: 0 | 1 | 2 | 3;
+  /**
+   * §6.1's level column, kept because the router orders by it.
+   *
+   * `4` is NOT a fifth rung of the free-to-paid ladder the first four make: `remote` is off the
+   * ladder altogether — it asks for no key, no account and no money, only a Mac the person already
+   * owns and is already sitting in front of sometimes. It is last because it is the newest road and
+   * because `auto` walks this order, not because it costs the most.
+   */
+  level: 0 | 1 | 2 | 3 | 4;
   label: string;
   /** One line of what it is. */
   blurb: string;
@@ -59,6 +66,16 @@ export const BRAIN_PEERS: BrainPeer[] = [
     needs: "The key, sealed in your vault.",
     remote: true,
   },
+  {
+    // §8.4's second door. The subscription is used ON THE MAC, by the Mac's own app; this browser
+    // only asks its agent a question and reads the answer, over the relay it was admitted through.
+    id: "remote",
+    level: 4,
+    label: "Your Mac",
+    blurb: "Your Mac's agent thinks, with whatever brain it runs — Claude Code, Codex, its own key.",
+    needs: "00 running on your Mac, and this browser admitted there.",
+    remote: true,
+  },
 ];
 
 export function peer(id: BrainId): BrainPeer {
@@ -70,6 +87,8 @@ export function peer(id: BrainId): BrainPeer {
 /** A provider id from the contract (`byok:openai`) back to the card it belongs to. */
 export function peerIdForProvider(providerId: string): BrainId | null {
   if (providerId.startsWith("byok:")) return "byok";
+  // One Mac, one provider id — the contract's `remote-mac`, the card's `remote`.
+  if (providerId === "remote-mac") return "remote";
   if (providerId === "local" || providerId === "sponsored" || providerId === "overblast") return providerId;
   return null;
 }

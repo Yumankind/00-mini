@@ -72,10 +72,11 @@ describe("the boot sequence", () => {
   });
 });
 
-describe("the four brain peers", () => {
-  it("is §6.1's table, levels and all", () => {
-    expect(BRAIN_PEERS.map((p) => p.id)).toEqual(["local", "sponsored", "overblast", "byok"]);
-    expect(BRAIN_PEERS.map((p) => p.level)).toEqual([0, 1, 2, 3]);
+describe("the brain peers", () => {
+  it("is §6.1's table, levels and all, with §8.4's Mac last", () => {
+    expect(BRAIN_PEERS.map((p) => p.id)).toEqual(["local", "sponsored", "overblast", "byok", "remote"]);
+    expect(BRAIN_PEERS.map((p) => p.level)).toEqual([0, 1, 2, 3, 4]);
+    // `remote` needs the relay, so offline takes it away exactly as it takes the other three.
     expect(BRAIN_PEERS.filter((p) => !p.remote).map((p) => p.id)).toEqual(["local"]);
   });
 
@@ -89,6 +90,7 @@ describe("the four brain peers", () => {
   it("maps a contract provider id back to its card", () => {
     expect(peerIdForProvider("byok:anthropic")).toBe("byok");
     expect(peerIdForProvider("local")).toBe("local");
+    expect(peerIdForProvider("remote-mac")).toBe("remote");
     expect(peerIdForProvider("nonsense")).toBeNull();
     expect(peer("overblast").level).toBe(2);
     expect(() => peer("nope" as never)).toThrow();

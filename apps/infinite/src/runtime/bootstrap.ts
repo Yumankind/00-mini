@@ -78,6 +78,7 @@ import { AGENT_ID_KEY, CREDENTIAL_KEY, SETTINGS_KEY, kvGet, kvSet } from "../lib
 import type { BrainId } from "../lib/brains.js";
 import { byokSecretName } from "../lib/brains.js";
 import { newAgentId } from "../lib/id.js";
+import { macBrainHandle } from "../mac/transport.js";
 import { isPhone, loadLiteRtCatalog, phoneRow, type CatalogResult } from "../lib/litert-catalog.js";
 import type { Readiness } from "../lib/readiness.js";
 import { VAULT_FILE, includeForExport, type VaultKind } from "../lib/vault-policy.js";
@@ -557,6 +558,11 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
         detail: unlocked ? "needs a key" : "unlock your vault",
       }),
     });
+
+    // §8.4's second door, LAST on purpose: `auto` walks this list, and a brain that lives on another
+    // machine should never quietly take a turn from one that is ready in this browser. It builds
+    // itself only when there is a Mac session to ask (apps/infinite/src/mac/transport.ts).
+    out.push(await macBrainHandle(vault));
 
     return out;
   };
