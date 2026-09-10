@@ -61,7 +61,10 @@ export async function receiveLive(
 
   hooks.onPhase?.("joining");
   const room = await (deps.rooms?.join?.(typed) ?? joinRoom(typed));
-  const keys = await deriveTransferKeys(typed, room.salt);
+  // Derive from the CANONICAL code the room answers, not from what was typed: today the two are
+  // equal because isMoveCode admits only the hyphenated lowercase spelling, but the day that regex
+  // admits a space, a guest keyed on its own spelling would silently diverge from the host.
+  const keys = await deriveTransferKeys(room.code || typed, room.salt);
   hooks.onConfirmation?.(keys.confirmation);
 
   hooks.onPhase?.("waiting");
