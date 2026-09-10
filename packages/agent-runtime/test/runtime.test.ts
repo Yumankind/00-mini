@@ -1,0 +1,456 @@
+import { describe, expect, it } from "vitest";
+import {
+  DEFAULT_MAX_STEPS,
+  EventRecorder,
+  MAX_OUTPUT_CHARS,
+  ModelRouter,
+  PermissionManager,
+  SeenFiles,
+  ToolRegistry,
+  createAgentRuntime,
+  fullTools,
+  lightTools,
+  parseSessionEntries,
+  type AgentEvent,
+  type AgentRuntimeOptionsExt,
+  type PermissionDecision,
+  type Tool,
+} from "../src/index.js";
+import { FakeProvider, call, type ScriptedTurn } from "./fake-provider.js";
+import { MemoryFs } from "./memory-fs.js";
+
+const now = () => new Date("2026-09-10T10:00:00Z");
+
+function harness(over: Partial<AgentRuntimeOptionsExt> & { script?: ScriptedTurn[] } = {}) {
+  const fs = (over.fs as MemoryFs) ?? new MemoryFs({ "workspace/AGENTS.md": "be brief" });
+  const provider = new FakeProvider("local", over.script ?? [{ text: "done" }]);
+  const answers: PermissionDecision[] = [];
+  const asked: { name: string; tier: string }[] = [];
+  const seenFiles = new SeenFiles();
+  const runtime = createAgentRuntime({
+    fs,
+    providers: [provider],
+    tools: fullTools({ seen: seenFiles, now }),
+    trust: "full",
+    now,
+    seenFiles,
+    origin: "https://agent.example",
+    async askPermission(req) {
+      asked.push({ name: req.name, tier: req.tier });
+      return answers.shift() ?? { allowed: true };
+    },
+    ...over,
+  } as AgentRuntimeOptionsExt);
+  const events: AgentEvent[] = [];
+  runtime.on((e) => events.push(e));
+  return { runtime, fs, provider, events, asked, answers, seenFiles };
+}
+
+describe("the loop", () => {
+  it("answers in one step when the model uses no tools", async () => {
+    const { runtime, events } = harness({ script: [{ text: "hello there", usage: { inputTokens: 5, outputTokens: 2 } }] });
+    const result = await runtime.run({ prompt: "hi" });
+
+    expect(result).toMatchObject({ text: "hello there", steps: 1, stopped: "final" });
+    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 2 });
+    expect(events.map((e) => e.type)).toEqual(["model_started", "model_completed", "agent_message"]);
+    expect(events.at(-1)).toMatchObject({ type: "agent_message", final: true });
+  });
+
+  it("runs a tool, feeds the result back and finishes on the next turn", async () => {
+    const fs = new MemoryFs({ "workspace/README.md": "the contents" });
+    const { runtime, events, provider } = harness({
+      fs,
+      script: [{ text: "looking", toolCalls: [call("read", { path: "README.md" })] }, { text: "it says: the contents" }],
+    });
+    const result = await runtime.run({ prompt: "what does the readme say?" });
+
+    expect(result).toMatchObject({ steps: 2, stopped: "final", text: "it says: the contents" });
+    expect(events.map((e) => e.type)).toEqual([
+      "model_started",
+      "model_completed",
+      "agent_message",
+      "tool_started",
+      "tool_completed",
+      "model_started",
+      "model_completed",
+      "agent_message",
+    ]);
+    // The tool result actually reached the second request.
+    const second = provider.requests[1].messages;
+    expect(second.at(-1)).toMatchObject({ role: "tool", content: "the contents", name: "read" });
+  });
+
+  it("runs several tool calls from ONE turn sequentially, in the emitted order", async () => {
+    const order: string[] = [];
+    const slow = (name: string, ms: number): Tool => ({
+      tier: "safe",
+      schema: { name, description: name, parameters: { type: "object", properties: {} } },
+      async run() {
+        await new Promise((r) => setTimeout(r, ms));
+        order.push(name);
+        return { output: name };
+      },
+    });
+    const { runtime } = harness({
+      tools: [slow("slow", 20), slow("quick", 1)],
+      script: [{ toolCalls: [call("slow"), call("quick")] }, { text: "done" }],
+    });
+    await runtime.run({ prompt: "both" });
+    // Parallel execution would have put `quick` first.
+    expect(order).toEqual(["slow", "quick"]);
+  });
+
+  it("stops at maxSteps and says so", async () => {
+    const looping: ScriptedTurn[] = Array.from({ length: 10 }, () => ({ toolCalls: [call("ls")] }));
+    const { runtime } = harness({ script: looping });
+    const result = await runtime.run({ prompt: "loop", maxSteps: 3 });
+    expect(result).toMatchObject({ steps: 3, stopped: "max_steps" });
+  });
+
+  it("defaults maxSteps to 40", () => {
+    expect(DEFAULT_MAX_STEPS).toBe(40);
+  });
+
+  it("a tool failure is an observation: the loop keeps going and the model sees the error", async () => {
+    const { runtime, events, provider } = harness({
+      script: [{ toolCalls: [call("read", { path: "nope.md" })] }, { text: "that file is not there" }],
+    });
+    const result = await runtime.run({ prompt: "read nope" });
+    expect(result).toMatchObject({ stopped: "final", text: "that file is not there" });
+    expect(provider.requests[1].messages.at(-1)!.content).toContain("File not found");
+    expect(events.some((e) => e.type === "tool_completed")).toBe(true);
+  });
+
+  it("a THROWN tool becomes tool_failed and still feeds the model", async () => {
+    const { runtime, events, provider } = harness({
+      script: [{ toolCalls: [call("read", { path: "../vault.json" })] }, { text: "cannot reach that" }],
+    });
+    await runtime.run({ prompt: "escape" });
+    expect(events.filter((e) => e.type === "tool_failed")).toHaveLength(1);
+    expect(provider.requests[1].messages.at(-1)!.content).toContain("outside this agent's sandbox");
+  });
+
+  it("an unknown tool name is answered with the list of real ones", async () => {
+    const { runtime, provider } = harness({
+      script: [{ toolCalls: [call("teleport")] }, { text: "no such thing" }],
+    });
+    await runtime.run({ prompt: "x" });
+    expect(provider.requests[1].messages.at(-1)!.content).toContain('No tool named "teleport"');
+  });
+
+  it("a MODEL failure ends the run with `error`", async () => {
+    const { runtime, events } = harness({ script: [{ throws: "network down" }] });
+    const result = await runtime.run({ prompt: "hi" });
+    expect(result.stopped).toBe("error");
+    expect(events.at(-1)).toMatchObject({ type: "error", message: "model failed: network down" });
+  });
+
+  it("truncates a huge tool result and says how to narrow it", async () => {
+    const big: Tool = {
+      tier: "safe",
+      schema: { name: "flood", description: "flood", parameters: { type: "object", properties: {} } },
+      async run() {
+        return { output: "x".repeat(MAX_OUTPUT_CHARS + 5000) };
+      },
+    };
+    const { runtime, provider } = harness({
+      tools: [big],
+      script: [{ toolCalls: [call("flood")] }, { text: "ok" }],
+    });
+    await runtime.run({ prompt: "flood me" });
+    const observed = provider.requests[1].messages.at(-1)!.content;
+    expect(observed).toContain("[Output truncated:");
+    expect(observed.length).toBeLessThan(MAX_OUTPUT_CHARS + 500);
+  });
+
+  it("honours a per-run tool subset", async () => {
+    const { runtime, provider } = harness({ script: [{ text: "ok" }] });
+    await runtime.run({ prompt: "x", tools: ["read", "ls", "not-a-tool"] });
+    expect(provider.requests[0].tools?.map((t) => t.name)).toEqual(["read", "ls"]);
+  });
+});
+
+describe("permissions in the loop", () => {
+  it("never asks about a safe tool and always asks about a confirm one", async () => {
+    const { runtime, asked, events } = harness({
+      script: [{ toolCalls: [call("ls")] }, { toolCalls: [call("write", { path: "a.md", content: "x" })] }, { text: "done" }],
+    });
+    await runtime.run({ prompt: "make a file" });
+    expect(asked).toEqual([{ name: "write", tier: "confirm" }]);
+    expect(events.filter((e) => e.type === "permission_requested")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "permission_answered")).toHaveLength(1);
+  });
+
+  it("a refusal blocks the tool and tells the model not to retry", async () => {
+    const fs = new MemoryFs();
+    const h = harness({
+      fs,
+      script: [{ toolCalls: [call("write", { path: "a.md", content: "x" })] }, { text: "they said no" }],
+    });
+    h.answers.push({ allowed: false });
+    const result = await h.runtime.run({ prompt: "write a file" });
+
+    expect(fs.readSync("workspace/a.md")).toBeUndefined();
+    expect(h.events.some((e) => e.type === "tool_started")).toBe(false);
+    expect(h.provider.requests[1].messages.at(-1)!.content).toContain("Do not retry");
+    expect(result.text).toBe("they said no");
+  });
+
+  it('an "always" answer is not asked again — in this run or the next one', async () => {
+    const fs = new MemoryFs();
+    const permissions = new PermissionManager(fs, { now: () => 1 });
+    const h = harness({
+      fs,
+      permissions,
+      script: [{ toolCalls: [call("write", { path: "a.md", content: "1" })] }, { text: "one" }],
+    });
+    h.answers.push({ allowed: true, remember: "always" });
+    await h.runtime.run({ prompt: "first" });
+    expect(h.asked).toHaveLength(1);
+
+    h.provider.say([{ toolCalls: [call("write", { path: "b.md", content: "2" })] }, { text: "two" }]);
+    await h.runtime.run({ prompt: "second" });
+    expect(h.asked).toHaveLength(1); // still one: the standing answer covered it
+    expect(fs.readSync("workspace/b.md")).toBe("2");
+  });
+});
+
+describe("abort", () => {
+  it("stops mid-tool when the runtime is aborted", async () => {
+    let started = false;
+    let sawAbort = false;
+    const waits: Tool = {
+      tier: "safe",
+      schema: { name: "waits", description: "waits", parameters: { type: "object", properties: {} } },
+      async run(_args, ctx) {
+        started = true;
+        await new Promise<void>((resolve) => {
+          if (ctx.signal.aborted) return resolve();
+          ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        sawAbort = ctx.signal.aborted;
+        return { output: "interrupted" };
+      },
+    };
+    const { runtime } = harness({
+      tools: [waits],
+      script: [{ toolCalls: [call("waits")] }, { text: "never reached" }],
+    });
+    const running = runtime.run({ prompt: "go" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(started).toBe(true);
+    runtime.abort();
+
+    const result = await running;
+    expect(sawAbort).toBe(true);
+    expect(result.stopped).toBe("aborted");
+    expect(result.text).toBe("");
+  });
+
+  it("honours a signal handed in with the run, including one already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { runtime, provider } = harness({ script: [{ text: "should not run" }] });
+    const result = await runtime.run({ prompt: "x", signal: controller.signal });
+    expect(result.stopped).toBe("aborted");
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it("aborting between runs is harmless", async () => {
+    const { runtime } = harness();
+    expect(() => runtime.abort()).not.toThrow();
+    expect((await runtime.run({ prompt: "hi" })).stopped).toBe("final");
+  });
+});
+
+describe("sessions through the runtime", () => {
+  it("writes the turn to sessions/ and lists it by its first user line", async () => {
+    const fs = new MemoryFs();
+    const { runtime } = harness({ fs, script: [{ toolCalls: [call("ls")] }, { text: "one folder" }] });
+    const result = await runtime.run({ prompt: "what is in here?" });
+
+    const file = fs.paths().find((p) => p.startsWith("sessions/"))!;
+    expect(file).toMatch(/^sessions\/2026-09-10T10-00-00-000Z_[0-9a-f-]+\.jsonl$/);
+    const kinds = parseSessionEntries(fs.readSync(file)!).map((e) =>
+      e.type === "session" ? "session" : (e as { message: { role: string } }).message.role,
+    );
+    expect(kinds).toEqual(["session", "user", "assistant", "toolResult", "assistant"]);
+
+    expect(await runtime.listSessions()).toEqual([
+      { id: result.sessionId, title: "what is in here?", updatedAt: expect.any(Number) },
+    ]);
+    expect((await runtime.loadSession(result.sessionId)).map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+    ]);
+  });
+
+  it("resuming by sessionId continues the same file and replays the history to the model", async () => {
+    const fs = new MemoryFs();
+    const h = harness({ fs, script: [{ text: "first answer" }] });
+    const first = await h.runtime.run({ prompt: "first question" });
+
+    h.provider.say([{ text: "second answer" }]);
+    const second = await h.runtime.run({ prompt: "second question", sessionId: first.sessionId });
+
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(fs.paths().filter((p) => p.startsWith("sessions/"))).toHaveLength(1);
+    expect(h.provider.requests[1].messages.map((m) => `${m.role}:${m.content}`)).toEqual([
+      expect.stringContaining("system:"),
+      "user:first question",
+      "assistant:first answer",
+      "user:second question",
+    ]);
+  });
+
+  it("a NEW session clears the read-before-overwrite guard; resuming keeps it", async () => {
+    const fs = new MemoryFs({ "workspace/NOTES.md": "old" });
+    const h = harness({ fs, script: [{ toolCalls: [call("read", { path: "NOTES.md" })] }, { text: "read it" }] });
+    const first = await h.runtime.run({ prompt: "read the notes" });
+
+    // Resuming: the file counts as read, so the write goes through.
+    h.provider.say([{ toolCalls: [call("write", { path: "NOTES.md", content: "new" })] }, { text: "written" }]);
+    await h.runtime.run({ prompt: "now change it", sessionId: first.sessionId });
+    expect(fs.readSync("workspace/NOTES.md")).toBe("new");
+
+    // A fresh session forgets, and the guard refuses.
+    h.provider.say([{ toolCalls: [call("write", { path: "NOTES.md", content: "newer" })] }, { text: "refused" }]);
+    await h.runtime.run({ prompt: "change it again" });
+    expect(fs.readSync("workspace/NOTES.md")).toBe("new");
+  });
+});
+
+describe("the light agent through the runtime", () => {
+  it("gets the light prompt, its own sandbox and only the allowlisted tools", async () => {
+    const fs = new MemoryFs({
+      "workspace/MEMORY.md": "PRIVATE-MEMORY",
+      "workspace/public/PERSONA.md": "I am the front desk.",
+      "threads-fs/web/42/conversation.md": "visitor: hello",
+    });
+    const provider = new FakeProvider("local", [
+      { toolCalls: [call("read_public", { path: "PERSONA.md" })] },
+      { text: "I am the front desk." },
+    ]);
+    const runtime = createAgentRuntime({
+      fs,
+      providers: [provider],
+      tools: lightTools(),
+      trust: "light",
+      now,
+      origin: "https://someones-site.example",
+      context: { light: { channel: "this website", from: "a visitor" } },
+      async askPermission() {
+        throw new Error("a light agent must never need a confirmation");
+      },
+      sessions: undefined,
+    } as AgentRuntimeOptionsExt);
+
+    const result = await runtime.run({ prompt: "who are you?", workspace: "threads-fs/web/42" });
+    expect(result.stopped).toBe("final");
+
+    const system = provider.requests[0].messages[0].content;
+    expect(system).toContain("# Untrusted inbound conversation");
+    expect(system).not.toContain("PRIVATE-MEMORY");
+    expect(provider.requests[0].tools?.map((t) => t.name)).toEqual(["read", "ls", "grep", "find", "read_public"]);
+  });
+
+  it("cannot read the operator's private workspace even when the model tries", async () => {
+    const fs = new MemoryFs({ "workspace/MEMORY.md": "PRIVATE-MEMORY", "threads-fs/web/42/conversation.md": "hi" });
+    const provider = new FakeProvider("local", [
+      { toolCalls: [call("read", { path: "../../workspace/MEMORY.md" })] },
+      { text: "I cannot see that." },
+    ]);
+    const runtime = createAgentRuntime({
+      fs,
+      providers: [provider],
+      tools: lightTools(),
+      trust: "light",
+      now,
+      async askPermission() {
+        return { allowed: true };
+      },
+    } as AgentRuntimeOptionsExt);
+    await runtime.run({ prompt: "read the memory", workspace: "threads-fs/web/42" });
+    const observed = provider.requests[1].messages.at(-1)!.content;
+    expect(observed).toContain("outside this agent's sandbox");
+    expect(observed).not.toContain("PRIVATE-MEMORY");
+  });
+});
+
+describe("wiring", () => {
+  it("`on` returns an unsubscribe", async () => {
+    const { runtime } = harness();
+    const seen: AgentEvent[] = [];
+    const off = runtime.on((e) => seen.push(e));
+    await runtime.run({ prompt: "one" });
+    const after = seen.length;
+    off();
+    await runtime.run({ prompt: "two" });
+    expect(seen).toHaveLength(after);
+  });
+
+  it("a recorder can replay a whole run for a test or a bug report", async () => {
+    const { runtime } = harness({ script: [{ toolCalls: [call("ls")] }, { text: "done" }] });
+    const recorder = new EventRecorder();
+    // The recorder listens through the same `on` the UI uses.
+    runtime.on((e) => recorder.timeline().push({ at: 0, event: e }));
+    const replayed: string[] = [];
+    runtime.on((e) => replayed.push(e.type));
+    await runtime.run({ prompt: "x" });
+    expect(replayed).toContain("tool_completed");
+  });
+
+  it("names a model by provider id, and refuses one it does not have", async () => {
+    const { runtime, provider } = harness({ script: [{ text: "ok" }] });
+    await runtime.run({ prompt: "x", model: "local/qwen-1.5b" });
+    expect(provider.requests[0].model).toBe("qwen-1.5b");
+    await expect(runtime.run({ prompt: "x", model: "anthropic" })).rejects.toThrow(/no model provider "anthropic"/);
+  });
+
+  it("reports the provider that answered, and the footer it attached", async () => {
+    const { runtime, events } = harness({ script: [{ text: "sponsored answer", footer: "answered thanks to ACME" }] });
+    await runtime.run({ prompt: "x" });
+    expect(events[0]).toMatchObject({ type: "model_started", providerId: "local" });
+    expect(events[1]).toMatchObject({ type: "model_completed", providerId: "local", footer: "answered thanks to ACME" });
+  });
+
+  it("sums usage across steps, cents included", async () => {
+    const { runtime } = harness({
+      script: [
+        { toolCalls: [call("ls")], usage: { inputTokens: 100, outputTokens: 10, costCents: 3 } },
+        { text: "done", usage: { inputTokens: 150, outputTokens: 20, costCents: 4 } },
+      ],
+    });
+    const result = await runtime.run({ prompt: "x" });
+    expect(result.usage).toEqual({ inputTokens: 250, outputTokens: 30, costCents: 7 });
+  });
+});
+
+describe("ToolRegistry and ModelRouter", () => {
+  it("refuses a second tool under an existing name — the name is the contract", () => {
+    const registry = new ToolRegistry(fullTools());
+    expect(() => registry.register(fullTools()[0])).toThrow(/already registered/);
+    expect(registry.has("read")).toBe(true);
+    expect(registry.get("nope")).toBeUndefined();
+  });
+
+  it("auto picks the first READY provider, in the caller's order", async () => {
+    const notReady = new FakeProvider("local", [], { ready: false, reason: "download" });
+    const ready = new FakeProvider("sponsored", []);
+    expect((await new ModelRouter([notReady, ready]).pick()).provider.id).toBe("sponsored");
+    expect((await new ModelRouter([notReady, ready]).pick("auto")).provider.id).toBe("sponsored");
+  });
+
+  it("falls back to the first provider when nothing is ready, so the failure carries its own words", async () => {
+    const a = new FakeProvider("local", [], { ready: false, reason: "download" });
+    const b = new FakeProvider("byok:openai", [], { ready: false, reason: "credential" });
+    expect((await new ModelRouter([a, b]).pick()).provider.id).toBe("local");
+  });
+
+  it("needs at least one provider", () => {
+    expect(() => new ModelRouter([])).toThrow(/at least one ModelProvider/);
+  });
+});

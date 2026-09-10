@@ -14,6 +14,11 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       reporter: ["text-summary"],
+      // The ratchet of docs/testing.md, from the package's first commit: floors ~1-2 points under the
+      // measured value (99.1 / 94.0 / 98.8 / 99.1 on 2026-09-10, macOS). Floors only ever go up — a
+      // change that drops below one is fixed or reverted, never accommodated by lowering the number.
+      // The slack absorbs the Linux leg, which takes the other side of every platform gate.
+      thresholds: { statements: 97, lines: 97, branches: 92, functions: 97 },
     },
   },
 });
