@@ -84,8 +84,24 @@ export const LITERT_MODEL_CACHE = "00-litert-models";
  */
 export const LITERT_DEFAULT_WASM_PATH = "/mediapipe/genai/wasm";
 
+/**
+ * WHICH RUNTIME A ROW NEEDS (additive, 2026-09-11).
+ *
+ * There are three local brains now, and only two of them are interchangeable behind a `.task` file.
+ * `litert` is this file's runtime; `transformers` is `src/transformers.ts` — Transformers.js on ONNX
+ * Runtime Web, whose "asset" is a DIRECTORY of fifteen files rather than one bundle. Absent means
+ * `litert`, because every row that existed before this field meant that.
+ *
+ * It lives here rather than in `transformers.ts` because the app's picker joins ONE list of rows to
+ * the mirror's catalogue (`mergeMirrorCatalog`), and the field is how a row that comes back from that
+ * join says which provider to build for it.
+ */
+export type LocalRuntime = "litert" | "transformers";
+
 /** A catalogue row: `ModelInfo` plus what it costs in video memory and which file to fetch. */
 export interface LiteRtModelInfo extends ModelInfo {
+  /** Which of the three local runtimes loads this row. Absent means `litert`. */
+  runtime?: LocalRuntime;
   /** Rough working-set size on the GPU. See the warning on `LITERT_CATALOG`. */
   vramMb: number;
   /** The file name under `modelBaseUrl`. The host is the owner's; the NAME is the model's. */
@@ -300,6 +316,12 @@ export interface LiteRtMirrorAsset {
   useRestrictionsUrl?: string;
   gatedAtSource?: boolean;
   vision?: boolean;
+  /**
+   * Which runtime the row needs (additive, 2026-09-11). The publish script writes it for the
+   * Transformers.js directories it mirrors; a row without it is a LiteRT bundle, as every row was
+   * before the field existed.
+   */
+  runtime?: LocalRuntime;
 }
 
 export interface LiteRtMirrorCatalog {
@@ -359,6 +381,10 @@ export function parseMirrorCatalog(raw: unknown): LiteRtMirrorCatalog | null {
       useRestrictionsUrl: str(asset.useRestrictionsUrl),
       gatedAtSource: typeof asset.gatedAtSource === "boolean" ? asset.gatedAtSource : undefined,
       vision: typeof asset.vision === "boolean" ? asset.vision : undefined,
+      // Only the two runtimes this repo has providers for. An unknown word is DROPPED rather than
+      // passed on: it would reach `chooseLocalModel`, which builds a provider per runtime and has
+      // nothing to build for a name it has never heard.
+      runtime: asset.runtime === "litert" || asset.runtime === "transformers" ? asset.runtime : undefined,
     });
   }
   if (!assets.length) return null;
@@ -420,6 +446,7 @@ export function mergeMirrorCatalog(
         ...known,
         ...(licence ? { license: licence } : {}),
         ...(typeof asset.vision === "boolean" ? { vision: asset.vision } : {}),
+        ...(asset.runtime === undefined ? {} : { runtime: asset.runtime }),
         ...(asset.bytes === undefined ? {} : { bytes: asset.bytes }),
         ...(asset.sha256 === undefined ? {} : { sha256: asset.sha256 }),
         ...(asset.gatedAtSource === undefined ? {} : { gatedAtSource: asset.gatedAtSource }),
@@ -443,6 +470,7 @@ export function mergeMirrorCatalog(
       assetFile: asset.file,
       family: "gemma",
       ...(typeof asset.vision === "boolean" ? { vision: asset.vision } : {}),
+      ...(asset.runtime === undefined ? {} : { runtime: asset.runtime }),
       license: licence,
       ...(asset.bytes === undefined ? {} : { bytes: asset.bytes }),
       ...(asset.sha256 === undefined ? {} : { sha256: asset.sha256 }),

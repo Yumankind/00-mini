@@ -93,6 +93,21 @@ describe("the cross-origin decision", () => {
     }
   });
 
+  it("gives ONNX Runtime's worker glue the embedder policy, or the worker spawn is refused", () => {
+    // Found live on 2026-09-11: ORT's threaded build spawns dedicated workers from its `.mjs`, and a
+    // worker created by a cross-origin-isolated document is refused unless its OWN script response
+    // carries a compatible COEP. The main-thread fetch of the same file answers 200, so the symptom is
+    // a session build that never finishes and no error anyone can see.
+    expect(headersFor("/ort/ort-wasm-simd-threaded.asyncify.mjs", "runtime-worker")).toEqual({
+      "cross-origin-embedder-policy": COEP,
+      "cross-origin-resource-policy": "same-origin",
+    });
+    // NOT the document's set: `Cross-Origin-Opener-Policy` means nothing on a subresource.
+    expect(headersFor("/ort/x.wasm", "runtime-worker")["cross-origin-opener-policy"]).toBeUndefined();
+    // And it is not `cross-origin` either: these bytes are the app's own, unlike the mirror's.
+    expect(headersFor("/ort/x.wasm", "runtime-worker")["cross-origin-resource-policy"]).toBe("same-origin");
+  });
+
   it("leaves a served page alone entirely", () => {
     expect(headersFor("/~/3000/index.html", "served")).toEqual({});
   });
@@ -107,6 +122,12 @@ describe("the cross-origin decision", () => {
     expect(kindFor("/m/brain.js")).toBe("embed");
     expect(kindFor("/mediapipe/genai/wasm/genai_wasm_internal.wasm")).toBe("mirror");
     expect(kindFor("/litert/catalog.json")).toBe("mirror");
+    expect(kindFor("/onnx/onnx-community/gemma-4-E2B-it-ONNX/config.json")).toBe("mirror");
+    // `/ort/` is ONNX Runtime Web's own wasm: under the 25 MiB cap, so a static file from public/ and
+    // this origin's own bytes. Calling it `mirror` would put `cross-origin` on the app's own runtime —
+    // and calling it `asset` would drop the embedder policy its WORKERS need (see below).
+    expect(kindFor("/ort/ort-wasm-simd-threaded.asyncify.wasm")).toBe("runtime-worker");
+    expect(kindFor("/ort/ort-wasm-simd-threaded.asyncify.mjs")).toBe("runtime-worker");
     expect(kindFor("/~/3000/")).toBe("served");
     // `/e/x.js` is not a ref shape, so it is not the loader — it falls through to the shell.
     expect(kindFor("/e/x.js")).toBe("asset");
@@ -147,6 +168,70 @@ describe("the site Worker's responses", () => {
     expect(response.status).toBe(200);
     expect(policy(response)).toEqual({ coop: null, coep: null, corp: "cross-origin" });
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  /**
+   * The third local runtime's weights (2026-09-11). Unlike `/litert/`, which is flat and has a closed
+   * list of extensions, this prefix carries a repo's own relative layout — so the door is a SHAPE, and
+   * what a test has to hold is where that shape stops.
+   */
+  describe("the /onnx/ door", () => {
+    const onnx = (path: string) => worker.fetch(new Request(`https://infinite-site.example${path}`), env);
+
+    it("serves a repo's file, and the one subfolder those repos use", async () => {
+      for (const path of [
+        "/onnx/onnx-community/gemma-4-E2B-it-ONNX/config.json",
+        "/onnx/onnx-community/gemma-4-E2B-it-ONNX/tokenizer.json",
+        "/onnx/onnx-community/gemma-4-E2B-it-ONNX/chat_template.jinja",
+        "/onnx/onnx-community/gemma-4-E2B-it-ONNX/onnx/decoder_model_merged_q4f16.onnx",
+        "/onnx/onnx-community/gemma-4-E2B-it-ONNX/onnx/decoder_model_merged_q4f16.onnx_data",
+      ]) {
+        const response = await onnx(path);
+        expect(response.status, path).toBe(200);
+        // Published to be fetched from anywhere, and by an isolated page: both need `cross-origin`.
+        expect(policy(response), path).toEqual({ coop: null, coep: null, corp: "cross-origin" });
+        expect(response.headers.get("access-control-allow-origin"), path).toBe("*");
+        expect(response.headers.get("accept-ranges"), path).toBe("bytes");
+        // Content-addressed by the revision in the published key, so it never changes under its name.
+        expect(response.headers.get("cache-control"), path).toContain("immutable");
+      }
+    });
+
+    it("answers a ranged read, which is how three gigabytes arrive", async () => {
+      const response = await worker.fetch(
+        new Request("https://infinite-site.example/onnx/o/m/onnx/x.onnx_data", { headers: { range: "bytes=0-15" } }),
+        env,
+      );
+      expect(response.status).toBe(206);
+      expect(response.headers.get("content-range")).toBe("bytes 0-15/64");
+    });
+
+    it("refuses anything outside the shape, and never falls through to the shell", async () => {
+      for (const path of [
+        "/onnx/only-one-segment", // no repo
+        "/onnx/org/repo/too/deep/for/us.onnx", // deeper than the one subfolder
+        // A traversal the URL parser does NOT normalise away, which is the one that could reach the
+        // key: `%2e%2e` survives `new URL`, so it is the shape's `[A-Za-z0-9._-]` that refuses it.
+        // (A plain `/onnx/org/../../etc/passwd` never arrives here at all — `new URL` collapses it to
+        // `/etc/passwd`, which is not under this prefix and is answered by the shell like any miss.)
+        "/onnx/org/%2e%2e/x.json",
+        "/onnx/org/repo/..", // collapses to `/onnx/org/`, which is not a file name
+        "/onnx/", // the bare prefix
+      ]) {
+        const response = await onnx(path);
+        expect(response.status, path).toBe(404);
+        expect(await response.text(), path).toBe("not found");
+      }
+    });
+
+    it("answers a preflight, because a cross-origin Range needs one", async () => {
+      const response = await worker.fetch(
+        new Request("https://infinite-site.example/onnx/o/m/config.json", { method: "OPTIONS" }),
+        env,
+      );
+      expect(response.status).toBe(204);
+      expect(response.headers.get("access-control-allow-headers")).toContain("range");
+    });
   });
 
   it("keeps the app's own bundle to the app", async () => {

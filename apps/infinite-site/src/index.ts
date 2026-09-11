@@ -108,6 +108,24 @@ const MEDIAPIPE_WASM_FILES = new Set([
   "genai_wasm_nosimd_internal.wasm",
 ]);
 
+/**
+ * THE THIRD LOCAL RUNTIME'S WEIGHTS (2026-09-11). `/onnx/<org>/<repo>/<path>` is the same read-only
+ * R2 door as `/litert/*`, for a Transformers.js model — which is not one bundle but FIFTEEN files
+ * under a repo path, two of them 1.5 GB (packages/agent-models/src/transformers.ts,
+ * `GEMMA_4_E2B_ONNX_FILES`). So unlike `/litert/`, which is flat, this prefix carries the repo's own
+ * relative layout, and the allow-list is a SHAPE rather than a list of names: the catalogue is
+ * published from the Mac and a new repo must not need a deploy here.
+ *
+ * `org/repo/file` or `org/repo/subfolder/file`, and nothing deeper — the `onnx/` subfolder is the only
+ * one any of these repos uses, and a shape that allowed arbitrary depth would be a shape that allowed
+ * a key nobody meant to publish.
+ *
+ * NOT to be confused with `/ort/`, which is ONNX Runtime Web's own wasm: that is under 25 MiB, so it
+ * ships as an ordinary static asset from `public/` and this Worker has no route for it.
+ */
+const ONNX_PREFIX = "/onnx/";
+const ONNX_ASSET = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/(?:[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/;
+
 const LITERT_PREFIX = "/litert/";
 /**
  * The weights, whose names this Worker deliberately does NOT know: the catalogue is published from
@@ -127,6 +145,11 @@ const TYPE_BY_EXT: Record<string, string> = {
   ".md": "text/markdown; charset=utf-8",
   ".task": "application/octet-stream",
   ".litertlm": "application/octet-stream",
+  ".onnx": "application/octet-stream",
+  // An ONNX external-data blob has no extension at all after `.onnx_data`, so it falls through to the
+  // octet-stream default below; named here for the reader rather than for the lookup.
+  ".onnx_data": "application/octet-stream",
+  ".jinja": "text/plain; charset=utf-8",
 };
 
 /** The R2 key behind a mirrored path, and how long it may be held. `null` = not one of ours. */
@@ -142,6 +165,16 @@ function mirrorTarget(pathname: string): { key: string; cacheControl: string } |
     // The catalogue gains a row when a publish adds one, so it is the single short-lived key here;
     // a weight is content-named and never changes under its own name.
     return { key: `litert/${name}`, cacheControl: name === "catalog.json" ? shortLived : immutable };
+  }
+  if (pathname.startsWith(ONNX_PREFIX)) {
+    const name = pathname.slice(ONNX_PREFIX.length);
+    // The shape permits `..` as a segment (a dot is a legal character in a file name), so it is
+    // refused by name — a traversal is the one thing an allow-list-by-shape must still say no to.
+    if (name.includes("..") || !ONNX_ASSET.test(name)) return null;
+    // Every file under here is content-addressed by its repo revision in the published key, so none
+    // of them ever changes under its own name. There is no `catalog.json` on this prefix: the ONNX row
+    // is listed in `litert/catalog.json` beside the LiteRT ones, because the app joins ONE catalogue.
+    return { key: `onnx/${name}`, cacheControl: immutable };
   }
   return null;
 }
@@ -384,7 +417,11 @@ export default {
     // The mirror, BEFORE the asset layer and before the SPA fallback: nothing under these two
     // prefixes is a file in public/, and index.html is not a wasm module.
     if (mirrored) return serveMirrored(request, env.MODELS, mirrored.key, mirrored.cacheControl);
-    if (url.pathname.startsWith(MEDIAPIPE_WASM_PREFIX) || url.pathname.startsWith(LITERT_PREFIX)) {
+    if (
+      url.pathname.startsWith(MEDIAPIPE_WASM_PREFIX) ||
+      url.pathname.startsWith(LITERT_PREFIX) ||
+      url.pathname.startsWith(ONNX_PREFIX)
+    ) {
       // Under a mirrored prefix but not a name we serve. The SPA must never answer here.
       return new Response("not found", { status: 404 });
     }

@@ -1,17 +1,28 @@
-// @00/agent-models — the brains of the browser runtime: three remote peers and TWO local ones behind
-// the single `ModelProvider` door of docs/HANDOFF-infinite-agent.md §6, plus the router that picks.
-// The browser NEVER holds a platform key: what lives here is a device signature, an Overblast device
-// token, or the person's own key. See src/sponsored.ts for the first and src/providers.ts for the rest.
+// @00/agent-models — the brains of the browser runtime: three remote peers and THREE local ones
+// behind the single `ModelProvider` door of docs/HANDOFF-infinite-agent.md §6, plus the router that
+// picks. The browser NEVER holds a platform key: what lives here is a device signature, an Overblast
+// device token, or the person's own key. See src/sponsored.ts for the first and src/providers.ts for
+// the rest.
 //
-// ── THE TWO LOCAL BRAINS (level 0: needs nothing, works offline, costs nothing) ──────────────────
+// ── THE THREE LOCAL BRAINS (level 0: needs nothing, works offline, costs nothing) ────────────────
 //
-// `LiteRtProvider` (`local-litert`, src/litert.ts) is PREFERRED, and `WebLLMProvider` (`local`,
-// src/webllm.ts) is the fallback behind it. The ruling of 2026-09-10 (§6.1): LiteRT — Google's
+// `LiteRtProvider` (`local-litert`, src/litert.ts) is PREFERRED, `TransformersProvider`
+// (`local-onnx`, src/transformers.ts) is the one that SEES, and `WebLLMProvider` (`local`,
+// src/webllm.ts) is the fallback behind both. The ruling of 2026-09-10 (§6.1): LiteRT — Google's
 // MediaPipe LLM Inference API over WebGPU, the Gemma family — is faster and more stable than
-// web-llm's Gemma builds, and web-llm errors outright on some Windows machines. `localProviders()`
-// in src/router.ts returns the pair in that order; when LiteRT answers `unsupported` the router
-// walks on to WebLLM and the turn still happens. Neither can call tools natively at the installed
-// versions, so both go through the one marked prompt fallback in src/tool-fallback.ts.
+// web-llm's Gemma builds, and web-llm errors outright on some Windows machines. Transformers.js on
+// ONNX Runtime Web joined on 2026-09-11 because LiteRT's Gemma 4 web builds are TEXT ONLY and its
+// vision rows are a generation behind and gated: `onnx-community/gemma-4-E2B-it-ONNX` is Gemma 4 E2B
+// with its vision encoder, ungated and Apache-2.0, at 3.4 GB and slower. `localProviders()` in
+// src/router.ts returns them in that order; when one answers `unsupported` the router walks on and
+// the turn still happens, and a turn that carries a picture ranks the sighted peer first on its own
+// (`ModelRouter.ordered()`). None of the three calls tools natively as installed and configured, so
+// all three go through the one marked prompt fallback in src/tool-fallback.ts.
+//
+// WHAT THE APP MUST SERVE FOR THE ONNX ROW — the same two things, neither of them a CDN:
+// ONNX Runtime Web's wasm pair from `/ort/` on the app's own origin (apps/infinite/vite.config.ts
+// copies it out of the installed package), and the fifteen model files from a `modelBaseUrl` the
+// owner hosts. `GEMMA_4_E2B_ONNX_FILES` is the exact list, with the Hub's sizes and hashes.
 //
 // WHAT THE APP MUST SERVE FOR LITERT TO WORK OFFLINE — two things, neither of them a CDN:
 //
@@ -38,5 +49,6 @@ export * from "./tool-fallback.js";
 export * from "./templates.js";
 export * from "./webllm.js";
 export * from "./litert.js";
+export * from "./transformers.js";
 export * from "./remote.js";
 export * from "./router.js";

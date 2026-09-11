@@ -16,7 +16,11 @@ export default defineConfig({
       reporter: ["text-summary"],
       // The ratchet of docs/testing.md: measured 2026-09-11 (75.3 / 82.0 / 79.1 / 75.3) minus slack. Low on statements because the DOM-bound modules (panel, bridges, OPFS glue) are counted
       // and cannot run in node; raise as pure modules split out of them.
-      thresholds: { statements: 72, branches: 79, functions: 75, lines: 72 },
+      // Re-measured 2026-09-11 later the same day, with the ONNX local brain's wiring and its tests
+      // (the /onnx/ R2 door, the /ort/ wasm plugin, the picker's runtime row): 75.8 / 83.6 / 80.18 /
+      // 75.8 — every axis up, so every floor goes up with them, keeping the two points of slack the
+      // Linux leg needs on the browser-API gates.
+      thresholds: { statements: 73, branches: 81, functions: 78, lines: 73 },
     },
   },
 });

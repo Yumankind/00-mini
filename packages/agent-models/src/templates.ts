@@ -52,14 +52,21 @@ export const GEMMA_MARKERS: TurnMarkers = {
   userRole: "user",
 };
 
-/** How a tool result is written back to a model that has no `tool` role — which is all of them here. */
-function toolTurnText(message: ChatMessage): string {
+/**
+ * How a tool result is written back to a model that has no `tool` role — which is all of them here.
+ *
+ * EXPORTED since 2026-09-11, for `transformers.ts`: that provider does not build a marked prompt at
+ * all (the library's own `apply_chat_template` does that), but it faces the same two questions — what
+ * a tool result reads as, and how an assistant turn that asked for a tool is replayed — and two
+ * answers to those would be two wordings of the same transcript.
+ */
+export function toolTurnText(message: ChatMessage): string {
   const which = message.name ?? message.toolCallId ?? "tool";
   return `Result of ${which}:\n${message.content}`;
 }
 
 /** An assistant turn that asked for a tool is replayed as the JSON it wrote, so the transcript matches what the model produced. */
-function assistantTurnText(message: ChatMessage): string {
+export function assistantTurnText(message: ChatMessage): string {
   if (!message.toolCalls?.length) return message.content;
   const calls = message.toolCalls.map((c) => JSON.stringify({ tool_call: { name: c.name, arguments: c.arguments ?? {} } })).join("\n");
   return message.content ? `${message.content}\n${calls}` : calls;

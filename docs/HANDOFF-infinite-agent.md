@@ -1815,3 +1815,231 @@ its argument — as a numbered to-do. Nothing of it was attempted this round.
 
 Suite: 182 tests → **973** (869 running, 104 skipped). Coverage 96.6 / 89.9 / 94.6 / 96.6 against the
 unchanged 90 / 80 / 90 / 90 floors.
+
+---
+
+## A THIRD local brain, and the first one that sees: Gemma 4 E2B on Transformers.js (2026-09-11)
+
+Bruno asked for Gemma 4 E2B **with pictures** in the tab. Neither runtime we had can give him that,
+and the reason is a fact about the builds rather than about our code:
+
+- **LiteRT's Gemma 4 web builds are TEXT ONLY.** The `litert-community` cards say so, which is why
+  §12.7's table marks the three Gemma 4 rows "text only" and why `LITERT_CATALOG`'s Gemma 4 rows carry
+  no `vision` flag. LiteRT's vision rows are **Gemma 3n** — a generation behind, and gated at source.
+- **web-llm's only vision builds are Phi-3.5-vision** at ~4 GB of VRAM. Not Gemma, and not in that
+  catalogue (rule 3 of `webllm.ts`).
+
+`onnx-community/gemma-4-E2B-it-ONNX` is the same Gemma 4 E2B weights exported to ONNX — **ungated,
+Apache-2.0**, and Transformers.js runs it on WebGPU with the vision encoder attached. So the picture
+road exists; it runs on a third runtime. `TransformersProvider` (`local-onnx`,
+`packages/agent-models/src/transformers.ts`) is that runtime behind the one `ModelProvider` door.
+
+### The row, as the picker shows it
+
+| | |
+|---|---|
+| id | `gemma-4-E2B-it-onnx-q4f16` |
+| label | **Gemma 4 E2B · vision (ONNX)** |
+| size | **3.40 GB** (3 401 448 652 bytes, exact) |
+| flags | `vision` · `class: small` · `supportsTools` (prompt fallback) · `contextTokens: 8192` |
+| licence | Apache-2.0 — no use restrictions, so no Gemma-terms consent line |
+| note | *Sees pictures · ONNX runtime, slower than LiteRT · needs 3.4 GB of browser storage, and the download does not resume* |
+
+`contextTokens: 8192` is a **budget, not the weights' limit**. `config.json` says
+`text_config.max_position_embeddings: 131072`, and the ONNX decoder's KV cache grows as it generates
+rather than being asked for at load — so nothing caps anything. 8192 is what a laptop GPU holds of
+that cache beside 3.4 GB of weights, and it is also the number `FALLBACK_SCHEMAS_MIN_CONTEXT` (16384)
+is compared against, so the prompt fallback sends signatures rather than raw schemas. Claiming 131072
+would be true about the weights and a lie about both of those.
+
+### Six facts about the installed library that shaped the provider
+
+Every one is read out of `@huggingface/transformers@4.2.0` in `node_modules`, and each has a twin
+guard in `test/transformers.test.ts` that re-reads it.
+
+1. **The library fetches its own files, and its `env` is a global singleton.** There is no per-call
+   host: `buildResourcePaths` composes every URL as
+   `remoteHost + remotePathTemplate.replace("{model}"…) + file`. Pointing it at our mirror means
+   writing to a module-level object, so `applyEnv()` runs at the top of **every** `load()`.
+2. **The wasm comes from our origin.** Transformers.js defaults `wasmPaths` to **jsdelivr**
+   (`src/backends/onnx.js`), which is a local brain that stops working on a plane and would not load
+   under COOP+COEP anyway. `ONNX_DEFAULT_WASM_PATH` is `/ort/`, and `ortWasm()` in
+   `apps/infinite/vite.config.ts` copies four files there out of the installed `onnxruntime-web`.
+3. **The download does not resume, and nothing here can make it.** In a browser
+   `loadResourceFile` reads each file with `readResponse` into ONE `Uint8Array` and then puts it in
+   Cache Storage — no `Range`, no part file anywhere in the package. `LiteRtProvider`'s part-wise
+   resumable download cannot be lent to it, because the fetching happens inside the library. Two
+   consequences, both said out loud rather than hidden: the row's `note`, and the fact that the
+   biggest single buffer this path allocates is the 1.52 GB `embed_tokens` data file — under Chrome's
+   ArrayBuffer ceiling, but the same class of allocation that failed at 3 GB on 2026-09-11, and the
+   reason this row is **desktop only** (`vramMb: 4600`, far past §12.6's phone cap).
+4. **Progress is aggregated for us — per `from_pretrained` CALL, which is not the same thing.**
+   `DefaultProgressCallback` wraps the callback separately for each call, so the processor's seven
+   files (19.5 MB) and the model's eight are summed in two maps that never see each other. Reading its
+   `progress_total` was the first live bug of the day: the chip sat at **"99 % · 3.4 of 3.4 GB"** for
+   the whole compile, because the last 0.6 % belonged to a call whose aggregate the provider was not
+   reading. The provider now sums the per-file `progress` events itself, across both calls, and passes
+   the same callback to both. Its own `total` still climbs as files start, so `totalBytes` is the
+   larger of that and the row's `sizeBytes`, and the bar only ever fills.
+5. **The sessions are not negotiable, so the audio encoder is mirrored.**
+   `MODEL_SESSION_CONFIG[ImageAudioTextToText]` builds `embed_tokens`, `decoder_model_merged`,
+   `vision_encoder` **and** `audio_encoder` unless the caller loads through a `…ForCausalLM` class,
+   which drops vision with it. **There is no vision-without-audio load**, so 171 MB of the 3.40 GB is
+   capability that is paid for and unused — `audio: true` on the row records that, and `ChatMessage`
+   has no audio part to send it. Leaving it out means the model does not load at all.
+6. **Tool calls take the prompt fallback, deliberately.** Unlike LiteRT this is a choice, not an
+   absence: the repo's `chat_template.jinja` **does** have a native function-calling path
+   (`format_function_declaration`), but its output is a bespoke `<|"|>`-quoted syntax needing its own
+   parser, while `parseFallbackToolCalls` is what both other local brains already use.
+   `TRANSFORMERS_NATIVE_TOOLS` is the constant that says the road exists and is not taken.
+
+### The wire
+
+`AutoProcessor.from_pretrained` first and on its own (the tokenizer, the chat template and two small
+JSON files — a wrong host 404s in a second rather than three gigabytes later), then
+`AutoModelForImageTextToText.from_pretrained(repo, { dtype: "q4f16", device: "webgpu", progress_callback })`.
+The auto class rather than `Gemma4ForConditionalGeneration` by name: the registry maps
+`gemma4 → Gemma4ForConditionalGeneration` in `MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES`, and a test
+pins that mapping.
+
+**Pictures travel separately from their placeholders, and must stay in step.**
+`apply_chat_template(messages, { enable_thinking: false, add_generation_prompt: true })` is handed
+`{ type: "image" }` placeholders and writes the model's image token for each; the pixels go to
+`processor(prompt, images, null, { add_special_tokens: false })` in the order the placeholders
+appeared. Images go **before** the text of their turn — the model card's "Modality order" note, and
+the only order in which the words can refer to the picture. Capped at 4 per turn
+(`TRANSFORMERS_MAX_IMAGES`): each image is 280 tokens of 8192 before the words start.
+
+Streaming is `TextStreamer`'s `callback_function` bridged to `ChatChunk`s through the same queue
+LiteRT uses, with the same hold-back so a model that types `<end_of_turn>` as text never streams the
+marker to a reader. `signal` → `InterruptableStoppingCriteria.interrupt()`. Generation runs in the
+calling thread, as LiteRT's does.
+
+**`abortLoad()` is best effort, and honestly so.** The fetches DO stop — `applyEnv` hands the library
+an `env.fetch` bound to the load's controller — but ORT gives no way to interrupt a session build, so
+a model that arrives after the stop is disposed rather than kept. The bytes already written stay in
+Cache Storage, and re-reading them is the only "resume" this runtime has.
+
+### Serving it
+
+- **Mirror keys**: `onnx/<org>/<repo>/<relative path>` — the repo's OWN layout, because
+  Transformers.js composes `<remoteHost>/<remotePathTemplate>/<file>` and this app sets that template
+  to `{model}/`. `pathTemplateFor()` switches to the Hub's `{model}/resolve/{revision}/` when the base
+  IS the Hub, which is what makes a live check one environment variable instead of two.
+- **`scripts/publish-litert-models.sh`** grew two columns (`runtime`, `key prefix`) and the fifteen
+  ONNX rows, each with the Hub's exact size and LFS sha256 (verified on the way into the bucket as
+  every other row is). `--dry-run` now prints the whole `catalog.json` it would write.
+- **`litert/catalog.json` holds ONE row for the repo**, not fifteen: `parseMirrorCatalog`
+  deliberately drops any `file` with a slash in it, so the fifteen collapse into an asset whose `file`
+  is the repo's directory name, whose `bytes` is their sum, carrying `runtime: "transformers"`. It has
+  **no `sha256`** — fifteen files have fifteen hashes and no single one; the per-file list with its
+  hashes is `GEMMA_4_E2B_ONNX_FILES` in the package, and a made-up aggregate would be worse than none.
+- **`apps/infinite-site/src/index.ts`** answers `/onnx/*` from R2 beside `/litert/*`, with the same
+  read-only CORS, ranges, ETags and `cross-origin` CORP. Its allow-list is a SHAPE (`org/repo/[sub/]file`)
+  rather than a list of names, so a new repo needs a publish and not a deploy.
+- **`/ort/` is NOT that door.** ONNX Runtime Web's own wasm is 22.5 MiB at the largest — under
+  Cloudflare's 25 MiB asset cap — so it ships from `public/` as an ordinary static asset and the
+  Worker has no route for it. `test/ort-wasm.test.ts` holds the size line, because MediaPipe's runtime
+  is in R2 for exactly the reason that cap exists.
+- **`scripts/r2-mirror`** gained a key-prefix allow-list (`litert/`, `onnx/`, `mediapipe/`). Its regex
+  already permitted slashes; what it did not check was the destination.
+
+**The command for the owner** (the publish copies 3.4 GB and is nobody's to run but his):
+
+```sh
+scripts/publish-litert-models.sh --only ONNX     # just the new repo; --dry-run first
+```
+
+It is idempotent — a key already there with the right size is skipped — so a plain
+`scripts/publish-litert-models.sh` re-verifies the seven LiteRT rows and adds the fifteen ONNX ones.
+No `HF_TOKEN` is needed for this repo: it is ungated.
+
+### The app
+
+`bootstrap.ts` builds **exactly one** of `LiteRtProvider` and `TransformersProvider` — a provider is
+fixed to one row at construction and the person has chosen one row — and `localProviders()` puts it in
+the right slot of `[litert, transformers, webllm]`. The row's `runtime` field is the only thing that
+distinguishes it in the picker, which now joins the mirror to `LOCAL_MODEL_CATALOG` (all three
+runtimes' rows) rather than to `LITERT_CATALOG`. `VITE_ONNX_MODEL_BASE` names the host and `off`
+builds no ONNX provider at all, exactly as `VITE_LITERT_MODEL_BASE` does.
+
+A saved `localModel` choice from before today has no `runtime` and therefore means `litert`, which is
+what it meant — nobody's chosen model silently becomes the 3.4 GB one on a reload.
+
+### Three things the live check found, that no unit test would have
+
+**The progress denominator** — fact 4 above. Fixed in `report()`, with a test named after the symptom.
+
+**ORT's workers need the embedder policy on their own script.** `ort-wasm-simd-threaded.asyncify.mjs`
+is not just a script the page loads: the THREADED build spawns dedicated workers from it, and a worker
+created by a cross-origin-isolated document is refused unless **its own script response** carries a
+compatible `Cross-Origin-Embedder-Policy`. The main-thread fetch of that file answered 200 while three
+worker spawns failed with `ERR_BLOCKED_BY_RESPONSE` — silently, so the symptom was a session build that
+never finished and nothing in the console to say why. Two fixes, because two things serve that path:
+the dev middleware now sets the isolation headers itself (a `configureServer` middleware runs BEFORE
+vite's own, so `server.headers` has not been applied when it ends the response), and `headers.ts` grew
+a **`runtime-worker`** kind — COEP plus `same-origin` CORP, and deliberately no
+`Cross-Origin-Opener-Policy`, which means nothing on a subresource. Neither `asset` nor `mirror` was
+right: one drops the policy the workers need, the other would put `cross-origin` on the app's own bytes.
+
+**The browser can refuse to cache it.** On the machine this was checked on,
+`navigator.storage.estimate()` reported a **3.0 GB quota** against a 3.40 GB model, and the library's
+own `cache.put` for the two 1.5 GB data files failed with
+`UnknownError: Failed to execute 'put' on 'Cache': Unexpected internal error.` It warns and carries on
+with the buffers in hand — so **the model still loads and answers** — and then downloads all 3.4 GB
+again on the next open. Chrome's quota tracks free disk (this Mac had 17 GB free), so a roomier machine
+will cache it; there is nothing in our code to fix, so the row's `note` says it. Watched live, the JS
+heap sat at **3.48 GB** while both buffers were held — fact 3's ceiling, seen rather than reasoned
+about.
+
+### Live, 2026-09-11 (Hub direct, before any publish)
+
+`VITE_ONNX_MODEL_BASE=https://huggingface.co` on a dev server, so the row could be exercised before the
+mirror has it. What was seen, in order:
+
+1. The picker listed **Gemma 4 E2B · vision (ONNX) · 3.4 GB · `vision`**, with the note and the Apache
+   licence line, alongside the seven LiteRT rows — from a `catalog.json` generated by the publish
+   script's own `--dry-run`, so the row the app drew is the row a publish will write.
+2. Choosing it set the chip to **"Gemma 4 E2B · vision (ONNX) · local"** and the card to
+   "Would use Gemma 4 E2B · vision (ONNX), once it has downloaded."
+3. The download ran from
+   `huggingface.co/onnx-community/gemma-4-E2B-it-ONNX/resolve/9f4bef82…/<file>` — the Hub layout
+   `pathTemplateFor` picked on its own — into Cache Storage under `00-onnx-models`. **All fifteen files
+   were requested and no others**, the audio encoder among them (fact 5, confirmed live).
+4. The chip read **"Downloading … · 56 % · 1.9 of 3.4 GB"**, then (after the fix above)
+   **"Loading Gemma 4 E2B · vision (ONNX) into the GPU…"** — the typed `ReadinessProgress` reaching
+   both the chip and the card, denominated against the row's own `sizeBytes`.
+5. The model **loaded and answered**. It took the prompt fallback, emitted
+   `{"tool_call": {"name": "read", "arguments": {"path": "files/dot.png"}}}`, which parsed and ran
+   (`Read 1 file · 10ms`), and each turn was labelled **`local-onnx`** in the transcript — so the
+   runtime that answered is named, which is why the provider has an id of its own.
+
+6. **It saw the picture.** Asked to `read files/dot.png` and say what was in it, the answer was:
+
+   > The image contains a solid red circle.
+
+   — which is exactly what was drawn into that file. Gemma 4 E2B, with pictures, in a tab, on WebGPU.
+
+**THE ONE NUMBER TO KNOW: that answer took about twenty-five minutes of prefill.** The main thread
+stayed responsive throughout, so it was waiting on the GPU rather than wedged, and text turns on the
+same loaded model answered in the ordinary way. Two things explain it — the agent's system prompt is
+~5k tokens before the image's 280 are added, and prefill on a q4f16 2B decoder over WebGPU is the
+expensive half — but "slower than LiteRT" in the row's note is an understatement for a vision turn on
+this machine, and nobody should ship this to a person as an interactive feature until it is measured on
+better hardware. The first lever to pull is the **visual token budget**: the model card lists 70 / 140 /
+280 / 560 / 1120, the processor defaults to 280, and this provider does not set it yet.
+
+Also worth knowing: an earlier attempt showed the model **mangling a 40-character timestamped filename**
+(`2026-09-11T13-14-42-…` → `2026-09-11T-14-42-…`) in its tool call, so the `read` missed. That is a 2B
+model transcribing, not a wiring fault, and it is what the composer's upload path currently hands it.
+
+### Undone
+
+- **The visual token budget is not wired.** `processor_config.json` defaults to 280 image tokens and
+  nothing here offers the 70 or 140 the model card supports — which is the first thing to try against
+  the twenty-five-minute prefill measured above.
+- The mirror publish itself (the owner's to run; the rows and the `--dry-run` are here).
+- Nothing sends audio: the row pays for the encoder and `ChatMessage` has no audio part. If audio ever
+  arrives, this row already loads the encoder for it.
+- The 1.52 GB single-buffer allocation of fact 3 is a real ceiling, not a theoretical one. If it bites
+  on a machine, the fix is upstream (a streaming `readResponse`), not here.

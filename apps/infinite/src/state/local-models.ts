@@ -25,6 +25,17 @@ export interface LocalModelRow {
   size: string;
   sizeExact: boolean;
   vision: boolean;
+  /**
+   * WHICH RUNTIME ANSWERS, and the sentence that goes with it (2026-09-11).
+   *
+   * A person picking a local brain is picking a MODEL, so the runtime is not a column — but it is not
+   * invisible either, because the trade is real and it is the reason this row exists: the ONNX row is
+   * the only one that sees pictures, it is three and a half gigabytes, it is slower than LiteRT, and
+   * its download does not resume. `runtimeNote` is the package's own `note` on the row, shown as
+   * written rather than composed here, so the caveat lives beside the fact that produced it.
+   */
+  runtime: "litert" | "transformers";
+  runtimeNote?: string;
   selected: boolean;
   /** null until the lazy readiness pass reaches this row. */
   downloaded: boolean | null;
@@ -77,6 +88,10 @@ function toRow(row: LiteRtCatalogRow, chosenId: string | null): LocalModelRow {
     size: size.text,
     sizeExact: size.exact,
     vision: row.vision === true,
+    runtime: row.runtime ?? "litert",
+    // The package's own sentence. Only the Transformers.js row carries one today, and a row with no
+    // caveat gets no line rather than a reassuring one nobody wrote.
+    runtimeNote: (row as { note?: string }).note,
     selected: row.id === chosenId,
     downloaded: null,
     licenseName: row.license.name,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { LITERT_CATALOG, mergeMirrorCatalog } from "@00/agent-models";
+import { LITERT_CATALOG, LOCAL_MODEL_CATALOG, TRANSFORMERS_CATALOG, mergeMirrorCatalog } from "@00/agent-models";
 import {
   CATALOG_TTL_MS,
   catalogUrl,
@@ -101,8 +101,15 @@ describe("the mirror's catalogue, fetched and cached", () => {
   it("falls back to the package's own rows when nothing has ever been fetched", async () => {
     const offline = await loadLiteRtCatalog({ modelBaseUrl: BASE, fetch: fetcher({ fail: true }).fetch, ...store() });
     expect(offline.source).toBe("offline");
-    expect(offline.rows).toHaveLength(LITERT_CATALOG.length);
+    // EVERY local row, across all three runtimes (2026-09-11): the offline list must hold the same
+    // rows the mirror serves, or the picker shrinks when the network drops and reads as broken.
+    expect(offline.rows).toHaveLength(LOCAL_MODEL_CATALOG.length);
+    expect(LOCAL_MODEL_CATALOG.length).toBe(LITERT_CATALOG.length + TRANSFORMERS_CATALOG.length);
     expect(offline.rows.every((r) => r.onMirror === false)).toBe(true);
+    // The ONNX row is there, and it says which runtime it needs — the only thing that marks it out.
+    const onnx = offline.rows.find((r) => r.runtime === "transformers");
+    expect(onnx?.id).toBe("gemma-4-E2B-it-onnx-q4f16");
+    expect(onnx?.vision).toBe(true);
   });
 
   it("treats a non-200 and a document that is not a catalogue the same way: as no answer", async () => {

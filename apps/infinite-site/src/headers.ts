@@ -37,9 +37,20 @@ export type ResponseKind =
   | "service-worker"
   /** This origin's own bytes: hashed assets, icons, the manifest, robots.txt. */
   | "asset"
+  /**
+   * `/ort/*` — a script this origin's own page SPAWNS A WORKER FROM (2026-09-11).
+   *
+   * ONNX Runtime Web's threaded build creates dedicated workers from its `.mjs` glue, and a worker
+   * created by a cross-origin-isolated document is refused unless ITS OWN script response carries a
+   * compatible `Cross-Origin-Embedder-Policy`. `asset` does not, which is why this is a kind of its
+   * own rather than one: the failure is `ERR_BLOCKED_BY_RESPONSE` on the worker spawn only — the
+   * main-thread fetch of the same file answers 200 — so the session build never finishes and nothing
+   * says why. Found live on 2026-09-11 before this row had ever been deployed.
+   */
+  | "runtime-worker"
   /** Made to be loaded by a third-party page: the embed loader and its model chunk. */
   | "embed"
-  /** The R2 mirror (`/mediapipe/genai/wasm/*`, `/litert/*`) — published to be fetched anywhere. */
+  /** The R2 mirror (`/mediapipe/genai/wasm/*`, `/litert/*`, `/onnx/*`) — published to be fetched anywhere. */
   | "mirror"
   /** `/~/…`, answered by a script in the app's tab. No policy of ours. */
   | "served";
@@ -49,8 +60,16 @@ export const COEP = "credentialless";
 /** `Cross-Origin-Opener-Policy`. `same-origin` is the half that severs the opener relationship. */
 export const COOP = "same-origin";
 
-/** The two prefixes served from R2, and the two served to other people's pages. */
-const MIRROR_PREFIXES = ["/mediapipe/genai/wasm/", "/litert/"];
+/**
+ * The three prefixes served from R2, and the two served to other people's pages.
+ *
+ * `/onnx/` joined on 2026-09-11 with the third local runtime's weights. `/ort/` did NOT: ONNX Runtime
+ * Web's own wasm is under Cloudflare's asset cap, so it is a static file in `public/` and this origin's
+ * own bytes. It is not `asset` either — see `runtime-worker`.
+ */
+const MIRROR_PREFIXES = ["/mediapipe/genai/wasm/", "/litert/", "/onnx/"];
+/** ONNX Runtime Web's own wasm and its worker glue — this origin's files, not the R2 mirror's. */
+const ORT_PREFIX = "/ort/";
 const EMBED_MODEL_PREFIX = "/m/";
 const SERVED_PREFIX = "/~/";
 const EMBED_PATH = /^\/e\/[A-Za-z0-9_-]{4,80}\.js$/;
@@ -64,6 +83,7 @@ export function kindFor(pathname: string): ResponseKind {
   if (pathname.startsWith(SERVED_PREFIX)) return "served";
   if (EMBED_PATH.test(pathname) || pathname.startsWith(EMBED_MODEL_PREFIX)) return "embed";
   if (MIRROR_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return "mirror";
+  if (pathname.startsWith(ORT_PREFIX)) return "runtime-worker";
   if (pathname === "/sw.js") return "service-worker";
   if (pathname === "/" || pathname === "/index.html" || pathname.endsWith(".html")) return "document";
   return "asset";
@@ -87,6 +107,14 @@ export function headersFor(pathname: string, kind: ResponseKind): Record<string,
     case "asset":
       // Isolation says nothing about these; `same-origin` says the app's own bundle is the app's.
       return { "cross-origin-resource-policy": "same-origin" };
+    case "runtime-worker":
+      // `same-origin` as for any asset, PLUS the embedder policy — which is the whole reason this
+      // kind exists. No `Cross-Origin-Opener-Policy`: that header means nothing on a subresource, and
+      // sending one here would be cargo-culting the document's set onto a script.
+      return {
+        "cross-origin-embedder-policy": COEP,
+        "cross-origin-resource-policy": "same-origin",
+      };
     case "embed":
     case "mirror":
       // The whole point of both is that another origin loads them.

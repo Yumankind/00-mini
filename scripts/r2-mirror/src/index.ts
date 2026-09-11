@@ -39,6 +39,22 @@ const PART_BYTES = 32 * 1024 * 1024;
 const MAX_PARTS = 10_000;
 const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,200}$/;
 
+/**
+ * WHERE A COPY MAY LAND — an allow-list, added 2026-09-11 with the `onnx/` prefix.
+ *
+ * `KEY_RE` alone says a key is well formed, not that it is one of ours: it would have accepted
+ * `index.html`, or a key under any other prefix this bucket serves. The bucket is public
+ * (`dl.0-0.chat`) and this Worker exists for one publish and holds the bucket binding, so the narrow
+ * thing to check is not the characters but the DESTINATION.
+ *
+ * · `litert/`    — the flat LiteRT bundles and their three sidecars (publish-litert-models.sh)
+ * · `onnx/`      — a Transformers.js repo's own relative layout, `onnx/<org>/<repo>/<path>`
+ * · `mediapipe/` — the versioned wasm folder the site Worker serves as `/mediapipe/genai/wasm/*`
+ *
+ * A new prefix is a deliberate edit here, which is the point.
+ */
+const KEY_PREFIXES = ["litert/", "onnx/", "mediapipe/"];
+
 function hex(buf: ArrayBuffer): string {
   return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -59,6 +75,9 @@ export default {
     const { url, key, sha256, bytes } = body;
     if (typeof url !== "string" || !SOURCE_HOST_RE.test(url)) return new Response("url must be on huggingface.co or hf.co", { status: 400 });
     if (typeof key !== "string" || !KEY_RE.test(key) || key.includes("..")) return new Response("bad key", { status: 400 });
+    if (!KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      return new Response(`key must start with one of ${KEY_PREFIXES.join(", ")}`, { status: 400 });
+    }
     if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) return new Response("bad sha256", { status: 400 });
     if (!Number.isInteger(bytes) || bytes <= 0 || bytes > PART_BYTES * MAX_PARTS) return new Response("bad bytes", { status: 400 });
 

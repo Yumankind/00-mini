@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, cpSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, cpSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -224,6 +224,114 @@ function esbuildWasm(): Plugin {
 }
 
 /**
+ * ONNX RUNTIME WEB'S WASM, SAME-ORIGIN. The third local brain (`TransformersProvider`,
+ * packages/agent-models/src/transformers.ts) runs Gemma 4 E2B with its vision encoder on ONNX Runtime
+ * Web, and that runtime loads a wasm module and its loader `.mjs` from
+ * `env.backends.onnx.wasm.wasmPaths` — which Transformers.js DEFAULTS TO JSDELIVR
+ * (`src/backends/onnx.js`, line 350). Same rule as MediaPipe's: a local brain that needs a CDN is not
+ * a local brain the day the network is gone, and under COOP+COEP a CDN copy would not load anyway. So
+ * the files are copied out of the installed package to `/ort/` on this origin and the provider's
+ * `ONNX_DEFAULT_WASM_PATH` points there.
+ *
+ * WHY FOUR FILES AND NOT THE WHOLE `dist/`. `@huggingface/transformers` imports
+ * `onnxruntime-web/webgpu`, whose default condition resolves to `ort.webgpu.bundle.min.mjs`, and the
+ * only wasm names that appear anywhere in that bundle are `ort-wasm-simd-threaded.asyncify.{mjs,wasm}`
+ * (every browser but Safari) and `ort-wasm-simd-threaded.{mjs,wasm}` (Safari). The jsep and jspi
+ * builds belong to other entry points and copying them would be 40 MB nobody fetches. The list is
+ * closed and checked: a name that is no longer in the package FAILS the build, because a missing wasm
+ * is a local brain that dies at session creation with a message about a fetch.
+ *
+ * WHY THE PATH IS NOT VERSIONED, unlike esbuild's. The `.mjs` and the `.wasm` are a matched pair, and
+ * they can only ever come from one install — both are copied in the same `closeBundle`, so there is no
+ * way to serve a mismatched pair. They are also under Cloudflare's 25 MiB asset cap (22.5 MiB is the
+ * largest), so unlike MediaPipe's runtime they ship as ordinary static assets and the site Worker
+ * needs no route for them; the asset layer's five-minute cache-control is what makes an unversioned
+ * path safe across a deploy.
+ */
+function ortWasm(): Plugin {
+  const URL_PREFIX = "/ort/";
+  /**
+   * Reached the way pnpm lays it out, like MediaPipe's — and through a REALPATH, which MediaPipe's
+   * did not need. `onnxruntime-web` is a dependency of `@huggingface/transformers`, not of this app or
+   * of agent-models, so pnpm puts it beside that package inside the store and links only the package
+   * itself into `packages/agent-models/node_modules`. Lexical `..` on the link path would land back in
+   * agent-models; `realpathSync` first is what makes `../../onnxruntime-web/dist` the store sibling it
+   * actually is. Neither `onnxruntime-web` nor `@huggingface/transformers` exposes `dist/` or
+   * `package.json` in its `exports` map, so there is no `require.resolve` road to it.
+   */
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkgLink = resolve(here, "../../packages/agent-models/node_modules/@huggingface/transformers");
+  const distDir = existsSync(pkgLink) ? resolve(realpathSync(pkgLink), "../../onnxruntime-web/dist") : pkgLink;
+  /** Closed list; see the note above. Order is (loader, binary) per browser family. */
+  const FILES = [
+    "ort-wasm-simd-threaded.asyncify.mjs",
+    "ort-wasm-simd-threaded.asyncify.wasm",
+    "ort-wasm-simd-threaded.mjs",
+    "ort-wasm-simd-threaded.wasm",
+  ];
+  /** Cloudflare refuses a static asset over this, which is why MediaPipe's runtime is in R2. */
+  const ASSET_CAP = 25 * 1024 * 1024;
+  const types: Record<string, string> = { ".wasm": "application/wasm", ".mjs": "text/javascript" };
+  let outDir = "dist";
+  let root = process.cwd();
+  return {
+    name: "infinite-ort-wasm",
+    configResolved(config) {
+      outDir = config.build.outDir;
+      root = config.root;
+    },
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const url = request.url?.split("?")[0] ?? "";
+        if (!url.startsWith(URL_PREFIX)) return next();
+        const name = url.slice(URL_PREFIX.length);
+        if (!FILES.includes(name)) return next();
+        const file = join(distDir, name);
+        if (!existsSync(file)) return next();
+        response.setHeader("content-type", types[name.slice(name.lastIndexOf("."))] ?? "application/octet-stream");
+        // `no-store` IN DEV, and not the year-long `immutable` the other two wasm middlewares use.
+        // The path carries no version, so an `immutable` answer pins whatever headers it had at the
+        // moment it was first fetched — which cost an hour on 2026-09-11: the fix below was added, the
+        // server restarted, and the browser kept replaying the header-less copy from its HTTP cache
+        // while the worker spawns went on failing. In production the file is served by the asset layer
+        // with a five-minute cache-control, so the same trap is not there.
+        response.setHeader("cache-control", "no-store");
+        // THE ISOLATION HEADERS, ON THIS RESPONSE. `ort-wasm-simd-threaded.asyncify.mjs` is not just a
+        // script the page loads — ORT's THREADED build spawns dedicated workers from it, and a worker
+        // created by a cross-origin-isolated document is refused unless ITS OWN script response
+        // carries a compatible `Cross-Origin-Embedder-Policy`. Without this the main-thread fetch
+        // succeeds (200) and the three worker spawns fail with `ERR_BLOCKED_BY_RESPONSE`, which is
+        // silent: the session build simply never finishes. Seen live on 2026-09-11.
+        //
+        // A middleware added in `configureServer` runs BEFORE vite's own, so `server.headers` has not
+        // been applied by the time this handler ends the response — it has to set them itself.
+        for (const [name_, value] of Object.entries(ISOLATION_HEADERS)) response.setHeader(name_, value);
+        response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+        response.end(readFileSync(file));
+      });
+    },
+    closeBundle() {
+      if (!existsSync(distDir)) return;
+      const dest = resolve(root, outDir, "ort");
+      for (const name of FILES) {
+        const from = join(distDir, name);
+        if (!existsSync(from)) {
+          throw new Error(`onnxruntime-web no longer ships ${name}, which the ONNX local brain loads from /ort/`);
+        }
+        const bytes = readFileSync(from);
+        if (bytes.byteLength > ASSET_CAP) {
+          throw new Error(
+            `${name} is ${Math.round(bytes.byteLength / 1048576)} MiB, over Cloudflare's 25 MiB asset cap — route /ort/ through R2 like /mediapipe/ before shipping this`,
+          );
+        }
+        cpSync(from, join(dest, name));
+      }
+      console.log(`onnx runtime wasm: ${FILES.length} files copied to dist/ort`);
+    },
+  };
+}
+
+/**
  * THE LAN, OVER HTTPS. Everything the agent is built on — OPFS, WebGPU, WebCrypto keys, the service
  * worker — exists only in a secure context, which plain http gets on localhost and nowhere else. To
  * open the app from a phone or another machine on the LAN, the dev server must speak https, and the
@@ -272,7 +380,7 @@ const ISOLATION_HEADERS = {
 };
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), serviceWorkerPrecache(), mediapipeWasm(), esbuildWasm()],
+  plugins: [vue(), tailwindcss(), serviceWorkerPrecache(), mediapipeWasm(), esbuildWasm(), ortWasm()],
   /**
    * THE NODE RUNTIME IS A MODULE WORKER. `src/power/js-runner.ts` starts one process per `node`
    * command with `new Worker(new URL("./node-runtime-worker.ts", import.meta.url), { type: "module" })`,

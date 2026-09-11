@@ -370,17 +370,26 @@ export class ModelRouter {
 export type LocalProvider = ModelProvider;
 
 /**
- * THE LOCAL PAIR, in preference order: LiteRT first, WebLLM second.
+ * THE LOCAL CHAIN, in preference order: LiteRT, then Transformers.js, then WebLLM.
  *
  * The ruling of 2026-09-10 (§6.1): LiteRT is faster and more stable than web-llm's Gemma builds and
  * web-llm errors outright on some Windows machines, so LiteRT leads — but a browser that cannot run
  * it (no WebGPU, no served wasm folder, an asset the owner does not host) must still get an answer,
  * and `readiness()` returning `unsupported` is exactly what makes the router walk on to the next
- * one. Nothing here is special-cased in `ModelRouter`: this helper only puts the two in the order
- * the ruling names, so a caller cannot get it wrong by listing them the other way round.
+ * one. Nothing here is special-cased in `ModelRouter`: this helper only puts them in the order the
+ * ruling names, so a caller cannot get it wrong by listing them the other way round.
  *
- * A caller with only one of them passes only one; the order of what is left does not change.
+ * `transformers` JOINED IN THE MIDDLE on 2026-09-11 (src/transformers.ts): it is the only local
+ * runtime that can show Gemma 4 a picture, and it is slower than LiteRT and three times the download,
+ * so it sits behind LiteRT and ahead of web-llm. It is NOT ranked above LiteRT for a turn with an
+ * image — that is not this function's job and would be the wrong place for it: `ModelRouter.ordered()`
+ * already ranks a sighted peer first when the turn carries one, from each provider's own catalogue,
+ * and a second vision rule here would be one that could disagree with it.
+ *
+ * A caller with only one of them passes only one; the order of what is left does not change. In the
+ * app exactly one of `litert` and `transformers` is ever built at a time, because one row is chosen
+ * and a provider is fixed to its row at construction.
  */
-export function localProviders(options: { litert?: LocalProvider; webllm?: LocalProvider }): LocalProvider[] {
-  return [options.litert, options.webllm].filter((p): p is LocalProvider => Boolean(p));
+export function localProviders(options: { litert?: LocalProvider; transformers?: LocalProvider; webllm?: LocalProvider }): LocalProvider[] {
+  return [options.litert, options.transformers, options.webllm].filter((p): p is LocalProvider => Boolean(p));
 }

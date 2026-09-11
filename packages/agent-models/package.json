@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@00/shared": "workspace:*",
+    "@huggingface/transformers": "4.2.0",
     "@mediapipe/tasks-genai": "^0.10.22",
     "@mlc-ai/web-llm": "^0.2.79"
   },

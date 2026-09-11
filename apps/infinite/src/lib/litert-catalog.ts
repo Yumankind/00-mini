@@ -18,8 +18,14 @@
  * WHAT NEVER HAPPENS HERE: no download, no `HEAD`, no probing of the assets. This module fetches one
  * JSON file. Whether a model is already on the device is `readiness()`'s answer, asked of a provider
  * built for that row, and is computed lazily by the caller.
+ *
+ * THREE RUNTIMES, ONE CATALOGUE (2026-09-11). The package's side of the join is `LOCAL_MODEL_CATALOG`
+ * — the LiteRT rows plus the Transformers.js ones — rather than `LITERT_CATALOG`, because a person
+ * choosing a local brain is choosing a MODEL and should not have to know which runtime loads it. The
+ * row's `runtime` field is how the bootstrap knows which provider to build for the row they picked,
+ * and it is the only thing that distinguishes them here.
  */
-import { mergeMirrorCatalog, parseMirrorCatalog, type LiteRtCatalogRow, type LiteRtMirrorCatalog } from "@00/agent-models";
+import { LOCAL_MODEL_CATALOG, mergeMirrorCatalog, parseMirrorCatalog, type LiteRtCatalogRow, type LiteRtMirrorCatalog } from "@00/agent-models";
 import { LITERT_CATALOG_KEY, kvGet, kvSet } from "./kv.js";
 
 /** Five minutes, as §12.7's mirror is edge-cached and a publish should show up within a session. */
@@ -100,12 +106,12 @@ export async function loadLiteRtCatalog(opts: CatalogOptions): Promise<CatalogRe
     return result(fresh, "live", opts.modelBaseUrl);
   }
   if (usable) return result(usable.doc, "cached", opts.modelBaseUrl);
-  return { rows: mergeMirrorCatalog(null), base: opts.modelBaseUrl, source: "offline" };
+  return { rows: mergeMirrorCatalog(null, LOCAL_MODEL_CATALOG), base: opts.modelBaseUrl, source: "offline" };
 }
 
 function result(doc: LiteRtMirrorCatalog, source: "live" | "cached", fallbackBase: string): CatalogResult {
   return {
-    rows: mergeMirrorCatalog(doc),
+    rows: mergeMirrorCatalog(doc, LOCAL_MODEL_CATALOG),
     // The host's own `base` wins over the app's setting: it is the URL the catalogue's file names are
     // relative to, and a mirror that moved says so in the document it serves.
     base: doc.base || fallbackBase,

@@ -172,6 +172,9 @@ function choose(id: string): void {
             <span v-if="entry.vision" class="text-[10px] px-1 rounded bg-[var(--color-line)]">vision</span>
             <span v-if="entry.downloaded" class="text-[10px] text-[var(--color-phosphor)]">on this device</span>
           </div>
+          <!-- The runtime's own caveat, from the package's row: why this one sees pictures and what
+               that costs. Only the ONNX row carries one; every other row shows no line at all. -->
+          <div v-if="entry.runtimeNote" class="text-[11px] text-[var(--color-amber)] mt-0.5">{{ entry.runtimeNote }}</div>
           <div class="text-[11px] text-[var(--color-ink-dim)] mt-0.5">
             <!-- Gemma §3.1: the licence and its use restrictions are named BEFORE the download,
                  per row, because the rows do not all carry the same terms. -->

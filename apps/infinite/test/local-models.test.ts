@@ -105,6 +105,44 @@ describe("the local model picker's store", () => {
       useRestrictionsUrl: "https://ai.google.dev/gemma/prohibited_use_policy",
       termsCopyUrl: "https://dl.0-0.chat/litert/GEMMA_TERMS.md",
     });
+    // A LiteRT row says `litert` by saying nothing, and carries no caveat line at all — the picker
+    // shows a note only where the package wrote one, never a reassuring sentence nobody wrote.
+    expect(localRows.value[0]!.runtime).toBe("litert");
+    expect(localRows.value[0]!.runtimeNote).toBeUndefined();
+  });
+
+  it("names the runtime and repeats its caveat for the ONNX vision row", async () => {
+    // The one thing that marks the third runtime's row out on a screen full of LiteRT ones: it sees
+    // pictures, and it costs 3.4 GB on a slower runtime whose download does not resume.
+    fake.catalog = {
+      ...twoRows,
+      rows: [
+        ...twoRows.rows,
+        row({
+          id: "gemma-4-E2B-it-onnx-q4f16",
+          label: "Gemma 4 E2B · vision (ONNX)",
+          assetFile: "gemma-4-E2B-it-ONNX",
+          runtime: "transformers",
+          vision: true,
+          vramMb: 4600,
+          bytes: 3_401_448_652,
+          license: { id: "apache-2.0", name: "Apache License 2.0", url: "https://www.apache.org/licenses/LICENSE-2.0" },
+          note: "Sees pictures · ONNX runtime, slower than LiteRT · the download does not resume",
+        } as Partial<LiteRtCatalogRow>),
+      ],
+    };
+    await loadLocalRows();
+    const onnx = localRows.value.find((r) => r.row.id === "gemma-4-E2B-it-onnx-q4f16");
+    expect(onnx).toMatchObject({
+      runtime: "transformers",
+      vision: true,
+      size: "3.4 GB",
+      sizeExact: true,
+      licenseName: "Apache License 2.0",
+      runtimeNote: "Sees pictures · ONNX runtime, slower than LiteRT · the download does not resume",
+    });
+    // Apache-2.0 carries no use restrictions, so that half of the consent line is simply absent.
+    expect(onnx?.useRestrictionsUrl).toBeUndefined();
   });
 
   it("fills in what is already on the device, lazily, after the rows exist", async () => {

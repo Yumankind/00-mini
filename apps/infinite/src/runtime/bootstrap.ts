@@ -65,7 +65,9 @@ import type { ModelInfo, ModelProvider } from "@00/agent-models";
 import {
   BYOK_BASE_URLS,
   IndexedDbDeviceKeyStore,
+  LOCAL_MODEL_CATALOG,
   LiteRtProvider,
+  TransformersProvider,
   WEBLLM_DEFAULT_MODEL_ID,
   WebLLMProvider,
   byokProvider,
@@ -76,6 +78,7 @@ import {
   sponsoredProvider,
   type ByokVendor,
   type LiteRtCatalogRow,
+  type LocalRuntime,
   type PromptFamily,
 } from "@00/agent-models";
 import type { StepId, StepState } from "../lib/boot-steps.js";
@@ -91,6 +94,22 @@ import { createPrfCredential, getPrfSecret, webauthnAvailable } from "../lib/web
 
 /** Where the LiteRT Gemma weights are served from unless the environment says otherwise (§12.7). */
 export const DEFAULT_LITERT_MODEL_BASE = "https://dl.0-0.chat/litert";
+
+/**
+ * Where the Transformers.js (ONNX) model files are served from — the same bucket, a sibling prefix.
+ *
+ * A SECOND BASE AND NOT A DERIVATION of the LiteRT one, even though today it is the same host with
+ * `/litert` swapped for `/onnx`: the two prefixes hold different LAYOUTS (flat bundles against repo
+ * paths), the mirror's `catalog.json` names only the LiteRT base in its `base` field, and a deploy
+ * that moves one has no reason to have moved the other. Deriving it would be a string replace on a URL
+ * a person configured, which is the kind of cleverness that fails silently.
+ *
+ * `VITE_ONNX_MODEL_BASE` overrides it, and `off` builds no ONNX provider at all. Pointing it at
+ * `https://huggingface.co` works and is how the row is checked live before a publish: the repo is
+ * ungated and its CDN answers CORS and ranges, and `pathTemplateFor` in the package notices the host
+ * and switches to the Hub's `{model}/resolve/{revision}/` layout on its own.
+ */
+export const DEFAULT_ONNX_MODEL_BASE = "https://dl.0-0.chat/onnx";
 
 // ── Shapes this app needs on top of the contracts ─────────────────────────────────────────────────
 
@@ -122,6 +141,12 @@ export interface LocalModelChoice {
   base: string;
   family?: PromptFamily;
   label?: string;
+  /**
+   * WHICH RUNTIME LOADS IT (additive, 2026-09-11). Absent means LiteRT, which is what every choice
+   * saved before this field meant — so a reload after the upgrade keeps the model it had rather than
+   * silently becoming the ONNX row.
+   */
+  runtime?: LocalRuntime;
 }
 
 export interface ConnectionSettings {
@@ -398,20 +423,29 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
   // peer that is always constructible is the one that needs nothing. Its own refusal — no WebGPU, not
   // downloaded — is then what a person sees, in the provider's words, instead of a boot failure.
   //
-  // TWO LOCAL BRAINS, IN THE ORDER THE 2026-09-10 RULING NAMES (§6.1): LiteRT leads because it is
-  // faster and because web-llm errors outright on some Windows machines, and WebLLM stands behind it
-  // so a browser LiteRT cannot serve still answers. `localProviders()` is what puts them in that
-  // order — the router then walks past a provider whose readiness is `unsupported` on its own.
+  // THREE LOCAL BRAINS, IN THE ORDER THE RULINGS NAME (§6.1): LiteRT leads because it is faster and
+  // because web-llm errors outright on some Windows machines; Transformers.js on ONNX Runtime Web
+  // joined on 2026-09-11 because it is the ONLY one that can show Gemma 4 a picture (LiteRT's Gemma 4
+  // web builds are text-only and its vision rows are Gemma 3n, gated); and WebLLM stands behind both
+  // so a browser neither can serve still answers. `localProviders()` is what puts them in that order —
+  // the router then walks past a provider whose readiness is `unsupported` on its own, and ranks a
+  // sighted peer first for a turn that carries an image.
   //
-  // LiteRT is built ONLY when the owner has named a host for the Gemma weights. The package refuses
-  // to invent one (their terms travel with whoever serves them) and so does this app: with no
-  // `VITE_LITERT_MODEL_BASE` there is one local brain, WebLLM, and nothing anywhere claims otherwise.
+  // EXACTLY ONE OF LITERT AND TRANSFORMERS EXISTS AT A TIME, and that is not a limitation: a provider
+  // is fixed to one row at construction, the person has chosen one row, and building the other would
+  // mean a second three-gigabyte download offered by a card nobody asked. `localLeader` is whichever
+  // the chosen row needs, and `chain()` puts it in the right slot.
   //
-  // WHICH GEMMA — the picker of §12.7, and the phone rule of §12.6. A `LiteRtProvider` is fixed to one
-  // asset at construction, so choosing a row means BUILDING A NEW ONE and handing the loop the new
-  // pair (`setProviders`, which the runtime now takes without a rebuild). The choice is remembered in
-  // the settings KV, so a reload does not start a second two-gigabyte download; nothing here fetches
-  // the catalogue, because a boot must not wait on the mirror to show a screen.
+  // Neither is built unless the owner has named a host for that runtime's files. The package refuses
+  // to invent one (the weights are somebody's, and their terms travel with whoever serves them) and so
+  // does this app: with no `VITE_LITERT_MODEL_BASE` there is one local brain, WebLLM, and nothing
+  // anywhere claims otherwise; with no `VITE_ONNX_MODEL_BASE` there is no local vision row.
+  //
+  // WHICH GEMMA — the picker of §12.7, and the phone rule of §12.6. Choosing a row means BUILDING A NEW
+  // PROVIDER and handing the loop the new chain (`setProviders`, which the runtime takes without a
+  // rebuild). The choice is remembered in the settings KV, so a reload does not start a second
+  // two-gigabyte download; nothing here fetches the catalogue, because a boot must not wait on the
+  // mirror to show a screen.
   let localPct: number | null = null;
   const onLocalProgress = (report: { progress?: number }): void => {
     localPct = Math.round((report.progress ?? 0) * 100);
@@ -426,9 +460,36 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
   // service worker keeps it offline). A hosted deploy whose asset layer cannot carry 27 MB files names
   // the R2 copy instead — CORS is open on that bucket for GET (apps/infinite-site/README.md).
   const litertWasm = (import.meta.env?.VITE_LITERT_WASM_BASE as string | undefined)?.trim() || undefined;
+  // THE THIRD LOCAL RUNTIME (2026-09-11): Transformers.js on ONNX Runtime Web, the only one that can
+  // show Gemma 4 a picture (LiteRT's Gemma 4 web builds are text-only, its vision rows are Gemma 3n).
+  // Same shape as LiteRT's two variables, for the same two reasons: the host is the owner's decision,
+  // and `off` must mean off rather than a silent CDN.
+  const onnxEnv = (import.meta.env?.VITE_ONNX_MODEL_BASE as string | undefined)?.trim();
+  const onnxBase = onnxEnv === "off" ? "" : onnxEnv || DEFAULT_ONNX_MODEL_BASE;
+  // ORT's wasm: same-origin by default, copied beside the bundle by `ortWasm()` in vite.config.ts.
+  const onnxWasm = (import.meta.env?.VITE_ONNX_WASM_BASE as string | undefined)?.trim() || undefined;
 
-  /** A provider for exactly one row. `null` when this deploy serves no weights at all. */
-  const makeLiteRt = (choice: LocalModelChoice | null): LiteRtProvider | null => {
+  /** Which host a row's files come from. The two prefixes are configured apart; see the constants. */
+  const baseFor = (runtime: LocalRuntime | undefined): string => (runtime === "transformers" ? onnxBase : litertBase);
+
+  /**
+   * A provider for exactly one row, in the runtime that row names.
+   *
+   * ONE FUNCTION AND NOT TWO CALL SITES, because three things need a provider built for a row and
+   * getting the runtime branch wrong in one of them would be a picker that offers a model and then
+   * loads a different one: the boot's chosen row, the lazy "is it downloaded" probe, and
+   * `chooseLocalModel`. `null` when this deploy serves no weights for that runtime at all.
+   */
+  const makeLocal = (choice: LocalModelChoice | null): ModelProvider | null => {
+    if (choice?.runtime === "transformers") {
+      if (!onnxBase) return null;
+      return new TransformersProvider({
+        modelBaseUrl: choice.base || onnxBase,
+        wasmBaseUrl: onnxWasm,
+        onProgress: onLocalProgress,
+        modelId: choice.id,
+      });
+    }
     if (!litertBase) return null;
     return new LiteRtProvider({
       modelBaseUrl: choice?.base || litertBase,
@@ -441,14 +502,26 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
   // §12.6, decided WITHOUT the network: a phone that has never chosen gets the smallest row the
   // package vouches for under the cap (the 270m), never the desktop default, which is 2 GB. The
   // mirror's list refines the label later; it never changes which brain a first visit downloads.
+  // `LOCAL_MODEL_CATALOG` rather than the LiteRT list alone so the offline picker holds every row the
+  // mirror would serve — the 3.4 GB ONNX row is far past the phone cap and can never be chosen here.
   const phoneDefault = (): LocalModelChoice | null => {
-    const row = phoneRow(mergeMirrorCatalog(null));
-    return row ? { id: row.id, assetFile: row.assetFile, base: litertBase, family: row.family, label: row.label } : null;
+    const row = phoneRow(mergeMirrorCatalog(null, LOCAL_MODEL_CATALOG));
+    return row ? { id: row.id, assetFile: row.assetFile, base: baseFor(row.runtime), family: row.family, label: row.label, runtime: row.runtime } : null;
   };
   const onPhone = isPhone();
   let localChoice: LocalModelChoice | null = settings.localModel ?? (onPhone ? phoneDefault() : null);
-  let litert = makeLiteRt(localChoice);
-  const chain = (): ModelProvider[] => localProviders({ litert: litert ?? undefined, webllm });
+  /**
+   * THE CHOSEN LOCAL BRAIN, whichever runtime it needs. Exactly one of the two is ever built: a
+   * provider is fixed to one row at construction, and the person has chosen one row.
+   */
+  let localLeader = makeLocal(localChoice);
+  const leaderRuntime = (): LocalRuntime => localChoice?.runtime ?? "litert";
+  const chain = (): ModelProvider[] =>
+    localProviders({
+      ...(localLeader && leaderRuntime() === "litert" ? { litert: localLeader } : {}),
+      ...(localLeader && leaderRuntime() === "transformers" ? { transformers: localLeader } : {}),
+      webllm,
+    });
 
   /** What the ONE "Local AI" card shows: the leader, unless this browser cannot run it at all. */
   const preferredLocal = async (): Promise<{ provider: ModelProvider; readiness: Readiness }> => {
@@ -460,7 +533,8 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
     const second = localChain[1];
     return { provider: second, readiness: await readinessOf(second, { ready: false, reason: "unsupported" }) };
   };
-  if (!litert) stubs.push("Local AI is web-llm only — VITE_LITERT_MODEL_BASE is off");
+  if (!localLeader) stubs.push("Local AI is web-llm only — VITE_LITERT_MODEL_BASE is off");
+  if (!onnxBase) stubs.push("no local vision brain — VITE_ONNX_MODEL_BASE is off, so no ONNX row is offered");
   const deviceStore = new IndexedDbDeviceKeyStore();
 
   opts.onStep("runtime", "active", "starting");
@@ -756,30 +830,34 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
 
     localProgress: () => localPct,
 
-    localBrain: () => ({ choice: localChoice, picker: !onPhone, base: litertBase, available: Boolean(litert) }),
+    localBrain: () => ({ choice: localChoice, picker: !onPhone, base: litertBase, available: Boolean(localLeader) }),
     localCatalog: (force = false) => loadLiteRtCatalog({ modelBaseUrl: litertBase, force }),
     async localRowReadiness(row) {
       // A provider is a small object until something asks it to load — building one per row is how
       // "is it already downloaded" is answered honestly, from the same Cache Storage key the real
       // download would write. Lazily, at the caller's pace: seven of these on one screen is seven
-      // cache lookups, not seven requests.
-      if (!litertBase) return { ready: false, reason: "unsupported", detail: "no model host is configured" };
-      const probe = makeLiteRt({ id: row.id, assetFile: row.assetFile, base: litertBase, family: row.family });
+      // cache lookups, not seven requests. The runtime branch is `makeLocal`'s, so a row's answer
+      // comes from the cache the runtime that would load it actually writes to.
+      const host = baseFor(row.runtime);
+      if (!host) return { ready: false, reason: "unsupported", detail: "no model host is configured" };
+      const probe = makeLocal({ id: row.id, assetFile: row.assetFile, base: host, family: row.family, runtime: row.runtime });
       return readinessOf(probe, { ready: false, reason: "unsupported" });
     },
     async chooseLocalModel(row, base) {
       const next: LocalModelChoice = {
         id: row.id,
         assetFile: row.assetFile,
-        base: base || litertBase,
+        base: base || baseFor(row.runtime),
         family: row.family,
         label: row.label,
+        ...(row.runtime ? { runtime: row.runtime } : {}),
       };
       // The GPU first: the old model is compiled and holding memory, and the new one is about to ask
-      // for the same memory. `unload` is optional on the contract, so it is called as one.
-      await litert?.unload?.();
+      // for the same memory. `unload` is optional on the contract, so it is called as one — and it is
+      // the LEADER that is released, whichever of the two runtimes it turned out to be.
+      await localLeader?.unload?.();
       localChoice = next;
-      litert = makeLiteRt(next);
+      localLeader = makeLocal(next);
       settings = { ...settings, localModel: next };
       await kvSet(SETTINGS_KEY, settings);
       await refreshBrains();

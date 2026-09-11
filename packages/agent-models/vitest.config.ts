@@ -25,6 +25,11 @@ export default defineConfig({
       // Re-measured 2026-09-10 with vision (src/image-parts.ts, the prompt segments, the vision rank
       // in the router): statements 98.9 · branches 91.7 · functions 98.0 · lines 98.9 — branches went
       // up again, so their floor goes to 89 and keeps the slack the Linux leg needs.
+      // Re-measured 2026-09-11 with the THIRD local provider (src/transformers.ts, 60 tests):
+      // statements 98.11 · branches 90.32 · functions 97.37 · lines 98.11 — the three that matter keep
+      // their 2-point slack over the floors, and BRANCHES WENT DOWN (91.7 → 90.32), so their floor
+      // stays at 89 rather than rising. The new file's own branch coverage is 91.9; what the aggregate
+      // lost is the two dynamic imports and one racy mid-drain abort guard that no Node run reaches.
       // Never lower one to make a change pass: fix or delete the change that dropped it.
       thresholds: { statements: 96, branches: 89, functions: 95, lines: 96 },
     },
