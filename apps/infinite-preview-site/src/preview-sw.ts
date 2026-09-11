@@ -81,14 +81,14 @@ self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
 /**
- * EVERY DOCUMENT THIS WORKER SERVES CARRIES THE HOST'S EMBEDDER POLICY. The bootstrap page at `/`
- * is sent by the Worker with `Cross-Origin-Embedder-Policy: credentialless` (src/index.ts says why:
+ * EVERY DOCUMENT THIS WORKER SERVES CARRIES THE HOST'S EMBEDDER POLICY. The bootstrap page at '/'
+ * is sent by the Worker with 'Cross-Origin-Embedder-Policy: credentialless' (src/index.ts says why:
  * the app that frames it is cross-origin isolated). A page with a COEP has a rule about what IT may
  * frame — every nested document must carry a compatible COEP too, its own origin included — and the
- * `#view` frame inside the bootstrap loads `/p/…` and `/s/…`, which come from HERE. Without the
+ * '#view' frame inside the bootstrap loads '/p/...' and '/s/...', which come from HERE. Without the
  * header on these answers the browser refuses the inner frame outright ("refused to connect",
- * 2026-09-11, Bruno). CORP `cross-origin` beside it, so the same answers stay loadable as
- * subresources by the app's own origin. The value MUST stay equal to `COEP` in src/index.ts.
+ * 2026-09-11, Bruno). CORP 'cross-origin' beside it, so the same answers stay loadable as
+ * subresources by the app's own origin. The value MUST stay equal to 'COEP' in src/index.ts.
  */
 function embeddable(headers) {
   headers.set("cross-origin-embedder-policy", "credentialless");
