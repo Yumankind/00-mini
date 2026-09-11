@@ -134,8 +134,16 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
     Worker owns the workspace through OPFS sync access handles and serves a shared-memory channel
     byte-compatible with `@00/agent-node`'s; scripts get real `readFileSync`/`writeFileSync`/`require`
     when isolated. Found on the way: the system prompt had grown past the 4096-token LiteRT context
-    (fix in flight: a prompt budget per model, compact tool signatures, 8192 tokens asked at load for
-    the desktop rows), and the browser pane blocks service-worker registration (the app's own too).
+    (fixed the same day: a prompt budget per model, compact tool signatures, 8192 tokens asked at
+    load for the desktop rows; a fresh agent's prompt plus tool block went from 4060 to 1718 tokens;
+    verified live on the dev link, which now streams a truthful answer from Gemma 4 E2B under the
+    isolation headers), and the browser pane blocks service-worker registration (the app's own too).
+18. **`@00/agent-node`** (2026-09-11): the "own WebContainers" layers as a package — 45 Node builtins
+    over the agent's filesystem, a CommonJS/ESM loader with node_modules resolution, an npm client
+    proven live against the public registry (CORS on metadata and tarballs), a Worker-per-process
+    model. §12.4 is answered by it: no WebContainers licence; the shell adopts the package next, which
+    lifts `npm install` for pure-JavaScript packages. Native addons and postinstall scripts stay named
+    refusals, as in WebContainers.
 16. **Live preview on a second origin + element picker** (2026-09-11): `apps/infinite-preview-site`,
     deployed at `https://infinite-preview.powerhouse.workers.dev` (no bindings, no data): the app posts
     a folder's files to it, its service worker serves them under `/s/<site>/` and forwards a virtual
