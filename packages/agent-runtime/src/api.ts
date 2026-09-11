@@ -172,6 +172,26 @@ export interface RunResult {
  */
 export interface NetworkPolicy {
   allow: string[];
+  /**
+   * A READ-ONLY PROXY TO RETRY A BLOCKED FETCH THROUGH (additive, contract revision 2026-09-11).
+   *
+   * The problem it answers is the browser's, not the policy's: a page may only read a cross-origin
+   * response when the far side sent `Access-Control-Allow-Origin`, and almost no website does. So
+   * `http_get` in a tab could reach its own origin and a handful of APIs, and every ordinary link
+   * came back as a `TypeError`. The host that serves the page can fetch it server-side, where there
+   * is no CORS at all (apps/infinite-site/src/fetch-proxy.ts).
+   *
+   * It is a FUNCTION and not a base URL because the host decides, per target, whether its proxy will
+   * take that URL — `null` means "not through me", and the tool then reports the original failure
+   * rather than inventing a second one. Absent = no fallback, which is the default and the only
+   * behaviour that existed before.
+   *
+   * IT DOES NOT WIDEN THE POLICY. The allow list still decides what is `safe` and what the person is
+   * asked about, the call is still a GET with no credentials, and the proxy is dialled only AFTER a
+   * direct fetch has failed — it is a second road to the same URL, never a road to a URL the person
+   * did not approve.
+   */
+  proxy?: (url: URL) => string | null;
 }
 
 export interface AgentRuntimeOptions {

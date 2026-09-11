@@ -16,6 +16,7 @@
  */
 import { computed, ref } from "vue";
 import {
+  MOVE_CODE_RE,
   importDeepLink,
   isLocked,
   isSecondCopy,
@@ -93,6 +94,10 @@ export const moveDeepLink = computed(() => (fileName.value ? importDeepLink(file
 
 /** Read at boot, before the shell decides which pane to paint. */
 export async function loadMoveReceipt(): Promise<MoveReceipt | null> {
+  // The QR road, read and erased in the same breath — see `receiveFromLocation`. It is here because
+  // App.vue already awaits this on boot, before anything is painted, which is the only moment where
+  // "the URL said receive" can still decide which screen a person lands on.
+  receiveFromLocation();
   receipt.value = await kvGet<LiveMoveReceipt>(MOVE_RECEIPT_KEY);
   return receipt.value;
 }
@@ -394,6 +399,86 @@ export const receiveWanted = computed(() => wantsReceive.value);
 export function askForReceive(): void {
   wantsReceive.value = true;
 }
+
+// ── The QR road (§7, "bring it with you") ────────────────────────────────────────────────────────
+//
+// THE CODE RIDES IN THE FRAGMENT, AND THAT IS A DELIBERATE EXCEPTION. lib/move.ts says the code is
+// never in a URL, and the reason it gives is the right one: a URL is written to history, to the
+// app-switch log, to the OS's "open this?" prompt and to every server it is sent to. A FRAGMENT is
+// the one part of a URL that is never sent to a server — it is not in the request line, it is not in
+// a referer, and a Worker serving this page cannot see it even if it wanted to. So the QR code a
+// phone scans carries `#code=…`, the app reads it once, and `history.replaceState` takes it out of
+// the URL and out of the history entry before anything else runs. What remains true is the older
+// rule's substance: the code never reaches a server, and it never survives being read.
+//
+// Recorded for the owner in docs/HANDOFF-infinite-agent.md, "For the owner's review", item 22.
+
+const prefilled = ref<string | null>(null);
+const requestedByLink = ref(false);
+
+/** The six words a scanned link brought, until the receive screen has taken them. */
+export const prefilledCode = computed(() => prefilled.value);
+/**
+ * A LINK ASKED FOR THE RECEIVE SCREEN. The shell must read this at boot and open the Move pane —
+ * `receiveWanted` alone cannot do it, because the only reader of that flag is MovePanel's own
+ * `onMounted`, and MovePanel is not mounted until the pane is already open (see the note in
+ * docs/HANDOFF-infinite-agent.md, "For the owner's review", item 22).
+ */
+export const receiveRequested = computed(() => requestedByLink.value);
+
+/**
+ * `https://…/?receive#code=six-words` → the code, and the same URL with BOTH halves gone. Pure, so
+ * the parsing and the stripping are a test rather than a thing that only happens in a browser.
+ *
+ * A malformed code is thrown away and the link is still stripped: something that was shaped like a
+ * secret must not be left sitting in the address bar because it turned out not to be one.
+ */
+export function parseReceiveLink(href: string): { receive: boolean; code: string | null; url: string } {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return { receive: false, code: null, url: href };
+  }
+  if (!url.searchParams.has("receive")) return { receive: false, code: null, url: href };
+
+  const hash = url.hash.replace(/^#/, "");
+  const match = /(?:^|&)code=([^&]*)/.exec(hash);
+  let code: string | null = null;
+  if (match) {
+    let raw = match[1];
+    try {
+      raw = decodeURIComponent(raw.replace(/\+/g, " "));
+    } catch {
+      // A fragment that is not valid percent-encoding is not a code; it is still stripped below.
+    }
+    const candidate = raw.trim().toLowerCase();
+    code = MOVE_CODE_RE.test(candidate) ? candidate : null;
+  }
+  url.searchParams.delete("receive");
+  url.hash = "";
+  return { receive: true, code, url: url.toString() };
+}
+
+/**
+ * Read the link this tab was opened with, then erase it. Called by `loadMoveReceipt` at boot, so no
+ * component has to own it and the URL is clean before the first frame.
+ */
+export function receiveFromLocation(): string | null {
+  if (typeof location === "undefined" || typeof history === "undefined") return null;
+  const { receive, code, url } = parseReceiveLink(location.href);
+  if (!receive) return null;
+  // FIRST, always: the strip must not wait on anything that could throw between here and there.
+  if (url !== location.href) history.replaceState(history.state, "", url);
+  prefilled.value = code;
+  requestedByLink.value = true;
+  wantsReceive.value = true;
+  return code;
+}
+
+/** The receive screen has opened and taken what the link brought; nothing of it is kept. */
 export function clearReceiveWanted(): void {
   wantsReceive.value = false;
+  requestedByLink.value = false;
+  prefilled.value = null;
 }

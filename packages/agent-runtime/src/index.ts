@@ -103,6 +103,9 @@ export { noteDate, rememberTool } from "./tools-memory.js";
 // the first network policy, the first-run interview, and the honest tool set.
 export { HTTP_GET_MAX_BYTES, hostAllowed, httpGetTool } from "./tools-net.js";
 export type { HttpGetOptions } from "./tools-net.js";
+// What `http_get` does with a PAGE (contract revision 2026-09-11). Exported because the conversion
+// is useful on its own — a host that already has HTML in hand should not have to fetch it again.
+export { decodeEntities, htmlToText, resolveHref } from "./tools-html.js";
 export { listSecretsTool } from "./tools-secrets.js";
 export { placeholderFor, redact, resolveSecretArgs, secretNamesIn } from "./secrets.js";
 export type { ResolvedArgs } from "./secrets.js";

@@ -39,6 +39,17 @@
  */
 
 import { applyCrossOrigin, kindFor } from "./headers.js";
+import {
+  PROXY_ACCEPT,
+  PROXY_MAX_BYTES,
+  PROXY_MAX_REDIRECTS,
+  PROXY_PATH,
+  PROXY_TIMEOUT_MS,
+  PROXY_USER_AGENT,
+  decideProxy,
+  isTextual,
+  publicHttpsTarget,
+} from "./fetch-proxy.js";
 
 interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
@@ -234,6 +245,121 @@ async function serveMirrored(request: Request, bucket: R2Like, key: string, cach
   return new Response(object.body, { status: 200, headers });
 }
 
+// ── `/~fetch`, the read-only reader of other websites (src/fetch-proxy.ts, README "The read-only
+//    fetch proxy") ────────────────────────────────────────────────────────────────────────────────
+
+/** Every answer this route gives carries the same shape of headers; only the body and the cap move. */
+function proxyHeaders(cacheSeconds: number, contentType: string): Headers {
+  const headers = new Headers({
+    "content-type": contentType,
+    "cache-control": `public, max-age=${cacheSeconds}`,
+    // The bytes are somebody else's page. `inline` plus `nosniff` says "render as the type I named",
+    // and the sandbox CSP drops whatever HTML comes back into an OPAQUE origin — so a page fetched
+    // through here can never reach this origin's storage (the whole agent lives in that storage),
+    // even if a person somehow lands on this URL as a top-level document.
+    "content-disposition": "inline",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox; default-src 'none'",
+    // Nothing else may read this route's answers from another page: this is the app's own door.
+    "access-control-allow-origin": "null",
+  });
+  // `asset` in the vocabulary of headers.ts: this origin's own bytes, CORP `same-origin`.
+  return applyCrossOrigin(headers, PROXY_PATH, "asset");
+}
+
+/** A refusal, and never cached for longer than a minute — the rules behind it can change on a deploy. */
+function proxyRefusal(status: number, reason: string): Response {
+  return new Response(`${reason}\n`, { status, headers: proxyHeaders(60, "text/plain; charset=utf-8") });
+}
+
+/**
+ * Read at most `PROXY_MAX_BYTES` and then STOP READING — the stream is cancelled rather than drained,
+ * so a 4 GB "text/plain" does not become 4 GB of egress on the way to being thrown away.
+ */
+async function readCapped(body: ReadableStream<Uint8Array> | null): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  if (!body) return { bytes: new Uint8Array(0), truncated: false };
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    const room = PROXY_MAX_BYTES - total;
+    if (value.byteLength >= room) {
+      chunks.push(value.subarray(0, room));
+      total += room;
+      truncated = true;
+      await reader.cancel().catch(() => {});
+      break;
+    }
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return { bytes, truncated };
+}
+
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+
+async function serveProxy(request: Request, siteOrigin: string): Promise<Response> {
+  const decision = decideProxy({ method: request.method, url: request.url, headers: request.headers }, siteOrigin);
+  if (decision.kind === "refuse") return proxyRefusal(decision.status, decision.reason);
+
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), PROXY_TIMEOUT_MS);
+  try {
+    let target = decision.target;
+    let upstream: Response;
+    for (let hop = 0; ; hop++) {
+      upstream = await fetch(target.toString(), {
+        method: "GET",
+        // Manual, so every hop is re-checked by the same rule the first one was: a chain that ends
+        // at an IP literal or on plain http is a chain that stops here.
+        redirect: "manual",
+        // A FRESH header set: nothing the caller sent is forwarded, so there is no cookie, no
+        // authorization and no identity of the person in the request the far side sees.
+        headers: { accept: PROXY_ACCEPT, "user-agent": PROXY_USER_AGENT },
+        signal: abort.signal,
+      });
+      if (!REDIRECT_STATUS.has(upstream.status)) break;
+      const location = upstream.headers.get("location");
+      if (!location) break; // a redirect with nowhere to go is just its own answer
+      if (hop >= PROXY_MAX_REDIRECTS) return proxyRefusal(508, `more than ${PROXY_MAX_REDIRECTS} redirects`);
+      const next = publicHttpsTarget(location, target.toString());
+      if (!next) return proxyRefusal(403, "that redirect leaves the public https web");
+      target = next;
+    }
+
+    const contentType = upstream.headers.get("content-type") ?? "";
+    if (contentType && !isTextual(contentType)) {
+      return proxyRefusal(415, `not text (${contentType.split(";")[0].trim()})`);
+    }
+    const { bytes, truncated } = await readCapped(upstream.body);
+    // Five minutes on an answer, one minute on anything that is not one — a 404 upstream must not
+    // be pinned at the edge for the afternoon.
+    const headers = proxyHeaders(upstream.ok ? 300 : 60, contentType || "text/plain; charset=utf-8");
+    headers.set("x-mini-final-url", target.toString());
+    if (truncated) headers.set("x-mini-truncated", "1");
+    // `bytes.buffer` and not `bytes`: a Uint8Array is a legal body at runtime, but the DOM types this
+    // folder is checked against (it has no @cloudflare/workers-types — see the README) only know
+    // `BufferSource`, and the slice is exact because `readCapped` built the array to fit.
+    const body = request.method === "HEAD" ? null : (bytes.buffer as ArrayBuffer);
+    return new Response(body, { status: upstream.status, headers });
+  } catch (err) {
+    const message = (err as Error)?.name === "AbortError" ? `no answer in ${PROXY_TIMEOUT_MS / 1000}s` : "could not be reached";
+    return proxyRefusal(504, `${decision.target.host} ${message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -262,6 +388,10 @@ export default {
       // Under a mirrored prefix but not a name we serve. The SPA must never answer here.
       return new Response("not found", { status: 404 });
     }
+
+    // The read-only reader, BEFORE the SPA fallback — `/~fetch` is not a file and must never come
+    // back as index.html, which the agent would then read as if it were the page it asked for.
+    if (url.pathname === PROXY_PATH) return serveProxy(request, url.origin);
 
     const strip = (res: Response): Response =>
       request.method === "HEAD" ? new Response(null, { status: res.status, headers: res.headers }) : res;

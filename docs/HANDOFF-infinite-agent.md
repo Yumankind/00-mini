@@ -188,6 +188,52 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
     open the agent from another device; `INFINITE_LAN=1` on the dev server reuses the engine's
     self-signed LAN certificate as an alternative.
 
+21. **The agent can read the web, through a read-only proxy on our own origin** (2026-09-11). A page
+    may only read a cross-origin response when the far side sends `Access-Control-Allow-Origin`, and
+    almost no website does — so `http_get` answered "could not reach" for most of the links a person
+    would hand it, while the fetch itself had worked fine. The site Worker now answers `/~fetch`
+    (`apps/infinite-site/src/fetch-proxy.ts`, pure and tested from `apps/infinite` like the isolation
+    headers), and `NetworkPolicy.proxy` lets the tool retry through it — only after a direct fetch has
+    failed, only for the same URL, and saying so in its own output ("fetched through the site's
+    read-only proxy"). The allow list still decides what is `safe` and what the person is asked about.
+    **The abuse limits, which are the decision you may want to look at:** GET/HEAD only; `https:`
+    only; public hosts only (no IP literal in any spelling, no `localhost`, `*.local`, `*.internal`,
+    `*.arpa`, no single-label name, no userinfo); **same-origin callers only** (`sec-fetch-site`, or an
+    `origin`/`referer` that begins at this origin — curl, a bot and a pasted address bar all get 403);
+    no credentials forwarded, ever; at most 3 redirects with every hop re-checked by the host rule;
+    10 seconds; 1 MiB, cut and cancelled rather than drained; text content types only (415 otherwise);
+    5 minutes of cache on an answer and 60 seconds on anything else. Answers also carry
+    `content-security-policy: sandbox`, so a page fetched through the proxy lands in an opaque origin
+    and can never reach this origin's storage — where the whole agent lives. There is no auth, no log
+    and no state: **the bound on abuse is the same-origin check plus the caps**, and if that is not
+    enough for a public deploy the next step is a token minted by the page, which is not built.
+    `http_get` also returns HTML as readable text now (`htmlToText`), which is what makes a page
+    legible to a 8192-token local brain at all.
+
+22. **The QR code carries the six-word code in the URL fragment — a deliberate exception to "the code
+    is never in a URL"** (2026-09-11, please confirm). The Move screen's code step now shows a QR of
+    `https://<origin>/?receive#code=<six-words>` and a "Copy link" button, so a phone joins by
+    scanning instead of typing. The older rule (`src/lib/move.ts`) is about the whole URL; a FRAGMENT
+    is the one part that is never sent to a server — not in the request line, not in a referer, not in
+    this Worker's logs, and a Worker cannot read it even if it wanted to. On the other device
+    `receiveFromLocation()` reads it once and `history.replaceState` takes it out of the address bar
+    and out of the history entry before the first frame, malformed codes included. The screen says so
+    in the person's own words: "The code rides in the part of the link that never leaves your phone;
+    the app forgets it the moment it reads it." **What is still on you:** a QR code on a screen is a
+    secret anyone in the room can photograph, which typed six words are not. If that trade is wrong,
+    the block comes out in one edit (`MovePanel.vue`, the `receiveLink` computed and its section).
+
+    **One line is needed in `App.vue`, which this round did not own.** `receiveRequested` (new, in
+    `src/state/move.ts`) is true when a scanned link asked for the receive screen, and the shell must
+    read it at boot to open the Move pane — `receiveWanted` cannot do it alone, because its only
+    reader is `MovePanel`'s `onMounted` and MovePanel is not mounted until the pane is already open.
+    `loadMoveReceipt()` (which `App.vue` already awaits) sets both flags and the prefilled code; the
+    Root/App owner adds `if (receiveRequested.value) pane.value = "move"` after that await. Until then
+    a scanned link opens the app with the code loaded and the person still has to press
+    Connections → Receive, where the code is already in the field. The live receive road itself is
+    still the `.invalid` placeholder of item 12, so the phone lands on "not connected yet" and the
+    file road is the one that works today.
+
 **Things I did NOT do, on purpose**
 - No deploy of the landing, the site Worker, or moltworker (your call each time).
 - No enabling of `INFINITE_ENABLED`, no D1 migration applied, no secrets created.
@@ -1375,3 +1421,84 @@ statements and functions rose well past the ratchet's usual slack, but the floor
 deliberately**: the embed owner is editing `embed/src`, which this config counts, and raising a floor
 under a peer's in-flight work is how a gate breaks for someone who did not touch it. Raise them
 together once the embed round lands.
+
+---
+
+## Contract revision 2026-09-11
+
+One additive field, one new export, and one behaviour change inside a tool. A consumer written
+against the 2026-09-10 surface still compiles and still behaves the same way: everything below is
+inert until a host fills the new field in.
+
+### (a) `NetworkPolicy.proxy?: (url: URL) => string | null`
+
+```ts
+export interface NetworkPolicy {
+  allow: string[];
+  /** A read-only proxy to retry a blocked fetch through. `null` = not through me, for this URL. */
+  proxy?: (url: URL) => string | null;
+}
+```
+
+**The problem is the browser's, not the policy's.** A page may read a cross-origin response only when
+the far side sent `Access-Control-Allow-Origin`, and almost no website does — so `http_get` in a tab
+could reach its own origin and a handful of APIs, and every ordinary link came back as a `TypeError`
+the model could only report as "could not reach". The host that SERVES the page can fetch it
+server-side, where there is no CORS at all.
+
+It is a function and not a base URL because the host decides per target whether its proxy will take
+that URL; `null` means "not through me", and the tool then reports the original failure rather than
+inventing a second one. **It does not widen the policy**: `allow` still decides what is `safe` and
+what the person is asked about, the call is still a GET with no credentials, and the proxy is dialled
+only AFTER a direct fetch has failed — a second road to the same URL, never a road to a URL the
+person did not approve. `apps/infinite/src/runtime/bootstrap.ts` fills it with `proxyUrlFor`, which
+points at `${location.origin}/~fetch` and answers `null` where there is no page.
+
+`http_get`'s two new behaviours, both visible to a reader of a transcript:
+
+- A fetch that throws a `TypeError` (the browser's one word for "blocked or unreachable") or answers
+  opaque (`status === 0`) is retried through the proxy when there is one, and the output line then
+  ends `(fetched through the site's read-only proxy)`. With no proxy, an opaque answer is now named —
+  `<host> refused to be read from this page (CORS).` — instead of arriving as an empty success.
+- **HTML comes back as text.** `htmlToText` (below) runs on any `text/html` answer, and the 1 MB cap
+  applies AFTER the conversion, because the cap is on what the model reads. The tool's description
+  says so: *"Fetch a web page or URL over GET and return it as readable text (HTML becomes
+  markdown-ish text). Same rules: no cookies, 1024KB, text only."*
+
+### (b) `htmlToText(html, baseUrl?)`, `decodeEntities`, `resolveHref` — `@00/agent-runtime`
+
+`packages/agent-runtime/src/tools-html.ts`, exported from the package index. One linear pass over the
+tags, no DOM (it runs in a Worker and in node, and the package has no dependencies). Keeps the title,
+headings as `#` lines, paragraphs, list items as `- `, table cells separated by ` | `, `pre` blocks
+fenced with their own whitespace, inline `code` in backticks, links as `[text](ABSOLUTE href)`
+resolved against `baseUrl`, and images as `![alt](src)` only when the alt text is not empty. Drops
+`script`, `style`, `noscript`, `svg`, `iframe`, `nav`, `footer`, a `<header role="banner">`, comments
+and the doctype. A plain `<header>` survives — inside an article it is the article's own.
+
+Exported on its own because a host that already has HTML in hand should not have to fetch it again.
+Everything it returns is still untrusted data; conversion makes the words readable, not trustworthy.
+
+### (c) The site Worker's `/~fetch` (not a package surface, but the other half of (a))
+
+`apps/infinite-site/src/fetch-proxy.ts` is the pure decision — `decideProxy`, `isPublicHost`,
+`publicHttpsTarget`, `calledBySite`, `isTextual` and the five caps as named constants — and
+`src/index.ts` carries it out before the SPA fallback. It is imported and tested from
+`apps/infinite/test/fetch-proxy.test.ts`, both as the pure verdict and as the Worker putting it on a
+response, for the same reason `isolation-headers.test.ts` exists: that folder has no `node_modules`.
+The rules and the reasoning are in `apps/infinite-site/README.md`, "The read-only fetch proxy".
+
+### (d) The QR encoder — `apps/infinite/src/lib/qr.ts`
+
+App-local, not a package: `qrMatrix(text)` and `qrSvg(text, { size, fg, bg, quiet })`, byte mode,
+error correction M, versions 1–10 (213 bytes), all eight masks scored by the spec's four penalties.
+No dependency — a QR library is 15–60 KB of canvas rendering to get one grid of booleans, and this
+app ships a 60 KB embed and promises to work offline. `QrCode.vue` renders it with
+`fill="currentColor"` so it is theme-aware. `test/qr.test.ts` decodes what it encodes with an
+independently written inverse; what no test here can prove is that a phone agrees.
+
+### Coverage
+
+`packages/agent-runtime` measured 99.4 / 94.3 / 99.2 / 99.4 with 405 tests, above its 98/92/98/98
+floors. `apps/infinite` measured 76.0 / 82.6 / 79.6 / 76.0 with 1057 tests against floors of
+72/79/75/72 — up from 2026-09-10's 75.3 / 82.0 / 79.1 / 75.3, and the floors are again left alone
+while the embed and shell owners are mid-round.

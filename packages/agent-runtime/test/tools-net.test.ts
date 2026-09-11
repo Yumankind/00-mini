@@ -121,6 +121,154 @@ describe("http_get", () => {
   });
 });
 
+describe("the read-only proxy fallback", () => {
+  const proxy = (u: URL) => `https://site.test/~fetch?url=${encodeURIComponent(u.href)}`;
+
+  it("retries through the proxy when the browser refuses the direct read, and says so", async () => {
+    const calls: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      // The first call is the direct one, and a blocked cross-origin read is a TypeError with no
+      // detail — exactly what a browser throws for CORS and for a dead host alike.
+      if (calls.length === 1) throw new TypeError("Failed to fetch");
+      return new Response("<html><title>T</title><body><p>the page</p></body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }) as typeof globalThis.fetch;
+
+    const result = await httpGetTool({ policy: { allow: ["*"], proxy }, fetch: fetchFn }).run(
+      { url: "https://example.com/page" },
+      ctxFor(),
+    );
+    expect(calls).toEqual([
+      "https://example.com/page",
+      "https://site.test/~fetch?url=https%3A%2F%2Fexample.com%2Fpage",
+    ]);
+    expect(result.output).toContain("(fetched through the site's read-only proxy)");
+    expect(result.output).toContain("the page");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("retries an OPAQUE answer too — a no-cors response is a refusal wearing a hat", async () => {
+    const calls: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (calls.length === 1) return Response.error(); // status 0, type "error"/opaque
+      return new Response("through the proxy", { status: 200, headers: { "content-type": "text/plain" } });
+    }) as typeof globalThis.fetch;
+
+    const result = await httpGetTool({ policy: { allow: ["*"], proxy }, fetch: fetchFn }).run(
+      { url: "https://example.com/page" },
+      ctxFor(),
+    );
+    expect(calls).toHaveLength(2);
+    expect(result.output).toContain("through the proxy");
+  });
+
+  it("without a proxy, the error text is exactly what it always was", async () => {
+    const throwing = (async () => {
+      throw new TypeError("Failed to fetch");
+    }) as typeof globalThis.fetch;
+    const result = await httpGetTool({ policy: { allow: ["*"] }, fetch: throwing }).run(
+      { url: "https://example.com/x" },
+      ctxFor(),
+    );
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toBe("Could not reach example.com: Failed to fetch");
+    expect(result.output).not.toContain("proxy");
+  });
+
+  it("names the host that was asked for when the proxy fails too, and when the policy declines this URL", async () => {
+    const throwing = (async () => {
+      throw new TypeError("Failed to fetch");
+    }) as typeof globalThis.fetch;
+    const both = await httpGetTool({ policy: { allow: ["*"], proxy }, fetch: throwing }).run(
+      { url: "https://example.com/x" },
+      ctxFor(),
+    );
+    expect(both.output).toBe("Could not reach example.com: Failed to fetch");
+
+    // `null` is the policy saying "not through me" for this particular URL.
+    const declined = await httpGetTool({ policy: { allow: ["*"], proxy: () => null }, fetch: throwing }).run(
+      { url: "https://example.com/x" },
+      ctxFor(),
+    );
+    expect(declined.output).toBe("Could not reach example.com: Failed to fetch");
+  });
+
+  it("does not retry an ordinary Error — only the browser's blocked-read TypeError", async () => {
+    const calls: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      throw new Error("aborted");
+    }) as typeof globalThis.fetch;
+    const result = await httpGetTool({ policy: { allow: ["*"], proxy }, fetch: fetchFn }).run(
+      { url: "https://example.com/x" },
+      ctxFor(),
+    );
+    expect(calls).toEqual(["https://example.com/x"]);
+    expect(result.output).toContain("aborted");
+  });
+
+  it("reports the CORS refusal by name when an opaque answer has nowhere to go", async () => {
+    const fetchFn = (async () => Response.error()) as typeof globalThis.fetch;
+    const result = await httpGetTool({ policy: { allow: ["*"] }, fetch: fetchFn }).run(
+      { url: "https://example.com/x" },
+      ctxFor(),
+    );
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain("refused to be read from this page (CORS)");
+  });
+});
+
+describe("the answer as text", () => {
+  it("converts HTML to readable text and leaves JSON alone", async () => {
+    const html = fakeFetch({
+      type: "text/html; charset=utf-8",
+      body: `<html><head><title>Docs</title><script>var x=1</script></head>
+             <body><h1>Install</h1><p>Read the <a href="/api">API</a>.</p></body></html>`,
+    });
+    const page = await httpGetTool({ policy: { allow: ["*"] }, fetch: html.fn }).run(
+      { url: "https://example.com/docs" },
+      ctxFor(),
+    );
+    expect(page.output).toContain("# Install");
+    expect(page.output).toContain("[API](https://example.com/api)");
+    expect(page.output).not.toContain("<script>");
+
+    const json = fakeFetch({ type: "application/json", body: `{"a":"<b>not html</b>"}` });
+    const data = await httpGetTool({ policy: { allow: ["*"] }, fetch: json.fn }).run(
+      { url: "https://example.com/a.json" },
+      ctxFor(),
+    );
+    expect(data.output).toContain(`{"a":"<b>not html</b>"}`);
+  });
+
+  it("sniffs a page a server forgot to type, and caps AFTER the conversion", async () => {
+    const sniffed = fakeFetch({ type: "", body: "<!doctype html><p>typed by nobody</p>" });
+    const result = await httpGetTool({ policy: { allow: ["*"] }, fetch: sniffed.fn }).run(
+      { url: "https://example.com/x" },
+      ctxFor(),
+    );
+    expect(result.output).toContain("typed by nobody");
+    expect(result.output).not.toContain("doctype");
+
+    // Markup far past the cap whose TEXT is small: the old rule would have truncated it, the new
+    // one converts first and the whole page arrives.
+    const bloated = fakeFetch({
+      type: "text/html",
+      body: `<html><body><p>short answer</p>${"<span></span>".repeat(120_000)}</body></html>`,
+    });
+    const small = await httpGetTool({ policy: { allow: ["*"] }, fetch: bloated.fn }).run(
+      { url: "https://example.com/bloat" },
+      ctxFor(),
+    );
+    expect(small.output).toContain("short answer");
+    expect(small.output).not.toContain("[Truncated");
+  });
+});
+
 describe("http_get through the loop", () => {
   it("asks the person for a host off the list and does not ask for one on it", async () => {
     const fetch = fakeFetch({ body: "ok" });

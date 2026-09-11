@@ -271,6 +271,25 @@ async function readinessOf(provider: ModelProvider | null, whenMissing: Readines
   }
 }
 
+/**
+ * THE SECOND ROAD TO A URL THE BROWSER WILL NOT LET THIS PAGE READ (`NetworkPolicy.proxy`, contract
+ * revision 2026-09-11).
+ *
+ * A tab may only read a cross-origin response when the far side sent `Access-Control-Allow-Origin`,
+ * and almost no website does — so `http_get` answered "could not reach" for most of the web while
+ * the fetch itself had worked fine. The Worker that serves this page has no such rule (there is no
+ * CORS server-to-server), and `/~fetch` is its read-only door: GET, https, public hosts, text, 1 MiB,
+ * 10 seconds, and same-origin callers only (apps/infinite-site/src/fetch-proxy.ts).
+ *
+ * It is `null` with no `location` — a node test, or any host that is not a page — because there is no
+ * origin to point at and a made-up one would be a second failure on top of the first. The tool then
+ * reports the original refusal, which is the behaviour that existed before this function.
+ */
+export function proxyUrlFor(url: URL): string | null {
+  if (typeof location === "undefined" || !location.origin || location.origin === "null") return null;
+  return `${location.origin}/~fetch?url=${encodeURIComponent(url.href)}`;
+}
+
 // ── The one entry point ───────────────────────────────────────────────────────────────────────────
 
 export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<OwnedAgent> {
@@ -453,8 +472,12 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
    * B17: hosts a tool may reach without asking. The list is the person's (settings); the enforcement
    * is the package's. An EMPTY list is still a policy — it is what makes `http_get` exist at all, with
    * every host a `confirm` — and it is the only safe default for an agent in someone's browser.
+   *
+   * `proxy` is the second road to the SAME url, not a wider policy: the allow list still decides what
+   * is asked about, and the proxy is dialled only after the browser has refused the direct read
+   * (`proxyUrlFor`, and the note above it).
    */
-  const network: NetworkPolicy = { allow: settings.network?.allow ?? [] };
+  const network: NetworkPolicy = { allow: settings.network?.allow ?? [], proxy: proxyUrlFor };
   const secretNames = await vault.list().catch(() => [] as string[]);
 
   /**

@@ -25,8 +25,22 @@
  *    Off it, the call is `confirm` and the person sees the whole URL before it is dialled: not
  *    refused, because an agent that cannot open a link it was given is useless, and not silent,
  *    because this is the one tool whose argument leaves the workspace.
+ *
+ * TWO THINGS ARRIVED ON 2026-09-11, both because the first road this tool took in a BROWSER was a
+ * disappointment in practice:
+ *
+ * - **THE PROXY FALLBACK** (`NetworkPolicy.proxy`). A page may only read a cross-origin response
+ *   when the far side sent `Access-Control-Allow-Origin`, and almost no website does — so the
+ *   ordinary case, "read me this link", was a `TypeError` and a shrug. The host may now hand the
+ *   policy a read-only proxy on its own origin (apps/infinite-site/src/fetch-proxy.ts), which this
+ *   tool dials ONLY after the direct fetch has failed, and whose use it SAYS in its own output. The
+ *   rules do not move: same URL, same GET, same absence of credentials, same tier decision.
+ * - **THE OUTPUT IS TEXT, NOT HTML** (`htmlToText`, tools-html.ts). Raw markup spends the window on
+ *   wrappers and inline script; a small local brain cannot read a page that way at all. The 1 MB cap
+ *   is applied AFTER the conversion, because the cap is on what the model reads.
  */
 import type { NetworkPolicy, PermissionTier, Tool } from "./api.js";
+import { htmlToText } from "./tools-html.js";
 
 export const HTTP_GET_MAX_BYTES = 1024 * 1024;
 
@@ -58,6 +72,24 @@ export function hostAllowed(host: string, policy: NetworkPolicy | undefined): bo
     if (!entry) return false;
     return target === entry || target.endsWith(`.${entry}`);
   });
+}
+
+/**
+ * An answer the page was not allowed to read. A `no-cors` fetch resolves with an OPAQUE response —
+ * status 0, no headers, no body — which is indistinguishable from success to code that only checks
+ * for a thrown error, and useless to a model. Treated exactly like the `TypeError` it might have
+ * been, because from the tab's side it is the same refusal.
+ */
+function blockedByCors(response: Response): boolean {
+  return response.status === 0 || response.type === "opaque" || response.type === "opaqueredirect";
+}
+
+/** Is this body a page rather than data? The header decides; a server that sent none is sniffed. */
+function isHtml(contentType: string, body: string): boolean {
+  const type = contentType.split(";")[0].trim().toLowerCase();
+  if (type === "text/html" || type === "application/xhtml+xml") return true;
+  if (type) return false;
+  return /^\s*(?:<!doctype html|<html\b)/i.test(body);
 }
 
 function parseUrl(raw: unknown): URL | null {
@@ -97,7 +129,8 @@ export function httpGetTool(opts: HttpGetOptions = {}): Tool {
     schema: {
       name: "http_get",
       description:
-        `Fetch a web page or API response over GET. Text only, up to ${HTTP_GET_MAX_BYTES / 1024}KB, no cookies and no credentials — ` +
+        `Fetch a web page or URL over GET and return it as readable text (HTML becomes markdown-ish text). ` +
+        `Same rules: no cookies, ${HTTP_GET_MAX_BYTES / 1024}KB, text only — ` +
         `it cannot sign in, post, or change anything. ` +
         (allowed.length
           ? `These hosts are pre-approved: ${allowed.join(", ")}; any other host asks the person first. `
@@ -112,17 +145,41 @@ export function httpGetTool(opts: HttpGetOptions = {}): Tool {
     async run(args, ctx) {
       const url = parseUrl(args.url);
       if (!url) return { output: "url must be an absolute http:// or https:// URL.", isError: true };
+
+      const get = (target: string): Promise<Response> =>
+        doFetch(target, { method: "GET", redirect: "follow", credentials: "omit", signal: ctx.signal });
+
+      /** The host's read-only proxy for this URL, when it has one and will take this URL. */
+      const proxied = (): string | null => opts.policy?.proxy?.(url) ?? null;
+
       let response: Response;
+      let viaProxy = false;
       try {
-        response = await doFetch(url.toString(), {
-          method: "GET",
-          redirect: "follow",
-          credentials: "omit",
-          signal: ctx.signal,
-        });
+        response = await get(url.toString());
+        // An opaque answer is what a no-cors response looks like from the inside: status 0, no
+        // headers, no body. It is a CORS refusal wearing a different hat, so it takes the same road.
+        if (blockedByCors(response)) {
+          const proxy = proxied();
+          if (!proxy) {
+            return { output: `${url.host} refused to be read from this page (CORS).`, isError: true };
+          }
+          response = await get(proxy);
+          viaProxy = true;
+        }
       } catch (err) {
-        return { output: `Could not reach ${url.host}: ${(err as Error).message}`, isError: true };
+        // A TypeError from `fetch` is the browser's word for "blocked or unreachable" — it never
+        // says which, and a page cannot find out. So the proxy is tried once, and if THAT fails the
+        // error the person reads is still the one about the host they asked for.
+        const proxy = err instanceof TypeError ? proxied() : null;
+        if (!proxy) return { output: `Could not reach ${url.host}: ${(err as Error).message}`, isError: true };
+        try {
+          response = await get(proxy);
+          viaProxy = true;
+        } catch (proxyErr) {
+          return { output: `Could not reach ${url.host}: ${(proxyErr as Error).message}`, isError: true };
+        }
       }
+
       const contentType = response.headers.get("content-type") ?? "";
       if (!response.ok) {
         return { output: `${url} answered HTTP ${response.status} ${response.statusText}.`, isError: true };
@@ -133,11 +190,15 @@ export function httpGetTool(opts: HttpGetOptions = {}): Tool {
           isError: true,
         };
       }
-      const body = await response.text();
+      const raw = await response.text();
+      // HTML becomes the text a person reads off the page, resolved against the URL that was asked
+      // for — never the proxy's, or every link in the page would point back through the proxy.
+      const body = isHtml(contentType, raw) ? htmlToText(raw, url.toString()) : raw;
       const capped = body.length > HTTP_GET_MAX_BYTES;
       return {
         output:
-          `${url} — HTTP ${response.status}${contentType ? `, ${contentType.split(";")[0]}` : ""}\n\n` +
+          `${url} — HTTP ${response.status}${contentType ? `, ${contentType.split(";")[0]}` : ""}` +
+          `${viaProxy ? " (fetched through the site's read-only proxy)" : ""}\n\n` +
           (capped ? `${body.slice(0, HTTP_GET_MAX_BYTES)}\n\n[Truncated at ${HTTP_GET_MAX_BYTES / 1024}KB.]` : body),
       };
     },

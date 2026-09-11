@@ -236,6 +236,49 @@ Two things that did NOT change and are worth writing down so nobody re-debugs th
   (`An unknown error occurred when fetching the script`). It fails the same way on a plain static
   server with NO isolation headers, so it is that profile, not this change.
 
+## The read-only fetch proxy (`/~fetch`)
+
+An agent in a tab cannot read the web. A browser hands a page cross-origin bytes only when the far
+side sent `Access-Control-Allow-Origin`, and almost no website does — so `http_get`
+(`packages/agent-runtime/src/tools-net.ts`) came back from an ordinary doc page or README with a
+`TypeError` the model could only report as "could not reach". A Worker has no such rule: there is no
+CORS server-to-server. `src/fetch-proxy.ts` is the whole decision, pure and import-free like
+`headers.ts`, and `src/index.ts` carries it out before the SPA fallback.
+
+```
+GET /~fetch?url=https%3A%2F%2Fexample.com%2Fpage
+→ 200, the upstream content-type, x-mini-final-url, cache-control: public, max-age=300
+```
+
+The tool uses it **only as a fallback**: the direct fetch is tried first, and the proxy is dialled
+only when that throws (CORS) or answers opaque. When it is used, the tool says so in its own output —
+`(fetched through the site's read-only proxy)` — so a person reading the transcript knows which road
+the bytes took.
+
+### The rules, which are what keeps it from being an open proxy
+
+| Rule | Why |
+|---|---|
+| `GET`/`HEAD` only | no body ever reaches the far side, so nothing can be changed through it |
+| `https:` only | plain `http:` would make this a way to reach cleartext hosts from a Cloudflare IP |
+| public hosts only | no IP literal (v4 or v6, in any spelling the URL parser folds into one), no `localhost`, no `*.local` / `*.internal` / `*.arpa` / `*.localhost`, no single-label name, no userinfo in the URL — those addresses mean "this machine's own network", which here is Cloudflare's |
+| same-origin callers only | `sec-fetch-site: same-origin`, or an `origin`/`referer` that begins at this site's origin (`https://site` and not `https://site.evil.example`). A browser sets all three and script cannot forge them; curl, a bot, and a pasted address bar all get **403 `same-origin callers only`** |
+| no credentials, ever | the upstream call is built with a FRESH header set (`accept`, `user-agent: 00-Mini/1.0 (+https://0-0.chat)`) — no cookie, no authorization, nothing the caller sent |
+| at most 3 redirects | `redirect: "manual"`, and every hop is re-checked by the same host rule as the first, so a chain that ends at `http://169.254.169.254/` stops here (403) |
+| 10 s, 1 MiB | an `AbortController` bounds the time (504); the body stream is **cut and cancelled** at 1 MiB rather than drained, and the answer then carries `x-mini-truncated: 1` |
+| text only | the same `isTextual` list as the tool's own (`text/*`, JSON, XML, XHTML, JavaScript, NDJSON, LD+JSON); anything else is **415 `not text`** and no body is passed through |
+| errors are barely cached | 5 minutes on a successful answer, **60 seconds** on a refusal or an upstream error — a 404 upstream must not be pinned at the edge for the afternoon |
+
+Two more headers on every answer, because the bytes are somebody else's page being served from this
+origin: `content-disposition: inline` with `x-content-type-options: nosniff`, and
+`content-security-policy: sandbox; default-src 'none'`, which drops any HTML that comes back into an
+opaque origin so it can never reach this origin's storage — where the entire agent lives.
+
+**It has no auth, keeps no log and holds no state.** The abuse bound is the same-origin check plus
+the size and time caps; there is no allow-list of targets here, because the allow-list that matters
+is the person's own (`NetworkPolicy.allow`, enforced in the tab, where a host that is not on it makes
+the call a `confirm` the person sees in full before it is dialled).
+
 ## Preview
 
 The R2 binding needs the real bucket, so the preview is remote:
@@ -272,6 +315,19 @@ curl -sI -H 'Range: bytes=0-1023' http://127.0.0.1:8794/mediapipe/genai/wasm/gen
 curl -so /dev/null -w '%{http_code}\n' http://127.0.0.1:8794/mediapipe/genai/wasm/nope.wasm
 # the catalogue
 curl -s http://127.0.0.1:8794/litert/catalog.json | head -c 200
+```
+
+The read-only fetch proxy, which needs no binding either (so plain `wrangler dev` is enough):
+
+```sh
+# 200 and HTML — the header is what a browser sends from this site's own page
+curl -s -H 'sec-fetch-site: same-origin' \
+  'http://127.0.0.1:8794/~fetch?url=https://example.com' | head -5
+# 403 same-origin callers only — no header, which is what curl and a pasted address bar look like
+curl -so /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8794/~fetch?url=https://example.com'
+# 400 — a host that is not on the public internet
+curl -so /dev/null -w '%{http_code}\n' -H 'sec-fetch-site: same-origin' \
+  'http://127.0.0.1:8794/~fetch?url=http://127.0.0.1:8787/'
 ```
 
 ## Deploy

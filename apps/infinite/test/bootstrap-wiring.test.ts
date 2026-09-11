@@ -12,7 +12,7 @@
 // design), so it is also the only test that proves the whole construction still runs at all.
 
 import { describe, expect, it } from "vitest";
-import { createOwnedAgent } from "../src/runtime/bootstrap.js";
+import { createOwnedAgent, proxyUrlFor } from "../src/runtime/bootstrap.js";
 
 async function boot(): Promise<Awaited<ReturnType<typeof createOwnedAgent>>> {
   return createOwnedAgent({
@@ -63,5 +63,26 @@ describe("the boot", () => {
     const agent = await boot();
     expect(await agent.vault.list().catch(() => null)).toEqual([]);
     expect(agent.vault.unlocked).toBe(false);
+  });
+});
+
+describe("the read-only proxy the network policy hands the tools", () => {
+  it("points at this origin's own /~fetch and carries the whole URL, encoded", () => {
+    Object.defineProperty(globalThis, "location", {
+      configurable: true,
+      value: { origin: "https://0-0.chat" },
+    });
+    expect(proxyUrlFor(new URL("https://example.com/a?b=c#d"))).toBe(
+      "https://0-0.chat/~fetch?url=https%3A%2F%2Fexample.com%2Fa%3Fb%3Dc%23d",
+    );
+  });
+
+  it("is `null` where there is no page — a node host, or a sandboxed frame with no origin", () => {
+    Object.defineProperty(globalThis, "location", { configurable: true, value: { origin: "null" } });
+    expect(proxyUrlFor(new URL("https://example.com/"))).toBeNull();
+    Object.defineProperty(globalThis, "location", { configurable: true, value: { origin: "" } });
+    expect(proxyUrlFor(new URL("https://example.com/"))).toBeNull();
+    Reflect.deleteProperty(globalThis, "location");
+    expect(proxyUrlFor(new URL("https://example.com/"))).toBeNull();
   });
 });

@@ -21,6 +21,7 @@
  */
 import { computed, onMounted, ref } from "vue";
 import TablerIcon from "./TablerIcon.vue";
+import QrCode from "./QrCode.vue";
 import {
   answerReplace,
   arrivedVaultLine,
@@ -45,6 +46,7 @@ import {
   moveFileName,
   moveStep,
   openIn00,
+  prefilledCode,
   receiveWanted,
   resetLive,
   resetMove,
@@ -63,6 +65,7 @@ const emit = defineEmits<{ (e: "close"): void }>();
 /** Which road this panel is on. `choose` is the first screen; the other three are the roads. */
 const road = ref<"choose" | "file" | "live" | "receive">("choose");
 const copied = ref(false);
+const copiedLink = ref(false);
 const typedCode = ref("");
 const words = computed(() => moveCode.value.split("-").filter(Boolean));
 const liveWords = computed(() => liveCode.value.split("-").filter(Boolean));
@@ -78,10 +81,39 @@ function tickCarry(event: Event): void {
 }
 const liveDone = computed(() => livePhase.value === "done");
 
-// Connections' "Receive an agent" card opens this pane already on the receiving road.
+/**
+ * THE LINK A PHONE SCANS, and the one place in this app where the code is in a URL.
+ *
+ * It is in the FRAGMENT, which is the half of a URL that never reaches a server — not in the request,
+ * not in a referer, not in this Worker's logs — and `receiveFromLocation` in state/move.ts takes it
+ * out of the address bar and out of the history entry the moment the other device reads it. The
+ * sentence under the code says exactly that, because a person handed a QR code with their own secret
+ * in it deserves to know where it goes.
+ */
+const receiveLink = computed(() =>
+  words.value.length && typeof location !== "undefined"
+    ? `${location.origin}/?receive#code=${encodeURIComponent(words.value.join("-"))}`
+    : "",
+);
+
+async function copyLink(): Promise<void> {
+  if (!receiveLink.value) return;
+  try {
+    await navigator.clipboard.writeText(receiveLink.value);
+    copiedLink.value = true;
+    setTimeout(() => (copiedLink.value = false), 2000);
+  } catch {
+    copiedLink.value = false;
+  }
+}
+
+// Connections' "Receive an agent" card opens this pane already on the receiving road — and so does a
+// scanned QR link, which also arrives with the six words already in hand (state/move.ts).
 onMounted(() => {
   if (receiveWanted.value) {
     road.value = "receive";
+    if (prefilledCode.value) typedCode.value = prefilledCode.value;
+    // Read before cleared, in that order: the store keeps nothing once the screen has it.
     clearReceiveWanted();
   }
 });
@@ -371,6 +403,27 @@ async function receiveLive(): Promise<void> {
         <p class="text-[11px] text-[var(--color-amber)] leading-relaxed">
           Nobody can recover these words — not your Mac, not us. Without them the file is noise.
         </p>
+
+        <!-- The QR road (§7, "bring it with you"). The link's FRAGMENT carries the code, which is
+             the one part of a URL a server never sees; the app strips it the moment it reads it. -->
+        <div v-if="receiveLink" class="rounded-[10px] border border-[var(--color-line)] px-3 py-3 space-y-2">
+          <div class="text-[11px] font-medium">Or scan on your phone</div>
+          <div class="flex justify-center">
+            <QrCode :text="receiveLink" :size="148" />
+          </div>
+          <p class="text-[10px] text-[var(--color-ink-dim)] leading-relaxed">
+            The code rides in the part of the link that never leaves your phone; the app forgets it
+            the moment it reads it.
+          </p>
+          <button
+            type="button"
+            class="ia-btn w-full h-8 text-[11px] flex items-center justify-center gap-1.5"
+            @click="copyLink()"
+          >
+            <TablerIcon :name="copiedLink ? 'check' : 'copy'" :size="13" />
+            {{ copiedLink ? "Link copied" : "Copy link" }}
+          </button>
+        </div>
         <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">{{ carriedLine(carrySecrets) }}</p>
         <button
           type="button"
