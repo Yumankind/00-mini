@@ -80,19 +80,19 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
   const answers: SetupAnswers = { ...defaultAnswers(opts.origin), linkPub: opts.linkPub ?? "" };
   const dev = isDevOrigin(opts.origin);
 
-  const wrap = el("div", { className: "setup" });
+  const wrap = el("div", { className: "mini-setup" });
   wrap.append(el("h2", { textContent: "Set up your agent" }));
 
   // ── 1. This site ───────────────────────────────────────────────────────────────────────────
   const step1 = step(0);
   step1.append(
     el("div", {
-      className: "rule",
+      className: "mini-rule",
       textContent: `It reads ${opts.origin} and nothing else. Ever. Not a setting — a rule.`,
     }),
   );
   if (dev) {
-    step1.append(el("p", { className: "note", textContent: "Dev mode: this is a local origin." }));
+    step1.append(el("p", { className: "mini-note", textContent: "Dev mode: this is a local origin." }));
     step1.append(el("label", { textContent: "The domain it will finally live on (optional)" }));
     const domain = el("input", { type: "text", placeholder: "https://example.com" });
     domain.addEventListener("input", () => (answers.finalDomain = domain.value.trim()));
@@ -123,11 +123,11 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
   }
 
   const auto = el("input", { type: "checkbox", checked: true });
-  const autoRow = el("div", { className: "row" }, [auto, el("span", { textContent: "Auto knowledge base" })]);
+  const autoRow = el("div", { className: "mini-field" }, [auto, el("span", { textContent: "Auto knowledge base" })]);
   step2.append(
     autoRow,
     el("p", {
-      className: "note",
+      className: "mini-note",
       textContent: "Indexes a visitor's signed-in pages on that visitor's own device. It never leaves the device.",
     }),
   );
@@ -143,7 +143,7 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
     kind.append(el("option", { value, textContent: label }));
   }
   kind.value = "none";
-  const kindHelp = el("p", { className: "note", textContent: sessionKindHelp("none") });
+  const kindHelp = el("p", { className: "mini-note", textContent: sessionKindHelp("none") });
   const names = el("input", { type: "text", placeholder: "session_id, auth.token" });
   const namesLabel = el("label", { textContent: "Names (never values)" });
   const logout = el("input", { type: "text", placeholder: "/logout, /account/signout" });
@@ -205,12 +205,12 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
   const carrier = el("select");
   carrier.append(el("option", { value: "site-file", textContent: `A file on my site (${WELL_KNOWN_PATH})` }));
   carrier.append(el("option", { value: "snippet", textContent: "In the snippet (re-paste to change a setting)" }));
-  const output = el("pre");
-  const copyBtn = el("button", { className: "copy", textContent: "Copy" });
-  const snippetOut = el("pre");
-  const copySnippet = el("button", { className: "copy", textContent: "Copy the snippet" });
-  const checkBtn = el("button", { className: "copy", textContent: "Check the file is live" });
-  const checkOut = el("p", { className: "note" });
+  const output = el("pre", { className: "mini-pre" });
+  const copyBtn = el("button", { className: "mini-copy", textContent: "Copy" });
+  const snippetOut = el("pre", { className: "mini-pre" });
+  const copySnippet = el("button", { className: "mini-copy", textContent: "Copy the snippet" });
+  const checkBtn = el("button", { className: "mini-copy", textContent: "Check the file is live" });
+  const checkOut = el("p", { className: "mini-note" });
 
   const refresh = (): void => {
     answers.carrier = carrier.value as SetupAnswers["carrier"];
@@ -254,19 +254,19 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
     ["Get messages from visitors", "a claimed app; the inbox door"],
     ["Give it a stronger brain", "a claimed app, or a local model on the visitor's device"],
   ]) {
-    step5.append(el("div", { className: "rule", textContent: `${title} — needs ${needs}` }));
+    step5.append(el("div", { className: "mini-rule", textContent: `${title} — needs ${needs}` }));
   }
 
   // The admin flow proper (§5.3, §5.4). It is the FIRST thing on this page that calls anything of
   // ours, and it does so only when the button is pressed — see registry/client.ts's header.
   if (opts.admin) {
     const admin = opts.admin;
-    const registerOut = el("div", { className: "rule" });
-    const registerDetail = el("p", { className: "note" });
-    const registerBtn = el("button", { className: "copy", type: "button", textContent: "Register this site" });
-    const claimBtn = el("button", { className: "copy", type: "button", textContent: "Claim it in your agent" });
+    const registerOut = el("div", { className: "mini-rule" });
+    const registerDetail = el("p", { className: "mini-note" });
+    const registerBtn = el("button", { className: "mini-copy", type: "button", textContent: "Register this site" });
+    const claimBtn = el("button", { className: "mini-copy", type: "button", textContent: "Claim it in your agent" });
     const REISSUE_LABEL = "Get a new claim link";
-    const reissueBtn = el("button", { className: "copy", type: "button", textContent: REISSUE_LABEL });
+    const reissueBtn = el("button", { className: "mini-copy", type: "button", textContent: REISSUE_LABEL });
     claimBtn.hidden = true;
     reissueBtn.hidden = true;
     registerOut.hidden = true;
@@ -330,7 +330,7 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
       el("label", { textContent: "Your agent's public key (from the Infinite Agent app)" }),
       linkPubInput,
       el("p", {
-        className: "note",
+        className: "mini-note",
         textContent:
           "Public by design, like the snippet. It is stored when the site registers, and it is what proves the claim is yours.",
       }),
@@ -347,9 +347,9 @@ export function renderSetup(container: HTMLElement, opts: SetupOptions): void {
 
   function step(i: number): HTMLElement {
     const meta = SETUP_STEPS[i]!;
-    const box = el("div", { className: "step" }, [
+    const box = el("div", { className: "mini-step" }, [
       el("b", { textContent: `${i + 1}. ${meta.title}` }),
-      el("p", { className: "blurb", textContent: meta.blurb }),
+      el("p", { className: "mini-blurb", textContent: meta.blurb }),
     ]);
     wrap.append(box);
     return box;

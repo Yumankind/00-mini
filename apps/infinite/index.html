@@ -3,8 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Infinite Agent</title>
-    <meta name="description" content="An AI agent that runs in your browser." />
+    <title>00 Mini — an AI agent you don't install</title>
+    <meta name="description" content="00 Mini is a whole AI agent — files, terminal, Git, its own memory — running in your browser tab. No install, no account, offline after the first load." />
+    <meta name="theme-color" content="#0f0f10" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <!-- The FIRST paint, before style.css or any JS exists — same reason as packages/web-vue's
          index.html: a variable defined in the stylesheet cannot colour the frame drawn before that
          stylesheet arrives. Both themes are declared here because this app follows the system. -->
@@ -13,17 +15,17 @@
       html,
       body {
         margin: 0;
-        background: #0a0b0d;
+        background: #0f0f10;
       }
       @media (prefers-color-scheme: light) {
         html:not([data-theme="dark"]),
         html:not([data-theme="dark"]) body {
-          background: #f7f8f9;
+          background: #ffffff;
         }
       }
       html[data-theme="light"],
       html[data-theme="light"] body {
-        background: #f7f8f9;
+        background: #ffffff;
       }
     </style>
     <link rel="manifest" href="/manifest.webmanifest" />
