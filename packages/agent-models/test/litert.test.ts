@@ -261,10 +261,10 @@ describe("the curated catalogue", () => {
    * trade is pinned: the phone rows stay small deliberately, and everything else got the room the
    * 5.2k-token system prompt needed on 2026-09-11.
    */
-  it("asks for 8192 tokens on the Gemma 4 and 3n rows, and keeps the phone rows at 2048", () => {
+  it("asks for 8192 tokens on the Gemma 4 and 3n rows, and 4096 on the phone rows", () => {
     const byId = new Map(LITERT_CATALOG.map((m) => [m.id, m.contextTokens]));
-    expect(byId.get("gemma3-270m-it-q4_0-web")).toBe(2048);
-    expect(byId.get("gemma3-1b-it-int4-web")).toBe(2048);
+    expect(byId.get("gemma3-270m-it-q4_0-web")).toBe(4096);
+    expect(byId.get("gemma3-1b-it-int4-web")).toBe(4096);
     for (const id of ["gemma-3n-E2B-it-int4-Web", "gemma-3n-E4B-it-int4-Web", "gemma-4-E2B-it-web", "gemma-4-E4B-it-web", "gemma-4-12B-it-web"]) {
       expect(byId.get(id), id).toBe(8192);
     }
@@ -289,7 +289,7 @@ describe("the curated catalogue", () => {
     await make({ modelId: "gemma-4-E2B-it-web" }).load();
     await make({ modelId: "gemma3-270m-it-q4_0-web" }).load();
     await make({ modelId: "gemma-4-E2B-it-web", maxTokens: 1024 }).load();
-    expect(seen).toEqual([8192, 2048, 1024]);
+    expect(seen).toEqual([8192, 4096, 1024]);
   });
 
   it("joins a host and a file name with exactly one slash, whatever the caller passed", () => {

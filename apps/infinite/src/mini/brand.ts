@@ -48,7 +48,8 @@ export interface FaceOptions {
  */
 export function pixelFaceSvg(options: FaceOptions = {}): string {
   const size = options.size ?? 20;
-  const color = options.color ?? "#4ade9b";
+  // White pixels, like the logo on 0-0.chat's header (Bruno, 2026-09-11) — mint is for status, not the mark.
+  const color = options.color ?? "#eef1f3";
   const bg = options.bg ?? "#0f0f10";
   const off = options.off ?? "rgba(255,255,255,.10)";
   const pad = options.pad ?? 0;

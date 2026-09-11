@@ -16,7 +16,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 const props = withDefaults(
   defineProps<{
     size?: number;
-    /** Lit-pixel colour. Defaults to the accent, so it follows the theme. */
+    /** Lit-pixel colour. White by default (the face paints its own dark frame, so it reads in both themes). */
     color?: string;
     /** False → every pixel dark. */
     on?: boolean;
@@ -29,7 +29,7 @@ const props = withDefaults(
   }>(),
   {
     size: 32,
-    color: "var(--color-phosphor)",
+    color: "#eef1f3",
     on: true,
     thinking: false,
     selfAnimate: false,

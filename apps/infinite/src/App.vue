@@ -50,7 +50,7 @@ import {
   viewportWidth,
   workspaceOpen,
 } from "./state/layout.js";
-import { loadMoveReceipt, movedAway } from "./state/move.js";
+import { loadMoveReceipt, movedAway, receiveRequested } from "./state/move.js";
 import { startOffline } from "./state/offline.js";
 import { claimRequestFromQuery, type ClaimRequest } from "./state/registry.js";
 import { needsUnlock, refreshVault, startVaultClock, touchVault } from "./state/vault.js";
@@ -142,6 +142,9 @@ onMounted(async () => {
   teardown.push(startOffline(), startInstallWatch(), startVaultClock(), startLayout());
   // Before the agent, because a moved-away agent must never flash its shell on the way to its receipt.
   await loadMoveReceipt();
+  // A scanned QR (`/?receive#code=…`, state/move.ts) lands on the receive screen with the code in the
+  // field: the pane opens here, the one place that decides panes, not from the store.
+  if (receiveRequested.value) pane.value = "move";
   await boot();
   await refreshVault();
   listen();

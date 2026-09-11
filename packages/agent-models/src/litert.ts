@@ -149,9 +149,12 @@ export const LITERT_UNVERIFIED_ASSETS: readonly string[] = [];
  * So a number here is a trade, not a fact about the weights. Raised to 8192 on 2026-09-11 for the
  * Gemma 4 and Gemma 3n rows, after a 5.2k-token system prompt made the default local brain fail on
  * every turn against the old 4096: those models support far more than 4096, and 8192 is what can be
- * asked of a laptop GPU without the cache itself exhausting it. THE 270m AND 1B ROWS STAY AT 2048
- * ON PURPOSE — they are the phone rows (§12.6), where the KV cache competes with the browser for a
- * few hundred megabytes, and a phone that loads nothing is worse than a phone with a short context.
+ * asked of a laptop GPU without the cache itself exhausting it. The 270m and 1B rows — the phone
+ * rows of §12.6, where the KV cache competes with the browser for a few hundred megabytes — went to
+ * 4096 later the same day: at 2048 the full agent's FIRST turn did not fit (the named refusal said
+ * "needs about 2479 tokens; the window holds 2048" on a phone), and a brain that refuses every turn
+ * is not smaller than one whose cache costs 40–110 MB more. The 45 % prompt share of the runtime
+ * (`SYSTEM_PROMPT_SHARE`) then leaves ~1800 tokens of prompt and ~2200 of conversation.
  */
 export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // VERIFIED on the mirror (sha256 a642cc7b…), not in the README. The phone row: a quarter of a
@@ -162,7 +165,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     class: "small",
     local: true,
     supportsTools: true,
-    contextTokens: 2048,
+    contextTokens: 4096,
     vramMb: 600,
     assetFile: "gemma3-270m-it-q4_0-web.task",
     family: "gemma",
@@ -175,7 +178,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     class: "small",
     local: true,
     supportsTools: true,
-    contextTokens: 2048,
+    contextTokens: 4096,
     vramMb: 1200,
     assetFile: "gemma3-1b-it-int4-web.task",
     family: "gemma",

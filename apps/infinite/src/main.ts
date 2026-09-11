@@ -1,8 +1,6 @@
-// isomorphic-git's browser build reads a global `Buffer` (122 references) that browsers do not have.
-// The shim is installed once, first thing, before any module can touch git; the power shell's
-// `gitUsable()` checks for exactly this global and refuses by name when it is absent.
-import { Buffer } from "buffer";
-if (!(globalThis as { Buffer?: unknown }).Buffer) (globalThis as { Buffer?: unknown }).Buffer = Buffer;
+// The Node globals two libraries read at load time (`Buffer`, `process`) — installed by the FIRST
+// import, because a module's imports evaluate before its body does. See src/shims.ts for why.
+import "./shims.js";
 
 /**
  * The owned agent PWA — docs/HANDOFF-infinite-agent.md §4.
