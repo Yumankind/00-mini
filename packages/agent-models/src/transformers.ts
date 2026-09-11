@@ -158,6 +158,12 @@ export interface TransformersModelInfo extends LiteRtModelInfo {
   revision: string;
   /** Paid for and unused: the load builds an audio encoder it is given no audio for (fact 5). */
   audio?: boolean;
+  /**
+   * What one picture may cost this row, and the only lever that made a vision turn usable
+   * (2026-09-11, later still). Absent on a text row, and absent means "whatever the repo's
+   * `processor_config.json` says" — which is the 280-token default that cost twenty-five minutes.
+   */
+  visionBudget?: TransformersVisionBudget;
   /** Said out loud on the picker row, because both halves of it are surprising. */
   note?: string;
   /**
@@ -190,6 +196,102 @@ export interface TransformersFileRow {
   bytes: number;
   sha256: string;
 }
+
+// ── The visual token budget ──────────────────────────────────────────────────────────────────────
+
+/**
+ * WHAT ONE PICTURE COSTS, AND WHERE THE NUMBER IS WRITTEN.
+ *
+ * THE DEFAULTS, AND WHY NEITHER IS A LIMIT ANYBODY MEANT FOR A TAB. Gemma 4's export ships
+ * `max_soft_tokens: 280` — the largest of the five its card lists (70 / 140 / 280 / 560 / 1120) —
+ * and the Qwen3.5 exports ship `size.longest_edge: 16777216`, sixteen MEGApixels, which is 16 384
+ * visual tokens against a row whose whole context budget here is 8192. Neither is wrong on a
+ * workstation. Both are wrong where this runs.
+ *
+ * MEASURED, on the Gemma 4 E2B row over WebGPU on an M-series Mac, 2026-09-11, a 400 × 300 picture on
+ * a short prompt, time from `generate()` to the first token, three runs each:
+ *
+ *     280 tokens (the export's default) → 1662 / 1667 ms, prompt 318 tokens
+ *     140 tokens (this row's budget)    →  885 /  888 ms, prompt 182 tokens
+ *      70 tokens                        →  571 /  567 ms, prompt 115 tokens
+ *
+ * — so the default costs 1.9× what 140 does, and the processor's own encode falls with it (84 → 48 ms).
+ * What it is NOT is the twenty-five-minute turn of the round before: that was measured again here and
+ * is prefill against the agent's ~5k-token system prompt, which on this row grows superlinearly
+ * (43 tokens → 0.37 s, 537 → 1.7 s, 1317 → 4.6 s, 2617 → 15.8 s, and ~3600 fails outright). The
+ * picture rides on the worst part of that curve, which is why halving its share is worth doing and
+ * why it is not on its own the fix. See docs/HANDOFF-infinite-agent.md for the rest.
+ *
+ * ONE ARITHMETIC FOR TWO FAMILIES. A visual token covers a square of `patchSize * pool` pixels in
+ * both processors, so `tokens * (patchSize * pool)²` is the pixel budget for either — the two
+ * families differ only in WHICH end of that identity their field takes. Gemma's `max_soft_tokens`
+ * takes the token count; Qwen's `max_pixels` takes the pixels. `pool` is Gemma's
+ * `pooling_kernel_size` (3) and Qwen's `merge_size` (2), read out of the repos' own configs on
+ * 2026-09-11 and pinned by a test against the shape the installed processors compute.
+ *
+ * THE DIFFERENCE THAT MATTERS WHEN CHOOSING A NUMBER. Qwen's cost SCALES with the picture:
+ * `smart_resize` only shrinks past `max_pixels`, so a small photo is cheap on its own. Gemma's does
+ * not: `Gemma4ImageProcessor` resizes every image — UP as readily as down — to
+ * `max_soft_tokens * pooling_kernel_size² * patch_size²` pixels and then zero-pads the patch tensor to
+ * `max_soft_tokens * pooling_kernel_size²` rows regardless. So a Gemma vision turn costs the same
+ * whether it is shown a thumbnail or a poster, and the budget is the ONLY lever there is.
+ */
+export interface TransformersVisionBudget {
+  /** Visual tokens ONE picture may cost this model. */
+  tokens: number;
+  /**
+   * Which field on the processor's image half carries it — and it IS a field, not a call-time kwarg;
+   * see `applyVisionBudget` for why, and for the two lines of the installed library that decide it.
+   */
+  knob: "max_soft_tokens" | "max_pixels";
+  /** `patch_size` from the repo's own image-processor config. 16 on all four vision rows. */
+  patchSize: number;
+  /** Gemma's `pooling_kernel_size` (3), Qwen's `merge_size` (2): the side, in patches, of one token. */
+  pool: number;
+}
+
+/** The pixels a picture may carry before it costs more than `tokens`. One token is a
+ *  `patchSize * pool` square, which is the one identity both image processors are built on. */
+export function visionBudgetPixels(budget: TransformersVisionBudget): number {
+  return budget.tokens * (budget.patchSize * budget.pool) ** 2;
+}
+
+/** The inverse — what a picture of this many pixels costs a row whose processor SCALES (the Qwen
+ *  rows). Gemma's does not scale, which is the whole point of `knob`; see the interface. */
+export function visionTokensForPixels(pixels: number, budget: TransformersVisionBudget): number {
+  return Math.floor(pixels / (budget.patchSize * budget.pool) ** 2);
+}
+
+/** The number the knob itself takes: a token count for `max_soft_tokens`, a pixel count for
+ *  `max_pixels`. Two fields, one budget, and nowhere for the conversion to be done twice. */
+export function visionBudgetValue(budget: TransformersVisionBudget): number {
+  return budget.knob === "max_soft_tokens" ? budget.tokens : visionBudgetPixels(budget);
+}
+
+/**
+ * GEMMA 4: 140 TOKENS, THE CARD'S MIDDLE SETTING.
+ *
+ * The card offers 70 / 140 / 280 / 560 / 1120 and the export ships 280. 140 is taken rather than 70
+ * because 70 is the FAST one and not the good one — it is what the repo's own `video_processor` uses,
+ * where a frame is one of thirty-two and nobody reads text off it — while a person attaching a
+ * screenshot has usually attached it to be read. 140 halves the tokens a picture adds to the prefill
+ * and quarters the vision encoder's attention, and at `140 * 9 * 16²` pixels it still resizes a square
+ * picture to about 568 px a side rather than 803 px, which is legible.
+ */
+export const GEMMA_4_VISION_BUDGET: TransformersVisionBudget = { tokens: 140, knob: "max_soft_tokens", patchSize: 16, pool: 3 };
+
+/**
+ * QWEN3.5: 256 TOKENS, EXPRESSED AS PIXELS BECAUSE THAT IS THE FIELD.
+ *
+ * `256 * (16 * 2)² = 262144` pixels — a 512 × 512 picture, or any other shape of the same area, since
+ * `smart_resize` preserves the aspect ratio. The export's own default is `longest_edge: 16777216`,
+ * which is not a limit anybody meant: sixteen megapixels is 16384 visual tokens against the row's
+ * 8192-token budget, so the FIRST screenshot a person attached would overflow the context before a
+ * word of it was read. 256 is chosen to sit where Gemma's 140 does in wall-clock terms rather than in
+ * token terms — Qwen's tokens are `merge_size² = 4` patches where Gemma's are 9, so the same picture
+ * area buys more of them.
+ */
+export const QWEN3_5_VISION_BUDGET: TransformersVisionBudget = { tokens: 256, knob: "max_pixels", patchSize: 16, pool: 2 };
 
 /**
  * THE FILES ONE q4f16 VISION LOAD FETCHES, with the Hub's own sizes and LFS hashes (read from
@@ -334,10 +436,15 @@ export const GEMMA_4_E2B_ONNX_PROBE_FILE = "onnx/decoder_model_merged_q4f16.onnx
  * one of these repos could claim six figures — `max_position_embeddings` is 131072 on the Phi and
  * Llama rows and 262144 on the three Qwen3.5 rows, read out of their own `config.json` on 2026-09-11
  * — and the ONNX decoder's KV cache grows as it generates rather than being asked for at load, so
- * nothing caps anything. 8192 is what a laptop GPU holds of that cache beside two to three gigabytes
- * of weights, and it is also the number the prompt fallback reads to decide whether to dump raw JSON
- * schemas at the model (`FALLBACK_SCHEMAS_MIN_CONTEXT` is 16384, so it does not). Claiming the
- * weights' number here would be true about the weights and a lie about both of those.
+ * nothing caps anything. 4096, since the afternoon of 2026-09-11: measured on this runtime, prefill
+ * grows superlinearly with the prompt — 537 tokens in 1.7 s, 1317 in 4.6 s, 2617 in 15.8 s, and
+ * ~3600 FAILS outright ("Failed to allocate memory for buffer mapping", after which only a reload
+ * recovers the GPU device). The runtime's prompt budget is 45 % of this number (SYSTEM_PROMPT_SHARE),
+ * so 4096 keeps the agent's system prompt under ~1850 tokens and a turn under ten seconds of
+ * prefill; 8192 let a ~3.6k prompt through and that was the "25-minute picture turn". It is also the
+ * number the prompt fallback reads to decide whether to dump raw JSON schemas at the model
+ * (`FALLBACK_SCHEMAS_MIN_CONTEXT` is 16384, so it does not). Claiming the weights' number here would
+ * be true about the weights and a lie about all of that.
  *
  * `vramMb` IS AN ESTIMATE, like every number in `LITERT_CATALOG`: the q4f16 weights plus the KV cache
  * and ORT's working set, which the measured rows put between 1.2× and 1.5× the download. Measure it
@@ -351,10 +458,12 @@ export const GEMMA_4_E2B_ONNX_PROBE_FILE = "onnx/decoder_model_merged_q4f16.onnx
  * and Llama says `llama3` (`<|start_header_id|>` … `<|eot_id|>`), each read out of that repo's
  * template on 2026-09-11 (templates.ts).
  *
- * WHAT A VISION ROW COSTS IN CONTEXT DIFFERS BY FAMILY, and it is worth knowing before picking one:
- * Gemma 4's processor spends a fixed 280 tokens per image (`image_seq_length`), while the Qwen3.5
- * rows' `Qwen2VLImageProcessorFast` scales with the picture's own resolution — a big screenshot is
- * thousands of tokens of an 8192 budget. `TRANSFORMERS_MAX_IMAGES` caps the count either way.
+ * WHAT A VISION ROW COSTS IN CONTEXT DIFFERS BY FAMILY, and since 2026-09-11 every one of them says
+ * so in a `visionBudget` rather than taking its export's default: Gemma 4's processor spends a FIXED
+ * number per image whatever it is shown, while the Qwen3.5 rows' `Qwen2VLImageProcessorFast` scales
+ * with the picture's own resolution up to a ceiling. The section above that defines the budgets has
+ * the arithmetic, the two defaults, and the measurement. `TRANSFORMERS_MAX_IMAGES` caps the count
+ * either way.
  */
 export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
   {
@@ -367,8 +476,9 @@ export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
     local: true,
     supportsTools: true,
     vision: true,
+    visionBudget: GEMMA_4_VISION_BUDGET,
     audio: true,
-    contextTokens: 8192,
+    contextTokens: 4096,
     vramMb: 4600,
     // The mirror's directory, and the picker's join key. Not a file: see `TransformersModelInfo`.
     assetFile: "gemma-4-E2B-it-ONNX",
@@ -407,7 +517,8 @@ export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
     local: true,
     supportsTools: true,
     vision: true,
-    contextTokens: 8192,
+    visionBudget: QWEN3_5_VISION_BUDGET,
+    contextTokens: 4096,
     vramMb: 1500,
     assetFile: "Qwen3.5-0.8B-ONNX",
     repo: "onnx-community/Qwen3.5-0.8B-ONNX",
@@ -431,7 +542,8 @@ export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
     local: true,
     supportsTools: true,
     vision: true,
-    contextTokens: 8192,
+    visionBudget: QWEN3_5_VISION_BUDGET,
+    contextTokens: 4096,
     vramMb: 2600,
     assetFile: "Qwen3.5-2B-ONNX-OPT",
     repo: "onnx-community/Qwen3.5-2B-ONNX-OPT",
@@ -460,7 +572,8 @@ export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
     local: true,
     supportsTools: true,
     vision: true,
-    contextTokens: 8192,
+    visionBudget: QWEN3_5_VISION_BUDGET,
+    contextTokens: 4096,
     vramMb: 4200,
     assetFile: "Qwen3.5-4B-ONNX-OPT",
     repo: "onnx-community/Qwen3.5-4B-ONNX-OPT",
@@ -489,7 +602,7 @@ export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
     local: true,
     supportsTools: true,
     vision: false,
-    contextTokens: 8192,
+    contextTokens: 4096,
     vramMb: 3600,
     assetFile: "Phi-4-mini-instruct-ONNX",
     repo: "onnx-community/Phi-4-mini-instruct-ONNX",
@@ -521,7 +634,7 @@ export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
     local: true,
     supportsTools: true,
     vision: false,
-    contextTokens: 8192,
+    contextTokens: 4096,
     vramMb: 3400,
     assetFile: "Llama-3.2-3B-Instruct-ONNX",
     repo: "onnx-community/Llama-3.2-3B-Instruct-ONNX",
@@ -616,6 +729,26 @@ export interface TransformersProcessorLike {
   apply_chat_template(messages: TransformersChatMessage[], options?: Record<string, unknown>): string;
   /** Handed straight to `TextStreamer`; this package never calls it. */
   tokenizer: unknown;
+  /**
+   * THE IMAGE HALF, AND THE ONLY PLACE A VISION BUDGET CAN BE WRITTEN.
+   *
+   * This is the surprising half of the whole change, and it was read out of the installed library
+   * rather than remembered. There is NO call-time kwarg for image sizing in `@huggingface/transformers`
+   * 4.2.0, on either family:
+   *
+   *   · `Gemma4Processor._call(text, images, audio, options)` DOES pass the options down —
+   *     `this.image_processor(images, options)` — but `Gemma4ImageProcessor._call(images)` declares one
+   *     parameter and drops the second on the floor.
+   *   · `Qwen2VLProcessor._call` does not even pass them: `this.image_processor(images)`.
+   *
+   * Both read their budget off `this` — `max_soft_tokens` set in `Gemma4ImageProcessor`'s constructor,
+   * `max_pixels` (falling back to `size.longest_edge`) in `Qwen2VLImageProcessor`'s — and
+   * `AutoProcessor.from_pretrained` takes no config override, only a revision and a progress callback.
+   * So the budget is assigned onto the loaded instance or it is not applied at all, and this field is
+   * that instance. Optional because a fake in a test need not have one, and `applyVisionBudget` says
+   * so rather than throwing.
+   */
+  image_processor?: Record<string, unknown>;
 }
 
 /**
@@ -650,6 +783,16 @@ export interface TransformersModelLike {
   generate(options: Record<string, unknown>): Promise<unknown>;
   /** Releases every ONNX session. Optional, because a fake need not have one. */
   dispose?(): Promise<unknown>;
+  /**
+   * The built sessions, by name — `embed_tokens`, `decoder_model_merged`, `vision_encoder` and (on
+   * Gemma 4) `audio_encoder`, or the single `model` of a text row.
+   *
+   * READ FOR ONE REASON: to be able to SAY which device each graph got. `createInferenceSession` in
+   * `src/backends/onnx.js` stamps `session.config = { dtype, device }` on every session it builds, and
+   * that stamp is the only record anywhere that a load asked for WebGPU and got it. `sessionDevices()`
+   * below reads it; nothing in this file decides anything from it.
+   */
+  sessions?: Record<string, { config?: { device?: string; dtype?: string } }>;
 }
 
 /** `InterruptableStoppingCriteria` — the only way to stop a generation in flight. */
@@ -693,6 +836,31 @@ export type TransformersLibraryFactory = () => Promise<TransformersLibrary>;
 const importLibrary: TransformersLibraryFactory = async () =>
   (await import("@huggingface/transformers")) as unknown as TransformersLibrary;
 
+/**
+ * WRITE THE ROW'S BUDGET ONTO A LOADED PROCESSOR. The one road there is; see
+ * `TransformersProcessorLike.image_processor` for why there is no other.
+ *
+ * Answers WHAT IT DID rather than nothing, because two of the three ways this can fail are silent:
+ * a processor with no image half (a repo whose `processor_config.json` declares none), and a field
+ * name that a future version of the library renamed. A budget that did not apply is the export's own
+ * 280 back — twice the prefill, measured — so the provider records the answer and the tests read it.
+ *
+ * `min_pixels` is CLAMPED rather than left alone: `smart_resize` treats it as a floor and would
+ * enlarge a picture back past a `max_pixels` smaller than it. Today's rows are nowhere near that
+ * (Qwen's floor is 65 536 pixels against a 262 144 budget), which is exactly why it would be found
+ * the day somebody tried a 32-token budget and not before.
+ */
+export function applyVisionBudget(processor: TransformersProcessorLike, budget: TransformersVisionBudget): boolean {
+  const image = processor.image_processor;
+  if (!image || !(budget.knob in image)) return false;
+  const value = visionBudgetValue(budget);
+  image[budget.knob] = value;
+  if (budget.knob === "max_pixels" && typeof image.min_pixels === "number" && image.min_pixels > value) {
+    image.min_pixels = value;
+  }
+  return true;
+}
+
 /** The two Cache Storage calls the readiness probe makes. A test hands over a Map. */
 export interface TransformersCacheLike {
   match(request: string): Promise<Response | undefined>;
@@ -721,6 +889,8 @@ export interface TransformersProviderOptions {
   createLibrary?: TransformersLibraryFactory;
   /** Injected by tests; in a browser the global `caches` is what runs. */
   caches?: TransformersCacheStorageLike;
+  /** Overrides the row's. `null` turns the budget OFF and takes the repo's own default back. */
+  visionBudget?: TransformersVisionBudget | null;
   cacheName?: string;
   catalog?: TransformersModelInfo[];
   id?: string;
@@ -746,7 +916,8 @@ export interface TransformersLoadProgress {
 }
 
 /** How many pictures one turn may carry to this model. A cap, because the context is 8192 tokens and
- *  each image is 280 of them before the words start (`processor_config.json`, `image_seq_length`). */
+ *  each image is the row's whole `visionBudget` of them before the words start — 140 on Gemma 4 and
+ *  256 on the Qwen rows, so four pictures is a tenth to an eighth of the context. */
 export const TRANSFORMERS_MAX_IMAGES = 4;
 
 export class TransformersProvider implements ModelProvider {
@@ -762,6 +933,19 @@ export class TransformersProvider implements ModelProvider {
   readonly family: PromptFamily;
   /** Whether this row takes pictures at all — the catalogue's `vision`, or the caller's override. */
   readonly seesImages: boolean;
+  /**
+   * What one picture may cost this row — the catalogue's, the caller's, or `undefined` for the repo's
+   * own default. A CONSTANT PER ROW and deliberately not a per-request knob: the processor's budget is
+   * an instance field (see `applyVisionBudget`), so raising it mid-conversation would change what an
+   * already-templated transcript meant, and no caller has asked.
+   */
+  readonly visionBudget: TransformersVisionBudget | undefined;
+  /**
+   * Whether `applyVisionBudget` actually found the field, recorded at load. `null` before a load and
+   * for a row with no budget. A budget that silently did not apply is the export's default back and
+   * twice the prefill with it, so it is remembered rather than assumed.
+   */
+  private visionBudgetApplied: boolean | null = null;
   private readonly opts: TransformersProviderOptions;
   private readonly createLibrary: TransformersLibraryFactory;
   private readonly cacheName: string;
@@ -797,6 +981,9 @@ export class TransformersProvider implements ModelProvider {
     this.wasmBaseUrl = opts.wasmBaseUrl ?? ONNX_DEFAULT_WASM_PATH;
     this.family = opts.family ?? this.model?.family ?? "gemma";
     this.seesImages = opts.vision ?? this.model?.vision === true;
+    // `?? undefined` rather than `||`: an explicit `null` means "the repo's own default", which is a
+    // different instruction from "not given" and is how a caller measures the before-state.
+    this.visionBudget = (opts.visionBudget === undefined ? this.model?.visionBudget : (opts.visionBudget ?? undefined)) ?? undefined;
     this.createLibrary = opts.createLibrary ?? importLibrary;
     this.cacheName = opts.cacheName ?? TRANSFORMERS_MODEL_CACHE;
   }
@@ -1083,8 +1270,30 @@ export class TransformersProvider implements ModelProvider {
     return { messages, images };
   }
 
-  /** `ImagePart` bytes → what `load_image` takes. The cap and the magic-byte sniff happen in
-   *  `decodeImage`, so a picture that is too big fails BEFORE the generation starts. */
+  /**
+   * `ImagePart` bytes → what `load_image` takes. The cap and the magic-byte sniff happen in
+   * `decodeImage`, so a picture that is too big fails BEFORE the generation starts.
+   *
+   * THERE IS NO SECOND DOWNSCALE HERE, AND THAT IS A MEASUREMENT RATHER THAN AN OVERSIGHT
+   * (2026-09-11, on the Gemma 4 E2B row, WebGPU, this Mac). The obvious idea is to shrink a picture
+   * to `visionBudgetPixels(row)` before handing it over, since the processor is going to resize it
+   * anyway. It buys nothing:
+   *
+   *   · It cannot change the TOKEN count. `Gemma4ImageProcessor` resizes to its budget in either
+   *     direction and zero-pads the patch tensor to `max_soft_tokens * pooling_kernel_size²` rows
+   *     whatever it was given; `Qwen2VLImageProcessor`'s `smart_resize` already caps at `max_pixels`.
+   *     Once the budget above is applied, both cost the same for any picture.
+   *   · The work it saves is the processor's own decode and resize, and that was TIMED: 50 ms for the
+   *     1568 px attachment `apps/infinite/src/lib/attachments.ts` actually writes, 124 ms for a
+   *     4000 × 3000 one, 232 ms for 6000 × 4500 — against 50 ms for a picture already at the budget.
+   *     So the ceiling on the saving is under 200 ms, and only for a picture no attachment path
+   *     produces (`IMAGE_MAX_BYTES` refuses 4 MB, which a 27-megapixel PNG is five times over).
+   *   · The shrink itself costs a decode and a re-encode. A canvas round-trip is not free, and one
+   *     that is slower than the thing it optimises is a bug with good intentions.
+   *
+   * The 1568 px cap on attach is the right cap and it is in the right place — it is what the two
+   * cloud wires want, and it already lands every attachment within ~50 ms of optimal here.
+   */
   private async toImages(library: TransformersLibrary, images: ImagePart[]): Promise<unknown[]> {
     const out: unknown[] = [];
     for (const image of images) {
@@ -1094,6 +1303,31 @@ export class TransformersProvider implements ModelProvider {
       out.push(await library.load_image(new Blob([bytes.slice().buffer as ArrayBuffer], { type: mime })));
     }
     return out;
+  }
+
+  /**
+   * WHICH DEVICE EACH GRAPH ACTUALLY GOT, and what this provider asked the processor for. `null`
+   * before a load.
+   *
+   * It exists because "is it really on the GPU?" was answered by argument for a day. It is not: the
+   * library stamps `session.config = { dtype, device }` on every session it builds
+   * (`createInferenceSession`), and `deviceToExecutionProviders` THROWS for a device the browser does
+   * not have rather than quietly choosing wasm — so a load that says `webgpu` here really did get the
+   * WebGPU execution provider. What this CANNOT see, and what nothing in the library exposes, is ORT's
+   * per-NODE fallback: the WebGPU EP hands any operator it has no kernel for back to the CPU, and says
+   * so only in a `VerifyEachNodeIsAssignedToAnEp` warning on the console at `logLevel: "warning"`.
+   */
+  sessionDevices(): { sessions: Record<string, { device?: string; dtype?: string }>; visionBudget: number | null; visionBudgetApplied: boolean | null } | null {
+    if (!this.loaded) return null;
+    const sessions: Record<string, { device?: string; dtype?: string }> = {};
+    for (const [name, session] of Object.entries(this.loaded.model.sessions ?? {})) {
+      sessions[name] = { device: session.config?.device, dtype: session.config?.dtype };
+    }
+    return {
+      sessions,
+      visionBudget: this.visionBudget ? this.visionBudget.tokens : null,
+      visionBudgetApplied: this.visionBudgetApplied,
+    };
   }
 
   /**
@@ -1112,6 +1346,10 @@ export class TransformersProvider implements ModelProvider {
     const options = { revision: this.revision, progress_callback };
     if (this.seesImages) {
       const processor = await library.AutoProcessor.from_pretrained(this.repo, options);
+      // THE BUDGET, WRITTEN ONTO THE INSTANCE, because there is nowhere else to write it: no
+      // `from_pretrained` config override and no call-time kwarg (`TransformersProcessorLike`).
+      // Recorded rather than assumed — a budget that did not land is the slow turn coming back.
+      this.visionBudgetApplied = this.visionBudget ? applyVisionBudget(processor, this.visionBudget) : null;
       return {
         tokenizer: processor.tokenizer,
         template: (messages, opts) => processor.apply_chat_template(messages, opts),

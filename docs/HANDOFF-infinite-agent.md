@@ -2200,3 +2200,160 @@ in reach and the package with no shell.
   is per device, so this is a narrow case; the fix is one comparison in `bootstrap.ts` if it bites.
 - **The visual token budget is still not wired** (the older round's item, and the Qwen rows make it
   sharper: their image cost scales with resolution).
+
+---
+
+## The visual token budget, and where the twenty-five minutes actually went (2026-09-11, later still)
+
+Bruno: **"make picture turns on the Transformers.js rows fast enough to use."** The round before left
+one number on the table — an image turn on Gemma 4 E2B that took about twenty-five minutes — and one
+untaken lever, the visual token budget. Both were measured this round, on this Mac, and only one of
+them is what the story said it was.
+
+### The knobs, by their exact names, and the one thing that is NOT true about them
+
+Read out of `@huggingface/transformers@4.2.0` in `node_modules`, not from a memory of the Python API:
+
+| family | class | field | ships as | this round |
+|---|---|---|---|---|
+| Gemma 4 | `Gemma4ImageProcessor` | `max_soft_tokens` | **280** (`processor_config.json`) | **140** |
+| Qwen3.5 | `Qwen2VLImageProcessor` (`…Fast` in the config, the suffix is stripped) | `max_pixels`, falling back to `size.longest_edge` | **16 777 216** (`preprocessor_config.json`) | **262 144** |
+
+**There is no call-time kwarg, on either family, and that is the finding the whole design rests on.**
+`Gemma4Processor._call(text, images, audio, options)` does pass the options down —
+`this.image_processor(images, options)` — but `Gemma4ImageProcessor._call(images)` declares ONE
+parameter and drops them. `Qwen2VLProcessor._call` does not even pass them: `this.image_processor(images)`.
+Both read their budget off `this`, set in the constructor, and `AutoProcessor.from_pretrained` takes
+only a revision and a progress callback — no config override. So `processor(images, text, { … })` is a
+road that does not exist in 4.2.0, and the budget is **assigned onto the loaded instance** or it is not
+applied at all. `applyVisionBudget(processor, budget)` is that assignment, it answers **whether it
+found the field**, and `TransformersProvider.sessionDevices()` reports the answer, because a budget
+that silently did not land is the export's 280 back and twice the prefill with it.
+
+One arithmetic covers both: a visual token is a `patch_size * pool` square of pixels — `pool` being
+Gemma's `pooling_kernel_size` (3) and Qwen's `merge_size` (2) — so `tokens * (patchSize * pool)²` is
+the pixel budget either way, and the families differ only in which end of that identity their field
+takes. `visionBudgetPixels`, `visionTokensForPixels` and `visionBudgetValue` in
+`packages/agent-models/src/transformers.ts` are those three lines, and two twin guards read
+`image_processing_gemma4.js` and `image_processing_qwen2_vl.js` so the formulas cannot drift from the
+processors they were copied out of.
+
+**Why 140 and not 70.** The card lists 70 / 140 / 280 / 560 / 1120. 70 is the FAST one, not the good
+one — it is what the repo's own `video_processor` uses, where a frame is one of thirty-two — and a
+person attaching a screenshot has usually attached it to be read. 140 resizes a square picture to
+about 568 px a side rather than 803 px, which is still legible. **Why 256 for Qwen**, expressed as
+262 144 pixels: a 512 × 512 picture. Their export's own default is sixteen megapixels, which is 16 384
+visual tokens against a row whose context budget here is 8192 — the first screenshot anybody attached
+would overflow the context before a word of it was read.
+
+`visionBudget` is a **constant per row**, on all four vision rows, and deliberately not a `RunOptions`
+field: the processor's budget is an instance field, so raising it mid-conversation would change what
+an already-templated transcript meant. A caller can still pass `visionBudget: null` to get the repo's
+own default back, which is how the before-number below was measured.
+
+### Measured: the budget is worth 1.9×
+
+Gemma 4 E2B ONNX q4f16, WebGPU, this Mac, a 400 × 300 PNG, time from `generate()` to the first token,
+three runs each on a short prompt:
+
+| `max_soft_tokens` | prompt tokens | time to first token |
+|---|---|---|
+| **280** (the export's default) | 318 | 1662 / 1667 ms |
+| **140** (this row now) | 182 | 885 / 888 ms |
+| 70 | 115 | 571 / 567 ms |
+
+The processor's own encode falls with it, 84 → 48 ms. Through the real `TransformersProvider`, over
+the real library, a whole turn (40 tokens out, the red-dot picture, "This image is a simple graphic
+featuring a solid red circle on a white background.") is **2.27 s at 280 and 1.64 s at 140**.
+At a ~1.5k-token prompt the same three budgets are 6172 / 5408 / 4668 ms.
+
+### Where the twenty-five minutes actually went: the prompt, not the picture
+
+This is the part the round before got wrong, and it was worth measuring rather than assuming.
+Text-only turns, same loaded model, no picture anywhere, time to first token:
+
+| prompt tokens | 43 | 537 | 1317 | 2617 | ~3600 |
+|---|---|---|---|---|---|
+| prefill | 0.37 s | 1.7 s | 4.6 s | **15.8 s** | **fails** |
+
+Prefill on this row grows **superlinearly** — 2× the tokens is 3.4× the time — and at about 3600
+tokens it does not complete at all on this machine: first
+`WebGPU device error(3): Failed to allocate memory for buffer mapping`, then
+`RuntimeError: operation does not support unaligned accesses`, and after either one the GPU device is
+poisoned and every later turn on that page fails the same way. A reload is the only recovery.
+
+So the twenty-five minutes was **the agent's own ~5k-token system prompt**, with the picture's 280
+tokens riding on the worst part of that curve. Halving the picture's share is worth doing — it is
+1.9× on a short prompt and it is what this round shipped — but **the row is still not usable as an
+agent brain until the system prompt is short**, and on this machine a 5k-token prompt does not merely
+crawl, it fails.
+
+### The three things item 4 asked about
+
+**WebGPU or a silent fallback to wasm?** WebGPU, and provably: `session.config = { dtype, device }` is
+stamped on every session by `createInferenceSession`, and all four of Gemma 4's read
+`{ device: "webgpu", dtype: "q4f16" }` live. There is no silent EP fallback to fear —
+`deviceToExecutionProviders` THROWS for a device the browser lacks rather than choosing wasm.
+`TransformersProvider.sessionDevices()` now reports this so nobody has to argue about it again. What
+it **cannot** see, and what nothing in the library exposes, is ORT's per-NODE fallback: the console
+does carry `VerifyEachNodeIsAssignedToAnEp — Some nodes were not assigned to the preferred execution
+providers`, so some operators in these graphs do run on the CPU, and only a verbose-build rerun would
+name them.
+
+**Is the q4f16 vision encoder the problem?** No. Timed on its own, as a bare ORT WebGPU session on
+`vision_encoder_q4f16.onnx` (+ its 99 MB external data): the session builds in **500 ms** and one run
+over the full 2520-patch tensor takes **862 ms** cold. A `dtype: { vision_encoder: "fp16" }` map IS
+supported — `selectDtype` accepts a per-file object keyed by session file name, as does `device` — but
+it would need `onnx/vision_encoder_fp16.onnx` (+ 337 MB of data) on the mirror, which this round did
+not add, and the measurement says there is nothing there to win.
+
+**Can the audio encoder be skipped?** No, and the reason is now exact.
+`MODEL_SESSION_CONFIG[ImageAudioTextToText].sessions(config, options, textOnly)` adds `audio_encoder`
+and `vision_encoder` together, and the only thing that sets `textOnly` is `resolveTypeConfig` noticing
+that a `…ForCausalLM` class is loading a `…ForConditionalGeneration` config — which drops vision with
+it. There is no `session_options` or `dtype` value that skips one graph: a dtype map still loads the
+file, and there is no "sessions to build" option. 171 MB of the row's 3.40 GB is an encoder nothing
+sends anything to, exactly as fact 5 said, and it is paid at load time and not per turn.
+
+### The downscale that was not worth doing
+
+Item 2 asked for a second shrink in the provider, to the row's pixel target. It was built, measured,
+and **removed**, and `toImages` now carries the measurement so nobody rebuilds it:
+
+- It cannot change the **token** count. Gemma's processor resizes to its budget in either direction —
+  it will ENLARGE a thumbnail — and then zero-pads the patch tensor to `max_soft_tokens * 9` rows
+  whatever it was given; Qwen's `smart_resize` already caps at `max_pixels`. Once the budget is
+  applied, both cost the same for any picture.
+- The only thing left to save is the processor's own decode and resize, and that was timed: **50 ms**
+  for the 1568 px attachment `attachments.ts` actually writes, 124 ms for 4000 × 3000, 232 ms for
+  6000 × 4500 — against 50 ms for a picture already at the budget. The ceiling on the saving is under
+  200 ms, and only for a picture no attachment path can produce (`IMAGE_MAX_BYTES` refuses 4 MB, which
+  a 27-megapixel PNG is five times over).
+- The shrink itself costs a decode and a re-encode, which is not free.
+
+So **`apps/infinite/src/lib/attachments.ts` is unchanged**: its 1568 px cap is the right cap in the
+right place — it is what the two cloud wires want, and it already lands every attachment within about
+50 ms of optimal on this road.
+
+### Checked
+
+`packages/agent-models` 437 tests, 98.23 / 91.21 / 96.53 / 98.23 against floors of 96 / 89 / 95 / 96;
+the floors are left where they are. `apps/infinite` 1299 tests unchanged, `tsc --noEmit` and
+`vue-tsc --noEmit` clean. The live check ran the REAL `TransformersProvider` against the REAL library
+with the loaded Gemma 4 sessions handed to it through `createLibrary`: the budget went 280 → 140 on
+the processor, `sessionDevices()` reported all four graphs on WebGPU with `visionBudgetApplied: true`,
+and the model described the picture correctly.
+
+### Undone
+
+- **The prompt, which is the actual problem.** A 5k-token system prompt is 15 s of prefill at 2.6k
+  tokens and a hard failure somewhere under 4k on this machine. Nothing in this round addresses it; a
+  local-brain system prompt that fits in a few hundred tokens would be worth more than every knob here.
+- **The failure mode is a poisoned page.** Once a turn hits the buffer-mapping OOM or the unaligned
+  access, every later turn on that page fails identically and only a reload recovers. The provider
+  reports it as a provider error like any other; it should probably unload and say "reload the tab".
+- **Nothing has run the five newer rows.** The Qwen budget is arithmetic and tests, not a stopwatch.
+- **`dtype`/`device` per component is available and unused.** Both accept a map keyed by session file
+  name. Using it needs the other dtype's files on the mirror.
+- **Chrome still refuses to cache this row** (3.0 GB quota against 3.40 GB), so every measurement above
+  began with a fresh 3.4 GB download — 75 to 90 s from the mirror at about 35 MB/s.

@@ -136,6 +136,15 @@ const EXPECTED = [
   "pathTemplateFor",
   "transformersCatalogFor",
   "transformersFileUrl",
+  // the visual token budget (2026-09-11, later still) — what made a picture turn usable: the per-row
+  // budget, the arithmetic that turns it into pixels, and the one place it can be applied (onto the
+  // loaded processor's image half, which is a field and not an argument)
+  "GEMMA_4_VISION_BUDGET",
+  "QWEN3_5_VISION_BUDGET",
+  "applyVisionBudget",
+  "visionBudgetPixels",
+  "visionBudgetValue",
+  "visionTokensForPixels",
   // the mirror's catalogue and the join (contract revision 2026-09-10)
   "parseMirrorCatalog",
   "mergeMirrorCatalog",

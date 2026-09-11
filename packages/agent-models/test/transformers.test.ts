@@ -36,6 +36,12 @@ import {
   TRANSFORMERS_VERSION,
   TransformersProvider,
   QWEN3_5_0_8B_ONNX_FILES,
+  GEMMA_4_VISION_BUDGET,
+  QWEN3_5_VISION_BUDGET,
+  applyVisionBudget,
+  visionBudgetPixels,
+  visionBudgetValue,
+  visionTokensForPixels,
   pathTemplateFor,
   transformersCatalogFor,
   transformersFileUrl,
@@ -45,6 +51,7 @@ import type {
   TransformersCacheStorageLike,
   TransformersChatMessage,
   TransformersLibrary,
+  TransformersProcessorLike,
   TransformersProgress,
 } from "../src/transformers.js";
 import { LITERT_CATALOG, LLAMA_3_2, MIT } from "../src/litert.js";
@@ -91,6 +98,8 @@ interface FakeLibrary extends TransformersLibrary {
   streamerTokenizers: unknown[];
   /** Which door the model came through, so a text row can be told from a vision one. */
   doors: ("image-text-to-text" | "causal-lm")[];
+  /** The processor's image half, which is where a vision budget lands. */
+  imageProcessor: Record<string, unknown>;
   /** Resolves once the model's `from_pretrained` has been entered and the callback is in hand. */
   modelStarted: Promise<void>;
   /** Lets a held model load finish. Only meaningful with `{ hold: true }`. */
@@ -157,8 +166,14 @@ function fakeLibrary(
           .join("");
       },
       tokenizer: { name: "fake-tokenizer" },
+      // THE IMAGE HALF, with the two families' fields at the defaults their own repos ship: Gemma's
+      // `max_soft_tokens: 280` and Qwen's `size.longest_edge` reaching `max_pixels` as 16 megapixels.
+      // A budget is APPLIED BY MUTATING THIS OBJECT (there is no kwarg; see the provider), so a test
+      // reads it here to see what a load actually did.
+      image_processor: { max_soft_tokens: 280, max_pixels: 16_777_216, min_pixels: 65_536, patch_size: 16 } as Record<string, unknown>,
     },
   );
+  lib.imageProcessor = processor.image_processor;
 
   lib.AutoProcessor = {
     async from_pretrained(repo: string, options: Record<string, unknown> = {}) {
@@ -399,7 +414,7 @@ describe("the catalogue", () => {
       vision: true,
       audio: true,
       supportsTools: true,
-      contextTokens: 8192,
+      contextTokens: 4096,
       runtime: "transformers",
       assetFile: "gemma-4-E2B-it-ONNX",
       repo: "onnx-community/gemma-4-E2B-it-ONNX",
@@ -483,7 +498,8 @@ describe("the catalogue", () => {
       expect(row.repo.endsWith(`/${row.assetFile}`), row.id).toBe(true);
       expect(row.revision, row.id).toMatch(/^[0-9a-f]{40}$/);
       expect(row.dtype, row.id).toBe("q4f16");
-      expect(row.contextTokens, row.id).toBe(8192);
+      // 4096: the prefill measurements in the catalogue's header, not the weights' limit.
+      expect(row.contextTokens, row.id).toBe(4096);
     }
     // The exact totals, so a byte that changes anywhere shows up here rather than in a download bar.
     expect(TRANSFORMERS_CATALOG.map((r) => r.sizeBytes)).toEqual([3_401_448_652, 666_085_872, 1_600_200_215, 3_019_398_759, 2_564_860_424, 2_419_252_013]);
@@ -862,7 +878,7 @@ describe("the prompt and the pictures", () => {
     expect(lib.processed[0]!.images).toEqual([{ width: 1, height: 1 }]);
   });
 
-  it("caps the pictures one turn may carry, because each one costs 280 tokens of 8192", async () => {
+  it("caps the pictures one turn may carry, because each one costs hundreds of tokens of a 4096 budget", async () => {
     withWebGpu();
     const { p, lib } = provider();
     const png = { mime: "image/png", data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) };
@@ -1190,6 +1206,167 @@ describe("a text row loads through the tokenizer, not a processor", () => {
       caches: memoryCaches([`${BASE}/o/m/onnx/model_q4f16.onnx_data`]),
     });
     await expect(named.p.readiness()).resolves.toEqual({ ready: true });
+  });
+});
+
+// ── The visual token budget (2026-09-11, later still) ────────────────────────────────────────────
+
+/**
+ * WHY THESE TESTS AND NOT A TIMING ONE.
+ *
+ * The thing that was wrong cost twenty-five minutes of wall clock, and no unit test will ever measure
+ * that. What a unit test CAN hold is the three facts the fix rests on, each of which is a silent
+ * failure if it stops being true: the arithmetic that turns a token budget into pixels, that the
+ * budget reaches the processor at all (it is an instance field, not an argument — a typo'd key would
+ * simply do nothing), and that the picture is shrunk to it before the processor decodes it.
+ *
+ * Two of them are TWIN GUARDS against the installed library, in the same spirit as the version and
+ * registry guards above: the formulas below are not this file's opinion of how Gemma 4 and Qwen3.5
+ * size an image, they are copied from `image_processing_gemma4.js` and `image_processors_utils.js`,
+ * and the guards fail if those move.
+ */
+describe("the visual token budget", () => {
+  it("turns tokens into pixels with the one identity both processors are built on", () => {
+    // A visual token covers a `patch_size * pool` square. Gemma: 16 * 3 = 48. Qwen: 16 * 2 = 32.
+    expect(visionBudgetPixels(GEMMA_4_VISION_BUDGET)).toBe(140 * 48 * 48);
+    expect(visionBudgetPixels(QWEN3_5_VISION_BUDGET)).toBe(256 * 32 * 32);
+    // 262 144 pixels is a 512 x 512 picture, which is the number worth being able to say out loud.
+    expect(visionBudgetPixels(QWEN3_5_VISION_BUDGET)).toBe(512 * 512);
+    // And back again, for the rows whose cost actually scales with the picture.
+    expect(visionTokensForPixels(512 * 512, QWEN3_5_VISION_BUDGET)).toBe(256);
+    expect(visionTokensForPixels(1568 * 1568, QWEN3_5_VISION_BUDGET)).toBe(2401);
+    expect(visionTokensForPixels(0, QWEN3_5_VISION_BUDGET)).toBe(0);
+  });
+
+  it("hands each family the number ITS OWN field takes, not the other's", () => {
+    // The whole reason `knob` exists: the same budget is 140 in one field and 262 144 in the other.
+    expect(visionBudgetValue(GEMMA_4_VISION_BUDGET)).toBe(140);
+    expect(visionBudgetValue(QWEN3_5_VISION_BUDGET)).toBe(262_144);
+  });
+
+  it("is a number the model card offers, and less than the export's own default", () => {
+    // The card lists 70 / 140 / 280 / 560 / 1120; `processor_config.json` ships 280, and the repo's
+    // own video processor uses 70. 140 is the middle one, and it has to be BELOW the default or the
+    // change is a slowdown rather than a speed-up.
+    expect([70, 140, 280, 560, 1120]).toContain(GEMMA_4_VISION_BUDGET.tokens);
+    expect(GEMMA_4_VISION_BUDGET.tokens).toBeLessThan(280);
+    // Qwen's default is `size.longest_edge`, sixteen megapixels — more visual tokens than the row's
+    // whole 8192-token context. Whatever we choose, it must fit inside that context with room to talk.
+    const row = TRANSFORMERS_CATALOG.find((r) => r.id === "qwen3.5-0.8B-onnx-q4f16")!;
+    const context = row.contextTokens ?? 0;
+    expect(visionTokensForPixels(16_777_216, QWEN3_5_VISION_BUDGET)).toBeGreaterThan(context);
+    expect(QWEN3_5_VISION_BUDGET.tokens * TRANSFORMERS_MAX_IMAGES).toBeLessThan(context / 2);
+  });
+
+  it("gives every row that SEES a budget, and every row that does not, none", () => {
+    for (const row of TRANSFORMERS_CATALOG) {
+      expect(Boolean(row.visionBudget), row.id).toBe(row.vision === true);
+    }
+  });
+
+  it("matches the geometry each repo's own processor config declares", () => {
+    // Not remembered: `patch_size` 16 and `pooling_kernel_size` 3 are Gemma's
+    // `processor_config.json`; `patch_size` 16 and `merge_size` 2 are Qwen's `preprocessor_config.json`
+    // (both read from the Hub at the commits the rows pin, 2026-09-11). A wrong `pool` here is a
+    // budget that is off by a factor of two or nine and nothing that says so.
+    expect(GEMMA_4_VISION_BUDGET).toMatchObject({ patchSize: 16, pool: 3, knob: "max_soft_tokens" });
+    expect(QWEN3_5_VISION_BUDGET).toMatchObject({ patchSize: 16, pool: 2, knob: "max_pixels" });
+  });
+
+  it("computes the same pixel target Gemma's OWN image processor does (twin guard)", () => {
+    const source = readFileSync(join(packageDir, "src/models/gemma4/image_processing_gemma4.js"), "utf8");
+    // The three lines the arithmetic above is copied from. If any moves, the budget is guesswork.
+    expect(source).toContain("this.max_soft_tokens = config.max_soft_tokens ?? 280;");
+    expect(source).toContain("const max_patches = this.max_soft_tokens * pooling_kernel_size ** 2;");
+    expect(source).toContain("const target_px = max_patches * patch_size ** 2;");
+    // And the fact the whole design rests on: the image processor's call takes ONE argument, so the
+    // `options` a caller passes to `processor(text, images, audio, options)` never reach it.
+    expect(source).toContain("async _call(images) {");
+  });
+
+  it("names the same fields Qwen's OWN image processor reads, and its call takes no options (twin guard)", () => {
+    const image = readFileSync(join(packageDir, "src/models/qwen2_vl/image_processing_qwen2_vl.js"), "utf8");
+    expect(image).toContain("this.max_pixels = config.max_pixels ?? config.size?.longest_edge;");
+    expect(image).toContain("this.min_pixels = config.min_pixels ?? config.size?.shortest_edge;");
+    expect(image).toContain("const factor = this.patch_size * this.merge_size;");
+    expect(image).toContain("return smart_resize(image.height, image.width, factor, this.min_pixels, this.max_pixels);");
+    const processing = readFileSync(join(packageDir, "src/models/qwen2_vl/processing_qwen2_vl.js"), "utf8");
+    // Not even passed: `this.image_processor(images)`, with no second argument at all.
+    expect(processing).toContain("image_inputs = await this.image_processor(images);");
+  });
+
+  it("writes the budget onto a loaded processor, since there is nowhere else to write it", () => {
+    const gemma = { image_processor: { max_soft_tokens: 280 } } as unknown as TransformersProcessorLike;
+    expect(applyVisionBudget(gemma, GEMMA_4_VISION_BUDGET)).toBe(true);
+    expect(gemma.image_processor?.max_soft_tokens).toBe(140);
+
+    const qwen = { image_processor: { max_pixels: 16_777_216, min_pixels: 65_536 } } as unknown as TransformersProcessorLike;
+    expect(applyVisionBudget(qwen, QWEN3_5_VISION_BUDGET)).toBe(true);
+    expect(qwen.image_processor?.max_pixels).toBe(262_144);
+    // Left alone, because it is already under the new ceiling.
+    expect(qwen.image_processor?.min_pixels).toBe(65_536);
+  });
+
+  it("answers false rather than silently doing nothing, for a processor with no image half", () => {
+    // A repo whose `processor_config.json` declares no image processor, or a library that renamed the
+    // field. Both are a budget that did not apply, which is the slow turn coming back — so the caller
+    // is told.
+    expect(applyVisionBudget({} as unknown as TransformersProcessorLike, GEMMA_4_VISION_BUDGET)).toBe(false);
+    const wrongField = { image_processor: { max_pixels: 1 } } as unknown as TransformersProcessorLike;
+    expect(applyVisionBudget(wrongField, GEMMA_4_VISION_BUDGET)).toBe(false);
+  });
+
+  it("drags Qwen's floor down with its ceiling, since `smart_resize` would enlarge past it", () => {
+    const qwen = { image_processor: { max_pixels: 16_777_216, min_pixels: 65_536 } } as unknown as TransformersProcessorLike;
+    applyVisionBudget(qwen, { ...QWEN3_5_VISION_BUDGET, tokens: 32 });
+    expect(qwen.image_processor?.max_pixels).toBe(32 * 32 * 32);
+    expect(qwen.image_processor?.min_pixels).toBe(32 * 32 * 32);
+  });
+});
+
+describe("the budget and the shrink, through the provider", () => {
+  const png = { data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]), mime: "image/png" };
+
+  it("writes the row's budget onto the processor the load built", async () => {
+    withWebGpu();
+    const lib = fakeLibrary(["ok"]);
+    const { p } = provider({}, lib);
+    await p.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(lib.imageProcessor.max_soft_tokens).toBe(140);
+    expect(p.sessionDevices()).toMatchObject({ visionBudget: 140, visionBudgetApplied: true });
+  });
+
+  it("takes the repo's own default back when the caller says `null`", async () => {
+    withWebGpu();
+    const lib = fakeLibrary(["ok"]);
+    const { p } = provider({ visionBudget: null }, lib);
+    await p.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(lib.imageProcessor.max_soft_tokens).toBe(280);
+    expect(p.sessionDevices()).toMatchObject({ visionBudget: null, visionBudgetApplied: null });
+  });
+
+  it("writes the Qwen rows' budget into the field THEIR processor reads, not Gemma's", async () => {
+    withWebGpu();
+    const lib = fakeLibrary(["ok"]);
+    const { p } = provider({ modelId: "qwen3.5-0.8B-onnx-q4f16" }, lib);
+    await p.chat({ messages: [{ role: "user", content: "look", images: [png] }] });
+    expect(lib.imageProcessor.max_pixels).toBe(262_144);
+    // Gemma's field is untouched: a Qwen processor has none, and writing both would hide a mismatch.
+    expect(lib.imageProcessor.max_soft_tokens).toBe(280);
+    // The picture still travels as the bytes it arrived as — see `toImages` for why there is no
+    // second downscale here.
+    expect(await lib.loadedImages[0]?.text()).not.toBe("");
+  });
+
+  it("says which device each graph actually got, and nothing before a load", async () => {
+    withWebGpu();
+    const lib = fakeLibrary(["ok"]);
+    const { p } = provider({}, lib);
+    expect(p.sessionDevices()).toBeNull();
+    await p.chat({ messages: [{ role: "user", content: "hi" }] });
+    // The fake's model has no `sessions`; a real one is stamped by `createInferenceSession`. What is
+    // being held here is that the report EXISTS and is shaped the way a caller can print.
+    expect(p.sessionDevices()?.sessions).toEqual({});
   });
 });
 
