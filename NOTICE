@@ -1,0 +1,13 @@
+00 Mini
+Copyright 2026 Yumankind
+
+This product includes software developed at Yumankind (https://0-0.chat).
+
+Local models offered by the app are downloaded at the person's request from a mirror the project
+publishes and run under their own publishers' terms: the Gemma models under Google's Gemma Terms of
+Use (https://dl.0-0.chat/litert/GEMMA_TERMS.md, NOTICE at https://dl.0-0.chat/litert/NOTICE.txt);
+Llama 3.2 under the Llama 3.2 Community License ("Built with Llama"; scripts/litert-notices/);
+Qwen3.5 and Gemma 4 under Apache-2.0; Phi-4 mini under MIT.
+Google's LLM Inference runtime (MediaPipe) is Apache-2.0. Transformers.js and ONNX Runtime are
+Apache-2.0 and MIT. isomorphic-git is MIT. esbuild is MIT. The compatibility tests under
+packages/agent-node/test/compat were ported from macaly/almostnode (MIT).

@@ -1,0 +1,14 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  # The two static Workers are deployed with the Homebrew wrangler and hold no node_modules: their
+  # bytes are BUILT from apps/infinite (a member). See docs/HANDOFF-infinite-agent.md §9.1.
+  - "!apps/infinite-site"
+  - "!apps/infinite-preview-site"
+# `pnpm run <script>` never chains an install; installing is its own deliberate act.
+verifyDepsBeforeRun: false
+allowBuilds:
+  esbuild: true
+  onnxruntime-node: set this to true or false
+  protobufjs: set this to true or false
+  sharp: false
