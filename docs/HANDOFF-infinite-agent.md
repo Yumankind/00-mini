@@ -1371,7 +1371,10 @@ $ 00d companion                       # starts/finds the engine, prints:
 
 The browser probes `GET http://127.0.0.1:4600/api/companion/health` (1.5 s timeout, desktop
 widths only; Safari refuses http://localhost from an https page — the card then says so and offers
-the relay road). Found and not paired → the card asks for the code. Pairing:
+the relay road). It takes no auth and answers CORS, saying
+`{ ok: true, name: <hostname>, engineFp, version, companion: true }` — `engineFp` being a stable
+16-hex id for this engine INSTALL, derived from its data root, which is the key the browser files
+its device key under. Found and not paired → the card asks for the code. Pairing:
 
 ```
 POST /api/companion/pair    (CORS: the product origins; PNA preflight answered)
@@ -1384,8 +1387,15 @@ POST /api/companion/pair    (CORS: the product origins; PNA preflight answered)
 six words from the app's own MOVE_WORDS list, in-memory, 120 s, single use. Being able to read
 the terminal is the proof of local presence. The device lands in `<dataRoot>/pairing.json` like a
 LAN device, with two additive fields: `alg: "p256"` and `companion: { origin, agentId, scopes }`.
-Perms are the LAN defaults (terminal/settings/secrets deny). `00d companion list|revoke <fp>` and
-`DELETE /api/companion/pair` (signed, self) take it away; Connections shows Disconnect.
+Perms are written out EXPLICITLY DENIED — all six of them, which is NOT the LAN default (engine
+side, 2026-09-11: a browser agent reaches this computer through the companion doors and holds no
+engine capability at all, so the three a LAN device gets by default — conversations, approve,
+directMessage — would be authority nobody asked for). `devicePerms()`'s own defaults are untouched.
+`00d companion list|revoke <fp>` and `DELETE /api/companion/pair` (signed, self) take it away;
+Connections shows Disconnect. The two the CLI reads are **localhost-only** and deliberately NOT on
+the CORS surface — `GET /api/companion/connections` (also what `00d companion origins` prints) and
+`DELETE /api/companion/connections/<fp>` — because a page that could enumerate the connections could
+also name the one to take away.
 
 ### 14.2 Every call is signed — the engine's own scheme, one new algorithm
 
@@ -1637,6 +1647,26 @@ base tool throws in the caller's stack. Why it exists: the surface in front of t
 without the agent changing — the landing page's `page_*` tools (scroll to `#vault`, outline a
 button) belong to `/` and not to `/app`, and rebuilding the runtime to swap a tool would drop the
 listeners the panes subscribed at mount. Pinned in `test/runtime.test.ts` ("setExtraTools").
+
+### (f) `NetworkPolicy.proxy` may answer with headers, and may answer late
+
+```ts
+export type ProxyTarget = string | { url: string; headers?: Record<string, string> };
+proxy?: (url: URL) => ProxyTarget | null | Promise<ProxyTarget | null>;
+```
+
+§14's companion is a proxy on the person's own computer, and every call to it is authenticated with a
+per-device signature — minted per request (it binds the method, the path and the body) and minted
+with WebCrypto, which is a promise. So the policy's proxy hook gained two things, both additive: it
+may return an object carrying the headers that call needs, and it may return a promise. A host that
+returns a bare string (`apps/infinite-site`'s `/~fetch`, via `proxyUrlFor`) behaves exactly as before
+and needed no edit.
+
+`http_get` awaits the hook and sends the headers **on the proxy request only, never on the direct
+one** — they are a credential for the proxy, not for the site, and the direct fetch stays the
+credential-free GET it has always been. Everything else is unchanged: `allow` still decides what is
+safe, the proxy is still dialled only after the browser has refused, and `null` still means "not
+through me". Pinned in `test/tools-net.test.ts` ("takes an ASYNC proxy that answers `{ url, headers }`").
 
 ### (d) The QR encoder — `apps/infinite/src/lib/qr.ts`
 
