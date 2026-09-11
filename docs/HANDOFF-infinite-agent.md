@@ -1352,6 +1352,71 @@ runtime inside the mobile app, scheduled work handed to Mac/cloud.
 
 ---
 
+## 14. The companion — the engine on this computer as the browser agent's local proxy (2026-09-11)
+
+Bruno's ask: a copy-paste script installs a small local proxy on a desktop; the browser pings
+localhost and gets the features a tab cannot have (git clone/push/pull, any-host fetch, later a host
+folder and host commands); secure, "only this tab/agent", a first-time ceremony. The proxy IS the
+00 engine (`00d`, already installed by `curl -fsSL https://0-0.chat/install.sh | bash`), in a
+**companion mode** that adds one small route family and one pairing road. Nothing new to install.
+
+### 14.1 The ceremony
+
+```
+$ 00d companion                       # starts/finds the engine, prints:
+  00 Mini companion is ready on this computer.
+  In the browser: Connections → This computer → enter   amber-lantern-quiet-fox-river-stone
+  (the code works once, for two minutes)
+```
+
+The browser probes `GET http://127.0.0.1:4600/api/companion/health` (1.5 s timeout, desktop
+widths only; Safari refuses http://localhost from an https page — the card then says so and offers
+the relay road). Found and not paired → the card asks for the code. Pairing:
+
+```
+POST /api/companion/pair    (CORS: the product origins; PNA preflight answered)
+  { code, publicKeyJwk (ECDSA P-256, non-extractable in the browser), name, agentId }
+  → 200 { fingerprint, engineName, scopes: ["git","fetch"] }
+  → 403 { code: "code_refused" }    // wrong, expired, or already used; 5 tries then a new code
+```
+
+`00d companion` mints the code through a **localhost-only** route (`POST /api/companion/code`),
+six words from the app's own MOVE_WORDS list, in-memory, 120 s, single use. Being able to read
+the terminal is the proof of local presence. The device lands in `<dataRoot>/pairing.json` like a
+LAN device, with two additive fields: `alg: "p256"` and `companion: { origin, agentId, scopes }`.
+Perms are the LAN defaults (terminal/settings/secrets deny). `00d companion list|revoke <fp>` and
+`DELETE /api/companion/pair` (signed, self) take it away; Connections shows Disconnect.
+
+### 14.2 Every call is signed — the engine's own scheme, one new algorithm
+
+Headers `x-00-dev` (fingerprint), `x-00-ts` (ms), `x-00-sig`; canonical string
+`METHOD\npathWithQuery\nts\nsha256hex(body)` exactly as `apps/00d/src/device-auth.ts` verifies
+today; ±120 s, replay cache. The one additive change: a device record with `alg: "p256"` is
+verified with WebCrypto ECDSA P-256 / SHA-256 over a raw 64-byte r‖s signature (base64url), because
+a browser's non-extractable key cannot be Ed25519 everywhere yet. Ed25519 devices are untouched.
+The browser key lives in `IndexedDbDeviceKeyStore` under `companion:<engineFp>`; the grant is
+bound to that key, this origin and this agent id — a second tab of the same agent on the same
+origin shares it, which is the same agent.
+
+### 14.3 Scopes, in the order they ship
+
+| Scope | Route | What it does | Bounds |
+|---|---|---|---|
+| `git` | `ANY /api/companion/git/<host>/<path…>` | git smart-HTTP proxy for isomorphic-git (`corsProxy` shape): forwards `info/refs?service=…`, `git-upload-pack`, `git-receive-pack` | https only; host allow-list (github.com, gitlab.com, bitbucket.org, codeberg.org, `ZEROZERO_COMPANION_GIT_HOSTS`); 200 MB body cap; 120 s; credentials from the Mac's own `git credential fill` added when the remote answers 401 or for receive-pack, never returned to the browser |
+| `fetch` | `GET /api/companion/fetch?url=` | a GET from this computer's network | the Worker proxy's rules (text, 1 MiB, 10 s, no cookies) but ANY host incl. private ones — it is the person's own machine |
+| `folder` (later) | — | a host directory mounted into the workspace | Chromium first through the File System Access API with no companion at all; the companion road for Firefox/Safari |
+| `exec` (later) | `POST /api/companion/exec` | a host shell command | `confirm` per command, off by default, on only through `00d companion perms` |
+
+### 14.4 The browser side
+
+`apps/infinite/src/companion/`: probe, pairing, the signed fetch, and the wiring: `createGitOps`
+gains a remote `{ http, corsProxy }` (isomorphic-git's web http client behind a signing wrapper)
+so `git clone/push/pull/fetch` in the shell and the Git pane work; `NetworkPolicy.proxy` may return
+`{ url, headers }` (additive) so `http_get` dials the companion first and the Worker proxy second;
+`GIT_REMOTE_LINE` says "connect this computer (Connections → This computer)" instead of "a CORS
+proxy". Readiness is polled like a brain's: the card shows found / paired / unreachable with the
+reason, and every companion feature greys out when it is gone.
+
 ## 13. What is deliberately not in this plan
 
 A second public-agent implementation (Overblast's exists); any owner key or secret in a visitor's
