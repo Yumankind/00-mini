@@ -1096,10 +1096,16 @@ describe("abortLoad (2026-09-11: Stop pulls the download or abandons the compile
           new ReadableStream<Uint8Array>({
             start(c) {
               const reader = slowBody.getReader();
+              // Once the abort has errored this controller, the source's close and its last chunk
+              // have nowhere to go — swallowed, as a real network stream's late bytes would be.
               const pump = (): void => {
                 void reader.read().then(({ done, value }) => {
-                  if (done) return c.close();
-                  c.enqueue(value!);
+                  try {
+                    if (done) return c.close();
+                    c.enqueue(value!);
+                  } catch {
+                    return;
+                  }
                   pump();
                 });
               };
