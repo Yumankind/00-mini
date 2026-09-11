@@ -23,7 +23,10 @@ import {
  * beside this app; in the public 00-mini repository it is absent and those cases are skipped BY NAME
  * (`itWithEngine`), while everything the browser signs and verifies on its own still runs.
  */
-const engineWire = (await import(/* @vite-ignore */ "../../00d/src/mobile-connect-wire.js").catch(() => null)) as EngineWire | null;
+// A VARIABLE specifier, so the type checker does not resolve the path at compile time — in the
+// public repository the file is not there, and a literal would fail the typecheck rather than skip.
+const ENGINE_WIRE = "../../00d/src/mobile-connect-wire.js";
+const engineWire = (await import(/* @vite-ignore */ ENGINE_WIRE).catch(() => null)) as EngineWire | null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the engine module is deliberately untyped here: its types live with the engine
 type EngineWire = Record<string, any>;
 const itWithEngine = engineWire ? it : it.skip;
