@@ -23,7 +23,7 @@
  * where the rule about WHEN a swap bites (at the next run, never mid-turn) can be stated once and
  * tested. This file just calls it.
  */
-import type { AgentFs, FsStat } from "@00/agent-fs";
+import type { AgentFs, AgentGitOps, FsStat, GitRemote } from "@00/agent-fs";
 // Namespace imports beside the named ones, and only for the capabilities the parallel builders own:
 // `typeof ns.thing === "function"` is a question a missing export can answer, where an import of it
 // is a build failure. See the wiring block in `createOwnedAgent`.
@@ -34,6 +34,11 @@ import * as agentRuntimeExports from "@00/agent-runtime";
 // bought nothing once the module existed and cost a chunking warning on every build. The GUARD stays
 // where it matters: which door that module offers is still asked, never assumed.
 import * as powerExports from "../power/index.js";
+// §14's companion: the engine on THIS computer, as the browser's git proxy and its second road to a
+// URL. Both are read at call time (the companion comes and goes), so this import is the wiring and
+// never a snapshot.
+import { companionGitOps } from "../companion/git.js";
+import { companionGitRemote, companionProxyTarget } from "../state/companion.js";
 import {
   MemoryFs,
   OpfsFs,
@@ -165,7 +170,13 @@ function callIfExported<T>(mod: Record<string, unknown>, name: string, args: unk
  */
 function loadPowerShell(fs: AgentFs): Shell | null {
   const mod = powerExports as unknown as Record<string, unknown>;
-  return callIfExported<Shell>(mod, "createBrowserShell", [fs]) ?? callIfExported<Shell>(mod, "BuiltinShell", [fs]);
+  // The second argument is §14's road out, passed as a GETTER so the shell's `git push` follows the
+  // companion the same way the tools do. A build of `src/power` that predates it ignores an argument
+  // it does not read, which is why it is passed rather than asked about.
+  return (
+    callIfExported<Shell>(mod, "createBrowserShell", [fs, { gitRemote: companionGitRemote }]) ??
+    callIfExported<Shell>(mod, "BuiltinShell", [fs])
+  );
 }
 
 /**
@@ -230,6 +241,8 @@ export interface OwnedAgent {
   chooseLocalModel(row: LiteRtCatalogRow, base?: string): Promise<void>;
   /** Give the GPU back (`unload()` on both local providers). The next turn loads again. */
   unloadLocal(): Promise<void>;
+  /** Stop a model download or compile in flight, without touching a model already loaded (the composer's Stop). */
+  stopLocalLoads(): void;
   /**
    * §4.1's retrieval with no model at all (gap audit B14). The SAME index the `search_workspace` tool
    * was built with, kept here so a pane that searches without a brain does not build a second one over
@@ -288,6 +301,23 @@ async function readinessOf(provider: ModelProvider | null, whenMissing: Readines
 export function proxyUrlFor(url: URL): string | null {
   if (typeof location === "undefined" || !location.origin || location.origin === "null") return null;
   return `${location.origin}/~fetch?url=${encodeURIComponent(url.href)}`;
+}
+
+/**
+ * THE COMPANION FIRST, THE SITE'S PROXY SECOND (§14.3's `fetch` scope).
+ *
+ * Both roads read the same URL for the same tool, and they are not equivalent: the site's `/~fetch`
+ * is a Worker on the public internet, so it can reach public hosts and nothing else, while the
+ * companion is the person's OWN computer and can reach the printer on their desk, the staging box on
+ * their VPN and localhost:3000. When it is paired it is strictly the better answer, and when it is
+ * not — a phone, a laptop with nothing running — the Worker is what there is.
+ *
+ * It is async because the companion signs each call (contract revision 2026-09-11 (f)); with no
+ * companion it settles on the same string `proxyUrlFor` always returned.
+ */
+export async function companionOrSiteProxy(url: URL): Promise<{ url: string; headers: Record<string, string> } | string | null> {
+  const viaCompanion = await companionProxyTarget(url).catch(() => null);
+  return viaCompanion ?? proxyUrlFor(url);
 }
 
 // ── The one entry point ───────────────────────────────────────────────────────────────────────────
@@ -448,8 +478,23 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
   const fsExports = agentFsExports as unknown as Record<string, unknown>;
   const runtimeExports = agentRuntimeExports as unknown as Record<string, unknown>;
 
-  /** B8: the git tools, over isomorphic-git on this same filesystem. */
-  const git = callIfExported<GitOps>(fsExports, "createGitOps", [fs, DEFAULT_WORKSPACE]);
+  /**
+   * B8: the git tools, over isomorphic-git on this same filesystem — and, since §14, over the
+   * companion for the four commands that leave the computer.
+   *
+   * The factory is taken rather than called, because what the runtime gets is a DELEGATING ops
+   * object (`src/companion/git.ts`): status, diff and commit are the package's own, and clone, push,
+   * pull and fetch ask the companion store for a road on every call. That is what makes a companion
+   * that arrives after boot — the ordinary case, since it is started by hand in a terminal — work
+   * without rebuilding the tool table and dropping every pane's listener.
+   */
+  const createGitOpsFn = fsExports.createGitOps as
+    | ((fs: AgentFs, root: string, opts?: { remote?: GitRemote }) => AgentGitOps)
+    | undefined;
+  const git =
+    typeof createGitOpsFn === "function"
+      ? (companionGitOps(createGitOpsFn, fs, DEFAULT_WORKSPACE, companionGitRemote) as unknown as GitOps)
+      : null;
   if (!git) stubs.push("no git tools — @00/agent-fs does not export createGitOps yet (gap audit B8)");
 
   /**
@@ -477,7 +522,7 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
    * is asked about, and the proxy is dialled only after the browser has refused the direct read
    * (`proxyUrlFor`, and the note above it).
    */
-  const network: NetworkPolicy = { allow: settings.network?.allow ?? [], proxy: proxyUrlFor };
+  const network: NetworkPolicy = { allow: settings.network?.allow ?? [], proxy: companionOrSiteProxy };
   const secretNames = await vault.list().catch(() => [] as string[]);
 
   /**
@@ -742,6 +787,9 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
     async unloadLocal() {
       await Promise.all(chain().map(async (p) => p.unload?.()));
       localPct = null;
+    },
+    stopLocalLoads() {
+      for (const p of chain()) p.abortLoad?.();
     },
 
     workspaceIndex,

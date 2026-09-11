@@ -18,6 +18,7 @@ import TablerIcon from "./TablerIcon.vue";
 import { imageFilesOf, readAttachment, type Attachment } from "../lib/attachments.js";
 import { SELECTION_NOTE, selectionBlock } from "../power/inspector-context.js";
 import { busy, composerError, send, stop } from "../state/conversation.js";
+import { loadInFlight } from "../state/model-choice.js";
 import { visionNoteLine } from "../state/model-choice.js";
 import { clearSelection, selection, selectionChip } from "../state/preview.js";
 
@@ -192,7 +193,7 @@ onBeforeUnmount(() => {
 
         <div class="ml-auto shrink-0">
           <button
-            v-if="busy"
+            v-if="busy || loadInFlight"
             type="button"
             class="ia-btn ia-btn-danger w-9 h-9 rounded-full"
             title="Stop"

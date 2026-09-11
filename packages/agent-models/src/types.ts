@@ -138,4 +138,12 @@ export interface ModelProvider {
    * stays usable and the next request loads again.
    */
   unload?(): Promise<void>;
+  /**
+   * Stop a download or a compile that is in flight (additive, 2026-09-11 — Bruno: "Stop in the
+   * composer should stop any generation and any download / install of a model"). A pending `load()`
+   * rejects with an abort error, the bytes already fetched stay in the cache (a later load resumes
+   * from there), a task that arrives after the abort is closed rather than kept. A no-op when
+   * nothing is loading. Optional: a remote provider has nothing to abort.
+   */
+  abortLoad?(): void;
 }

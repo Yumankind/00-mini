@@ -25,7 +25,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { renderMarkdown } from "../lib/markdown-lite.js";
 import { toolRowLabel, toolRowState, type Row } from "../lib/conversation.js";
 import { busy, composerError, rows, send, startNewSession, stop } from "../state/conversation.js";
-import { chip, download, openChip } from "../state/model-choice.js";
+import { chip, download, loadInFlight, openChip } from "../state/model-choice.js";
 import { profile, ready } from "../state/agent.js";
 import { needsUnlock } from "../state/vault.js";
 import { themeChoice } from "../state/install.js";
@@ -267,7 +267,7 @@ function userRow(row: Row & { kind: "user" }): { context: string | null; message
           @input="grow"
           @keydown="onKeydown"
         />
-        <button v-if="busy" type="button" class="mini-stop" title="Stop" aria-label="Stop" @click="stop()">■</button>
+        <button v-if="busy || loadInFlight" type="button" class="mini-stop" title="Stop" aria-label="Stop" @click="stop()">■</button>
         <button v-else type="submit" class="mini-send" title="Send" aria-label="Send" :disabled="!canSend">↑</button>
       </form>
 

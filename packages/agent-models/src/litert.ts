@@ -627,6 +627,8 @@ export class LiteRtProvider implements ModelProvider {
   private readonly cacheName: string;
   private task: LiteRtTaskLike | null = null;
   private loading: Promise<LiteRtTaskLike> | null = null;
+  /** The load in flight, so `abortLoad()` can pull it: the download's fetch, or a compile to abandon. */
+  private loadController: AbortController | null = null;
   /** Remembered so `readiness()` need not re-open the cache on every poll of a settings screen. */
   private cached: boolean | null = null;
   /**
@@ -826,8 +828,17 @@ export class LiteRtProvider implements ModelProvider {
         providerId: this.id,
       });
     }
+    if (!this.loading) this.loadController = new AbortController();
+    const controller = this.loadController!;
+    // The caller's signal joins the load's own: a run that is stopped aborts the download it started,
+    // and `abortLoad()` aborts it for everyone waiting — both roads end in one controller.
+    if (signal) {
+      if (signal.aborted) controller.abort(signal.reason);
+      else signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+    }
     this.loading ??= (async () => {
-      const modelAssetBuffer = await this.assetBytes(signal);
+      const modelAssetBuffer = await this.assetBytes(controller.signal);
+      if (controller.signal.aborted) throw controller.signal.reason ?? new DOMException("The model load was stopped.", "AbortError");
       // The download is over; what follows is the compile. Say so, with the bytes as a full bar and
       // the phase set, so a host draws "loading" rather than a download stuck at 100 %.
       this.progress = {
@@ -848,14 +859,24 @@ export class LiteRtProvider implements ModelProvider {
       });
     })().then(
       (task) => {
-        this.task = task;
         this.loading = null;
+        this.loadController = null;
+        if (controller.signal.aborted) {
+          // The compile cannot be interrupted, so a stop during it lands here: the task is closed the
+          // moment it exists, never kept, and the caller hears "stopped", not "ready".
+          task.close?.();
+          this.progress = null;
+          throw providerErrorFromThrow(this.id, controller.signal.reason ?? new DOMException("The model load was stopped.", "AbortError"), controller.signal);
+        }
+        this.task = task;
         return task;
       },
       (err: unknown) => {
         // A failed load must not latch: the person may be offline now and online in a minute.
         this.loading = null;
-        throw providerErrorFromThrow(this.id, err, signal);
+        this.loadController = null;
+        this.progress = null;
+        throw providerErrorFromThrow(this.id, err, controller.signal);
       },
     );
     return this.loading;
@@ -866,9 +887,15 @@ export class LiteRtProvider implements ModelProvider {
    * handoff Status asks for it); calling it twice is a no-op, which is what a settings screen needs.
    */
   async unload(): Promise<void> {
+    this.abortLoad();
     const task = this.task;
     this.task = null;
     task?.close?.();
+  }
+
+  /** Stop the load in flight (contract addition of 2026-09-11). Nothing loading, nothing happens. */
+  abortLoad(): void {
+    this.loadController?.abort(new DOMException("The model load was stopped.", "AbortError"));
   }
 
   /** Forget the downloaded asset. The disk back, and the next `load()` downloads again. */

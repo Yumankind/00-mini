@@ -25,6 +25,7 @@ import { agent } from "./agent.js";
 import { selection, takeSelection } from "./preview.js";
 import {
   brainPreference,
+  noteDownloadStopped,
   primeBrains,
   runBlockedReason,
   runStatus,
@@ -168,8 +169,16 @@ export async function send(prompt: string, attachments: Attachment[] = []): Prom
   }
 }
 
+/**
+ * Stop EVERYTHING the composer's button can be looking at: the run, and the model download or
+ * compile the run — or the picker — started (Bruno, 2026-09-11). Aborting only the run left a
+ * two-gigabyte download running behind a button that said it had stopped.
+ */
 export function stop(): void {
-  agent.value?.runtime.abort();
+  const owned = agent.value;
+  owned?.runtime.abort();
+  owned?.stopLocalLoads();
+  noteDownloadStopped();
 }
 
 /** Test seam. */

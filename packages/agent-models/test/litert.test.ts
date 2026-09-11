@@ -1071,3 +1071,72 @@ describe("the load phase (2026-09-11: the compile after the download is a wait o
     expect(await provider.readiness()).toEqual({ ready: true });
   });
 });
+
+describe("abortLoad (2026-09-11: Stop pulls the download or abandons the compile)", () => {
+  it("stops a download in flight: the load rejects as aborted and readiness goes back to 'not downloaded'", async () => {
+    withWebGpu();
+    let release: () => void = () => {};
+    const slowBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        release = () => controller.close();
+      },
+    });
+    const provider = new LiteRtProvider({
+      modelId: "gemma3-270m-it-q4_0-web",
+      modelBaseUrl: BASE,
+      caches: memoryCaches(),
+      fetch: async (_url: unknown, init?: RequestInit) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              const reader = slowBody.getReader();
+              const pump = (): void => {
+                void reader.read().then(({ done, value }) => {
+                  if (done) return c.close();
+                  c.enqueue(value!);
+                  pump();
+                });
+              };
+              pump();
+              const signal = init?.signal ?? undefined;
+              signal?.addEventListener("abort", () => c.error(signal.reason));
+            },
+          }),
+          { status: 200, headers: { "content-length": "4" } },
+        ),
+      createTask: async () => mockTask(["ok"]),
+    });
+    const loading = provider.load();
+    await new Promise((r) => setTimeout(r, 10));
+    provider.abortLoad();
+    await expect(loading).rejects.toMatchObject({ code: "aborted" });
+    const after = await provider.readiness();
+    expect(after).toMatchObject({ ready: false, reason: "download" });
+    expect((after as { progress?: unknown }).progress).toBeUndefined();
+    release();
+  });
+
+  it("closes a task that arrives after a stop during the compile, and is a no-op with nothing loading", async () => {
+    withWebGpu();
+    let finish: (t: LiteRtTaskLike) => void = () => {};
+    const closed: string[] = [];
+    const provider = new LiteRtProvider({
+      modelId: "gemma3-270m-it-q4_0-web",
+      modelBaseUrl: BASE,
+      caches: memoryCaches(),
+      fetch: assetFetch([1, 2, 3, 4]).fetch,
+      createTask: async () => new Promise((resolve) => (finish = resolve)) as Promise<LiteRtTaskLike>,
+    });
+    provider.abortLoad(); // nothing loading: nothing happens
+    const loading = provider.load();
+    await new Promise((r) => setTimeout(r, 10));
+    provider.abortLoad();
+    const task = mockTask(["ok"]);
+    (task as { close?: () => void }).close = () => closed.push("closed");
+    finish(task);
+    await expect(loading).rejects.toMatchObject({ code: "aborted" });
+    expect(closed).toEqual(["closed"]);
+    expect(await provider.readiness()).toMatchObject({ ready: true }); // the bytes are cached; a new load compiles again
+  });
+});

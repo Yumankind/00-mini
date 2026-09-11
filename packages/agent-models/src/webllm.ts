@@ -160,6 +160,8 @@ export class WebLLMProvider implements ModelProvider {
   private readonly createEngine: WebLLMEngineFactory;
   private engine: WebLLMEngineLike | null = null;
   private loading: Promise<WebLLMEngineLike> | null = null;
+  /** Set by `abortLoad()` while a load is in flight; read when the engine arrives. */
+  private loadAbandoned = false;
   /**
    * The last init report, for the typed `progress` of the 2026-09-10 contract revision.
    *
@@ -234,10 +236,17 @@ export class WebLLMProvider implements ModelProvider {
         providerId: this.id,
       });
     }
+    if (!this.loading) this.loadAbandoned = false;
     this.loading ??= this.createEngine(this.modelId, { initProgressCallback: (report) => this.report(report) }).then(
       (engine) => {
-        this.engine = engine;
         this.loading = null;
+        if (this.loadAbandoned) {
+          // web-llm's engine creation cannot be interrupted; a stop during it means the engine is
+          // let go the moment it arrives and the caller hears "stopped".
+          void engine.unload?.();
+          throw providerErrorFromThrow(this.id, new DOMException("The model load was stopped.", "AbortError"));
+        }
+        this.engine = engine;
         return engine;
       },
       (err: unknown) => {
@@ -249,7 +258,13 @@ export class WebLLMProvider implements ModelProvider {
     return this.loading;
   }
 
+  /** Best effort (contract addition of 2026-09-11): the engine arriving after this is released, not kept. */
+  abortLoad(): void {
+    if (this.loading) this.loadAbandoned = true;
+  }
+
   async unload(): Promise<void> {
+    this.abortLoad();
     await this.engine?.unload?.();
     this.engine = null;
   }

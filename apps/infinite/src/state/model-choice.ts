@@ -185,6 +185,26 @@ export async function pickLocalRow(row: LiteRtCatalogRow): Promise<void> {
  * Start the weights downloading now. Errors are kept and shown, never thrown at the caller: this is
  * started from a click that has already done its real work (the row is chosen either way).
  */
+function isAbort(err: unknown): boolean {
+  if (err instanceof DOMException) return err.name === "AbortError";
+  const text = err instanceof Error ? `${err.name} ${err.message}` : String(err);
+  return /abort|stopped/i.test(text);
+}
+
+/** Told by the composer's Stop; the chip shows it for a moment where the download line was. */
+const stoppedNote = ref<string | null>(null);
+let stoppedTimer: ReturnType<typeof setTimeout> | undefined;
+export const downloadStopped = computed(() => stoppedNote.value);
+export function noteDownloadStopped(): void {
+  if (!download.value && !preloading.value) return;
+  stoppedNote.value = "Download stopped — it resumes from where it was with your next message";
+  clearTimeout(stoppedTimer);
+  stoppedTimer = setTimeout(() => (stoppedNote.value = null), 4000);
+}
+
+/** True while a model is downloading or compiling for the next answer — the composer shows Stop then too. */
+export const loadInFlight = computed(() => download.value !== null || preloading.value);
+
 export async function preloadLocal(): Promise<void> {
   const handle = brains.value.find((h) => h.peer === "local");
   const provider = handle?.provider as Preloadable | null | undefined;
@@ -196,7 +216,10 @@ export async function preloadLocal(): Promise<void> {
     await provider.load();
     await refreshBrains();
   } catch (err) {
-    preloadFailure.value = err instanceof Error ? err.message : String(err);
+    // A stop is not a failure: the composer's Stop pulled the download and the chip says so quietly.
+    if (isAbort(err)) preloadFailure.value = null;
+    else preloadFailure.value = err instanceof Error ? err.message : String(err);
+    void refreshBrains();
   } finally {
     preloading.value = false;
     stop();
