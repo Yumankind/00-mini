@@ -521,7 +521,14 @@ export interface LiteRtTaskLike {
 }
 
 export interface LiteRtTaskOptions {
-  modelAssetBuffer: Uint8Array;
+  /**
+   * The weights, as a STREAM READER (MediaPipe accepts `Uint8Array | ReadableStreamDefaultReader`,
+   * and 0.10.29's `createFromOptions` reads either). A reader, since 2026-09-11: a 3 GB model as one
+   * `Uint8Array` failed with "Array buffer allocation failed" on Chrome (Gemma 3n E2B), because a
+   * single ArrayBuffer of that size is more than a tab may allocate — and this provider used to make
+   * two. The bytes now flow from Cache Storage into the runtime and are never whole in JavaScript.
+   */
+  modelAssetBuffer: Uint8Array | ReadableStreamDefaultReader<Uint8Array>;
   wasmBaseUrl: string;
   maxTokens?: number;
   topK?: number;
@@ -809,49 +816,59 @@ export class LiteRtProvider implements ModelProvider {
   }
 
   /**
-   * The asset, cache first — and RESUMABLE (2026-09-11, Bruno: "is a download interrupted when I
-   * leave the tab?" — it was, and it started over).
+   * The asset, cache first — RESUMABLE and STREAMED.
    *
-   * The download is read as a stream so a person watching a half-gigabyte download sees it move,
-   * and every complete `partBytes` slice (64 MiB by default) is written to Cache Storage as it
-   * lands. A stop, a closed tab, a phone that froze the page: the next `load()` reads the parts
-   * back, asks the host for the rest with a `Range` header, and continues. A host that ignores the
-   * range (answers 200 instead of 206) gets a fresh start and the parts are dropped, because bytes
-   * from two different answers must never be stitched. When the last byte is in, the whole asset is
-   * written under its own key and the parts are deleted — nothing half-right stays on the disk.
-   * A host that sends no `Content-Length` still gets byte counts, just no percentage.
+   * RESUMABLE (2026-09-11, Bruno: "is a download interrupted when I leave the tab?" — it was, and it
+   * started over): the download is read as a stream so a person watching a half-gigabyte download
+   * sees it move, and every complete `partBytes` slice (64 MiB by default) is written to Cache
+   * Storage as it lands. A stop, a closed tab, a phone that froze the page: the next `load()` counts
+   * the parts, asks the host for the rest with a `Range` header, and continues. A host that ignores
+   * the range (200 instead of 206) gets a fresh start and the parts are dropped — bytes from two
+   * answers are never stitched. When the last byte is in, the whole asset is written under its own
+   * key AS A STREAM over the parts (`cache.put` takes a streamed Response) and the parts are deleted.
+   *
+   * STREAMED (the same day, Gemma 3n E2B at 3 GB: "Array buffer allocation failed"): nothing here
+   * ever holds the whole model in one buffer. Parts leave memory the moment they are on disk, the
+   * final cache entry is assembled by streaming, and what the runtime receives is a READER over the
+   * cached entry. Only a browser that refuses Cache Storage keeps the parts in memory, and even then
+   * they are many buffers, not one. A host that sends no `Content-Length` still gets byte counts,
+   * just no percentage.
    */
-  private async assetBytes(signal?: AbortSignal): Promise<Uint8Array> {
+  private async assetStream(signal?: AbortSignal): Promise<{ reader: ReadableStreamDefaultReader<Uint8Array>; size: number }> {
     const storage = this.cacheStorage();
     let cache: LiteRtCacheLike | undefined;
     if (storage) {
       try {
         cache = await storage.open(this.cacheName);
         const hit = await cache.match(this.assetUrl);
-        if (hit) {
+        if (hit?.body) {
           this.cached = true;
+          const size = Number(hit.headers.get("content-length") ?? "0") || 0;
           this.report({ progress: 1, loadedBytes: 0, text: `${this.modelId} is already on this device.` });
-          return new Uint8Array(await hit.arrayBuffer());
+          return { reader: hit.body.getReader(), size };
         }
       } catch {
         cache = undefined;
       }
     }
 
-    // What an earlier try left behind: complete parts, in order, until the first gap.
-    let parts: Uint8Array[] = [];
+    // What an earlier try left behind: complete parts, in order, until the first gap. Only COUNTED
+    // here; the bytes stay on disk until the final assembly streams them.
+    let partCount = 0;
     let loaded = 0;
     let total: number | undefined;
+    /** Parts kept in memory — only when there is no cache to keep them for us. */
+    const inMemory: Uint8Array[] = [];
     if (cache) {
       const meta = await this.readMeta(cache);
       total = meta.totalBytes;
       for (let i = 0; i < meta.parts; i++) {
         const hit = await cache.match(this.partKey(i)).catch(() => undefined);
         if (!hit) break;
-        const bytes = new Uint8Array(await hit.arrayBuffer());
-        if (bytes.byteLength !== this.partBytes) break;
-        parts.push(bytes);
-        loaded += bytes.byteLength;
+        const length = Number(hit.headers.get("content-length") ?? "0") || (await hit.arrayBuffer()).byteLength;
+        if (length !== this.partBytes) break;
+        partCount += 1;
+        loaded += length;
       }
       if (loaded) this.report({ progress: total ? loaded / total : 0, loadedBytes: loaded, totalBytes: total, text: `Resuming ${this.modelId}…` });
     }
@@ -860,8 +877,8 @@ export class LiteRtProvider implements ModelProvider {
     const response = await this.doFetch(this.assetUrl, { signal, headers });
     if (loaded && response.status === 200) {
       // The host does not do ranges: start over rather than stitch two answers together.
-      if (cache) await this.dropParts(cache, parts.length);
-      parts = [];
+      if (cache) await this.dropParts(cache, partCount);
+      partCount = 0;
       loaded = 0;
       total = undefined;
     } else if (loaded && response.status !== 206) {
@@ -888,7 +905,24 @@ export class LiteRtProvider implements ModelProvider {
       const n = header ? Number(header) : NaN;
       total = Number.isFinite(n) && n > 0 ? n : undefined;
     }
-    if (cache && total && parts.length === 0) await this.writeMeta(cache, { totalBytes: total, parts: 0 });
+    if (cache && total && partCount === 0) await this.writeMeta(cache, { totalBytes: total, parts: 0 });
+
+    /** A complete part: to disk when there is a disk, to memory otherwise — never both. */
+    const keep = async (part: Uint8Array): Promise<void> => {
+      partCount += 1;
+      if (!cache) {
+        inMemory.push(part);
+        return;
+      }
+      try {
+        await cache.put(this.partKey(partCount - 1), new Response(part.buffer as ArrayBuffer, { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(part.byteLength) } }));
+        await this.writeMeta(cache, { totalBytes: total, parts: partCount });
+      } catch {
+        // Out of quota mid-way: keep going in memory; only the resume is lost.
+        cache = undefined;
+        inMemory.push(part);
+      }
+    };
 
     const body = response.body;
     if (body) {
@@ -903,7 +937,6 @@ export class LiteRtProvider implements ModelProvider {
         pendingBytes += value.byteLength;
         loaded += value.byteLength;
         this.report({ progress: total ? loaded / total : 0, loadedBytes: loaded, totalBytes: total, text: `Downloading ${this.modelId}…` });
-        // Every complete part goes to disk as it lands: that is what the next try resumes from.
         while (pendingBytes >= this.partBytes) {
           const part = new Uint8Array(this.partBytes);
           let at = 0;
@@ -925,15 +958,7 @@ export class LiteRtProvider implements ModelProvider {
           }
           pending = rest;
           pendingBytes -= this.partBytes;
-          parts.push(part);
-          if (cache) {
-            try {
-              await cache.put(this.partKey(parts.length - 1), new Response(part.slice().buffer, { headers: { "Content-Type": "application/octet-stream" } }));
-              await this.writeMeta(cache, { totalBytes: total, parts: parts.length });
-            } catch {
-              // Out of quota mid-way: the download still completes in memory; only the resume is lost.
-            }
-          }
+          await keep(part);
         }
       }
       if (pendingBytes) {
@@ -943,35 +968,60 @@ export class LiteRtProvider implements ModelProvider {
           tail.set(chunk, at);
           at += chunk.byteLength;
         }
-        parts.push(tail);
+        // The tail is a short part: kept the same way, and read back the same way.
+        await keep(tail);
       }
     } else {
       const rest = new Uint8Array(await response.arrayBuffer());
-      parts.push(rest);
       loaded += rest.byteLength;
+      await keep(rest);
     }
 
-    const bytes = new Uint8Array(loaded);
-    let at = 0;
-    for (const part of parts) {
-      bytes.set(part, at);
-      at += part.byteLength;
-    }
+    const size = loaded;
+    /** The parts in order, as one stream — from disk or from memory, whichever holds them. */
+    const partsStream = (from: LiteRtCacheLike | undefined): ReadableStream<Uint8Array> => {
+      let i = 0;
+      return new ReadableStream<Uint8Array>({
+        pull: async (controller) => {
+          if (i >= partCount) {
+            controller.close();
+            return;
+          }
+          const index = i++;
+          if (from) {
+            const hit = await from.match(this.partKey(index));
+            if (!hit) throw new Error(`part ${index} of ${this.modelId} went missing from the cache`);
+            controller.enqueue(new Uint8Array(await hit.arrayBuffer()));
+          } else {
+            controller.enqueue(inMemory[index]!);
+          }
+        },
+      });
+    };
 
     if (cache) {
       try {
-        // A fresh Response over a COPY of the bytes: the buffer handed to the task must not be one
-        // the cache still owns. Then the parts go: the asset is whole, and nothing half-right stays.
-        await cache.put(this.assetUrl, new Response(bytes.slice().buffer, { headers: { "Content-Type": "application/octet-stream" } }));
+        // The whole asset under its own key, ASSEMBLED BY STREAMING: no buffer the size of the model
+        // exists at any point. Then the parts go — nothing half-right stays.
+        await cache.put(
+          this.assetUrl,
+          new Response(partsStream(cache), { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(size) } }),
+        );
         this.cached = true;
-        await this.dropParts(cache, parts.length);
+        await this.dropParts(cache, partCount);
+        this.report({ progress: 1, loadedBytes: size, totalBytes: total, text: `${this.modelId} is ready.` });
+        const whole = await cache.match(this.assetUrl);
+        if (whole?.body) return { reader: whole.body.getReader(), size };
+        // The put "worked" and the match did not (quota reclaimed under us): fall through to memory,
+        // which we no longer have — the next open downloads again, which is slow, not broken.
       } catch {
-        // Out of quota is not a reason to refuse the answer: the model is in hand, it just will not
-        // survive the tab. The next open downloads it again, which is slow, not broken.
+        // Out of quota at the very end: the model is still in hand if the parts are; otherwise the
+        // next open downloads again. Either way the answer is not refused here.
       }
+      if (!inMemory.length) return { reader: partsStream(cache).getReader(), size };
     }
-    this.report({ progress: 1, loadedBytes: bytes.byteLength, totalBytes: total, text: `${this.modelId} is ready.` });
-    return bytes;
+    this.report({ progress: 1, loadedBytes: size, totalBytes: total, text: `${this.modelId} is ready.` });
+    return { reader: partsStream(undefined).getReader(), size };
   }
 
   /** Download, cache and compile. Safe to call twice: the second caller waits on the first's promise. */
@@ -994,19 +1044,14 @@ export class LiteRtProvider implements ModelProvider {
       else signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
     }
     this.loading ??= (async () => {
-      const modelAssetBuffer = await this.assetBytes(controller.signal);
+      const { reader, size } = await this.assetStream(controller.signal);
       if (controller.signal.aborted) throw controller.signal.reason ?? new DOMException("The model load was stopped.", "AbortError");
       // The download is over; what follows is the compile. Say so, with the bytes as a full bar and
       // the phase set, so a host draws "loading" rather than a download stuck at 100 %.
-      this.progress = {
-        loadedBytes: modelAssetBuffer.byteLength,
-        totalBytes: modelAssetBuffer.byteLength,
-        percent: 100,
-        phase: "load",
-      };
-      this.opts.onProgress?.({ progress: 1, loadedBytes: modelAssetBuffer.byteLength, totalBytes: modelAssetBuffer.byteLength, text: `Loading ${this.modelId} into the GPU…` });
+      this.progress = { loadedBytes: size, totalBytes: size, percent: 100, phase: "load" };
+      this.opts.onProgress?.({ progress: 1, loadedBytes: size, totalBytes: size, text: `Loading ${this.modelId} into the GPU…` });
       return this.createTask({
-        modelAssetBuffer,
+        modelAssetBuffer: reader,
         wasmBaseUrl: this.wasmBaseUrl,
         maxTokens: this.applied.maxTokens,
         topK: this.opts.topK,

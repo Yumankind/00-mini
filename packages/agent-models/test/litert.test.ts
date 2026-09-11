@@ -63,6 +63,25 @@ function withWebGpu(): void {
 }
 
 /** Cache Storage, as a Map of Maps. `put` copies, exactly as the real one does. */
+/** What the runtime was handed, as bytes — a reader since 2026-09-11 (a 3 GB model is never one buffer). */
+async function bytesHanded(handed: Uint8Array | ReadableStreamDefaultReader<Uint8Array> | undefined): Promise<Uint8Array> {
+  if (!handed) return new Uint8Array(0);
+  if (handed instanceof Uint8Array) return handed;
+  const parts: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await handed.read();
+    if (done) break;
+    parts.push(value);
+  }
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.byteLength;
+  }
+  return out;
+}
+
 function memoryCaches(): LiteRtCacheStorageLike & { buckets: Map<string, Map<string, ArrayBuffer>> } {
   const buckets = new Map<string, Map<string, ArrayBuffer>>();
   return {
@@ -73,7 +92,8 @@ function memoryCaches(): LiteRtCacheStorageLike & { buckets: Map<string, Map<str
       return {
         async match(request: string) {
           const hit = bucket.get(request);
-          return hit ? new Response(hit.slice(0)) : undefined;
+          // A real Cache keeps the headers of the put; the provider reads Content-Length back.
+          return hit ? new Response(hit.slice(0), { headers: { "content-length": String(hit.byteLength) } }) : undefined;
         },
         async put(request: string, response: Response) {
           bucket.set(request, await response.arrayBuffer());
@@ -406,7 +426,7 @@ describe("readiness", () => {
   it("reads the whole body at once when the response has no stream to read", async () => {
     withWebGpu();
     const whole = assetFetch([7, 8, 9], { body: false });
-    let handed: Uint8Array | undefined;
+    let handed: Uint8Array | ReadableStreamDefaultReader<Uint8Array> | undefined;
     const instance = new LiteRtProvider({
       modelBaseUrl: BASE,
       caches: memoryCaches(),
@@ -417,7 +437,7 @@ describe("readiness", () => {
       },
     });
     await instance.load();
-    expect([...(handed ?? [])]).toEqual([7, 8, 9]);
+    expect([...(await bytesHanded(handed))]).toEqual([7, 8, 9]);
   });
 
   it("types a missing asset as a refusal with the URL in it, rather than a raw fetch failure", async () => {
