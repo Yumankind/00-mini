@@ -137,15 +137,16 @@ body {
 }
 
 /* ── Focus, once, for everything ───────────────────────────────────────────────────────────────────
-   A 2px mint ring at 40%, offset 1px, on the keyboard only: a mouse user who clicks a button has
-   already been told what they clicked, and a ring on every click reads as an error state. */
-:where(button, a, input, textarea, select, [tabindex]):focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-phosphor) 40%, transparent);
-  outline-offset: 1px;
-  border-radius: inherit;
-}
-:where(button, a, input, textarea, select, [tabindex]):focus:not(:focus-visible) {
+   No browser outline anywhere (Bruno, 2026-09-11: "fix or remove all the outlines"). The keyboard
+   still gets a mark — a soft ink ring on :focus-visible only, never the accent, never on a click: a
+   mouse user who clicks a button has already been told what they clicked, and a ring on every focus
+   reads as an error state. Fields mark focus with their border (`.ia-input:focus`), not a ring. */
+:where(button, a, input, textarea, select, [tabindex], [contenteditable]) {
   outline: none;
+}
+:where(button, a, [tabindex]):focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ink) 18%, transparent);
+  border-radius: inherit;
 }
 
 /* ── Everything below is a COMPONENT LAYER ────────────────────────────────────────────────────────
@@ -262,9 +263,10 @@ body {
 .ia-input::placeholder {
   color: var(--color-ink-faint);
 }
-.ia-input:focus {
-  border-color: color-mix(in srgb, var(--color-phosphor) 50%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-phosphor) 18%, transparent);
+.ia-input:focus,
+.ia-input:focus-within {
+  border-color: color-mix(in srgb, var(--color-ink) 28%, transparent);
+  box-shadow: none;
 }
 
 /* A remote card that offline has taken away. Greyed, not hidden — §4.4 wants the reason visible. */

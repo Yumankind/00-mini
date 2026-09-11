@@ -210,9 +210,11 @@ onBeforeUnmount(() => {
   font-size: 14px;
   border-radius: 12px;
 }
+.landing :focus {
+  outline: none;
+}
 .landing :focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-phosphor) 40%, transparent);
-  outline-offset: 1px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ink) 18%, transparent);
 }
 
 /* ── rhythm ───────────────────────────────────────────────────────────────────────────────────── */

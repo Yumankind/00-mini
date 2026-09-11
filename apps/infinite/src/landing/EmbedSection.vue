@@ -8,7 +8,7 @@
  * keys and all) — and the link public key rides along in `data-site`, so the site can be registered
  * for extra power later without coming back here. Until the agent has booted the tag shows `ia_…`.
  */
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import TablerIcon from "../components/TablerIcon.vue";
 import { ready } from "../state/agent.js";
 import { loadRegistry, readySnippet, registryReady } from "../state/registry.js";
@@ -20,6 +20,7 @@ const snippet = computed(() => readySnippet.value || `<script async src="${origi
 const isReal = computed(() => !!readySnippet.value);
 
 const root = ref<HTMLElement | null>(null);
+const seen = ref(false);
 let observer: IntersectionObserver | null = null;
 let asked = false;
 async function mint(): Promise<void> {
@@ -29,15 +30,20 @@ async function mint(): Promise<void> {
 }
 onMounted(() => {
   // Minted when the section is in view, not at page load: a reader who never scrolls here never
-  // mints a key they will not use. `ready` gates it behind the agent's own boot.
+  // mints a key they will not use. `ready` gates it behind the agent's own boot — and the two are
+  // watched TOGETHER below, because the reader usually gets here before the agent has finished
+  // booting, and an observer that only fires on scroll would never come back to ask again.
   if (typeof IntersectionObserver === "undefined" || !root.value) {
-    void mint();
+    seen.value = true;
     return;
   }
   observer = new IntersectionObserver((entries) => {
-    if (entries.some((e) => e.isIntersecting) && ready.value) void mint();
+    if (entries.some((e) => e.isIntersecting)) seen.value = true;
   });
   observer.observe(root.value);
+});
+watchEffect(() => {
+  if (seen.value && ready.value) void mint();
 });
 onBeforeUnmount(() => observer?.disconnect());
 
