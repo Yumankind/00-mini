@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { ProviderError, type ModelProvider } from "@00/agent-models";
 import {
+  DEFAULT_CONTEXT_TOKENS,
   DEFAULT_MAX_STEPS,
   EventRecorder,
   MAX_OUTPUT_CHARS,
   ModelRouter,
   PermissionManager,
+  SYSTEM_PROMPT_SHARE,
   SeenFiles,
   ToolRegistry,
+  contextTokensOf,
   createAgentRuntime,
+  estimateTokens,
   fullTools,
   lightTools,
   parseSessionEntries,
@@ -581,5 +586,132 @@ describe("agent_message and agent_delta", () => {
     expect(result.text).toBe("buffered");
     expect(events.some((e) => e.type === "agent_delta")).toBe(false);
     expect(events.at(-1)).toMatchObject({ type: "agent_message", text: "buffered" });
+  });
+});
+
+// ── The context budget (2026-09-11) ─────────────────────────────────────────────────────────────
+
+/**
+ * The loop is the only place that holds BOTH the prompt it is about to build and the brain that is
+ * about to read it, which is why the budget is derived here. What is tested is the wiring: the row
+ * that is read, the share that is handed over, the event that reports what it cost, and the fact
+ * that a run which never switches brains still builds its prompt exactly once.
+ */
+describe("fitting the prompt to the brain that will read it", () => {
+  /** An agent big enough that a 4096-token row cannot hold its prompt, and an 8192-token one can. */
+  function bigAgent(): MemoryFs {
+    const seed: Record<string, string> = {
+      "workspace/AGENTS.md": "be brief",
+      "workspace/IDENTITY.md": "Name: Ada",
+      "workspace/USER.md": `USER-HEAD${"u".repeat(6000)}USER-TAIL`,
+      "workspace/TOOLS.md": "NOTES-ABOUT-TOOLS",
+    };
+    for (let i = 0; i < 9; i++) seed[`workspace/projects/site/page${i}.html`] = "x";
+    return new MemoryFs(seed);
+  }
+
+  it("reads the picked row's contextTokens and gives the system prompt 45% of it", async () => {
+    const narrow = new FakeProvider("local", [{ text: "ok" }], { contextTokens: 4096 });
+    const { runtime, events } = harness({ fs: bigAgent(), providers: [narrow] });
+    await runtime.run({ prompt: "hi" });
+
+    const trimmed = events.filter((e) => e.type === "context_trimmed");
+    expect(trimmed).toHaveLength(1);
+    expect(trimmed[0]).toMatchObject({ budgetTokens: Math.floor(4096 * SYSTEM_PROMPT_SHARE) });
+    expect((trimmed[0] as { dropped: string[] }).dropped[0]).toBe("tree-children");
+    const system = String(narrow.requests[0].messages[0].content);
+    expect(estimateTokens(system)).toBeLessThanOrEqual(Math.floor(4096 * SYSTEM_PROMPT_SHARE));
+    // The receipt belongs to the brain that caused it: `model_started` comes first.
+    expect(events.findIndex((e) => e.type === "model_started")).toBeLessThan(events.findIndex((e) => e.type === "context_trimmed"));
+  });
+
+  it("drops NOTHING, and says nothing, when the brain has the room", async () => {
+    const wide = new FakeProvider("cloud", [{ text: "ok" }], { contextTokens: 131072 });
+    const { runtime, events } = harness({ fs: bigAgent(), providers: [wide] });
+    await runtime.run({ prompt: "hi" });
+    expect(events.some((e) => e.type === "context_trimmed")).toBe(false);
+    expect(String(wide.requests[0].messages[0].content)).toContain("USER-TAIL");
+  });
+
+  it("treats a catalogue that declares no context as the generous default", async () => {
+    // Every cloud peer in @00/agent-models is this shape, and they are the ones with the room.
+    const quiet = new FakeProvider("cloud", [{ text: "ok" }]);
+    const { runtime, events } = harness({ fs: bigAgent(), providers: [quiet] });
+    await runtime.run({ prompt: "hi" });
+    expect(await contextTokensOf(quiet)).toBe(DEFAULT_CONTEXT_TOKENS);
+    expect(events.some((e) => e.type === "context_trimmed")).toBe(false);
+  });
+
+  it("builds the prompt ONCE for a run that keeps the same brain, however many steps it takes", async () => {
+    const narrow = new FakeProvider("local", [{ toolCalls: [call("ls", { path: "." })] }, { text: "done" }], {
+      contextTokens: 4096,
+    });
+    const { runtime, events } = harness({ fs: bigAgent(), providers: [narrow] });
+    await runtime.run({ prompt: "hi" });
+    expect(narrow.requests).toHaveLength(2);
+    // Same system turn on both calls, and ONE trim event rather than one per step.
+    expect(narrow.requests[1].messages[0].content).toBe(narrow.requests[0].messages[0].content);
+    expect(events.filter((e) => e.type === "context_trimmed")).toHaveLength(1);
+  });
+
+  it("re-fits when a dead credential falls through to a narrower brain", async () => {
+    const dead = new FakeProvider("cloud", [{ throws: "unauthorized" }], { contextTokens: 131072 });
+    (dead as unknown as { chat: unknown }).chat = async () => {
+      throw new ProviderError({ status: 401, code: "credential", message: "key is dead", providerId: "cloud" });
+    };
+    const local = new FakeProvider("local", [{ text: "I have it" }], { contextTokens: 4096 });
+    const { runtime, events } = harness({ fs: bigAgent(), providers: [dead, local] });
+    const result = await runtime.run({ prompt: "hi" });
+
+    expect(result.providerId).toBe("local");
+    // The wide brain was asked WITHOUT a trim; the narrow one that answered got a fitted prompt.
+    const trimmed = events.filter((e) => e.type === "context_trimmed");
+    expect(trimmed).toHaveLength(1);
+    expect(trimmed[0]).toMatchObject({ budgetTokens: Math.floor(4096 * SYSTEM_PROMPT_SHARE) });
+    expect(estimateTokens(String(local.requests[0].messages[0].content))).toBeLessThanOrEqual(Math.floor(4096 * SYSTEM_PROMPT_SHARE));
+  });
+});
+
+describe("which row's context is read", () => {
+  /** A provider fixed to one model, the shape both local brains have. */
+  function fixed(modelId: string, rows: { id: string; contextTokens?: number }[]): ModelProvider {
+    return {
+      id: "local",
+      modelId,
+      async models() {
+        return rows.map((row) => ({ label: row.id, class: "small" as const, local: true, supportsTools: true, ...row }));
+      },
+      async readiness() {
+        return { ready: true as const };
+      },
+      async chat() {
+        return { message: { role: "assistant" as const, content: "" } };
+      },
+      async *stream() {
+        /* never asked */
+      },
+    } as unknown as ModelProvider;
+  }
+
+  it("takes the row the spec named", async () => {
+    const provider = fixed("a", [{ id: "a", contextTokens: 2048 }, { id: "b", contextTokens: 8192 }]);
+    expect(await contextTokensOf(provider, "b")).toBe(8192);
+  });
+
+  it("takes the row the provider itself is loaded with", async () => {
+    const provider = fixed("b", [{ id: "a", contextTokens: 2048 }, { id: "b", contextTokens: 8192 }]);
+    expect(await contextTokensOf(provider)).toBe(8192);
+  });
+
+  it("takes the NARROWEST declared row when it cannot tell which one will answer", async () => {
+    // If we do not know which row answers, the prompt has to fit the one that could hold the least.
+    const provider = fixed("unknown-to-the-catalogue", [{ id: "a", contextTokens: 8192 }, { id: "b", contextTokens: 2048 }]);
+    expect(await contextTokensOf(provider)).toBe(2048);
+  });
+
+  it("falls back to the default for a row with no number, and for a catalogue that throws", async () => {
+    expect(await contextTokensOf(fixed("a", [{ id: "a" }]))).toBe(DEFAULT_CONTEXT_TOKENS);
+    const angry = { id: "x", async models() { throw new Error("no catalogue"); } } as unknown as ModelProvider;
+    expect(await contextTokensOf(angry)).toBe(DEFAULT_CONTEXT_TOKENS);
   });
 });

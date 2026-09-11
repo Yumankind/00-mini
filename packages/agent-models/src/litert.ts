@@ -53,7 +53,7 @@ import { mapFinishReason } from "./openai-compatible.js";
 import type { FetchLike, Readiness } from "./openai-compatible.js";
 import { renderPrompt, renderPromptSegments, stopAtTurnEnd, TURN_MARKER_MAX_LENGTH, turnMarkerIndex } from "./templates.js";
 import type { PromptFamily } from "./templates.js";
-import { fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
+import { FALLBACK_SCHEMAS_MIN_CONTEXT, fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
 import type {
   ChatChunk,
   ChatMessage,
@@ -142,8 +142,16 @@ export const LITERT_UNVERIFIED_ASSETS: readonly string[] = [];
  * §12.6's promise that a phone is offered one model and not a wall. Measure them on a device before
  * anyone treats them as fact.
  *
- * `contextTokens` is what this package asks for at load (`maxTokens`), not a ceiling the model
- * imposes: LLM Inference counts input and output together against one number.
+ * `contextTokens` IS THE KV-CACHE BUDGET ASKED FOR AT LOAD (`maxTokens`), not a ceiling the model
+ * imposes: LLM Inference counts input and output together against one number, and `LiteRtProvider`
+ * passes this row's value straight into `createFromOptions` (see the constructor and `load()`).
+ *
+ * So a number here is a trade, not a fact about the weights. Raised to 8192 on 2026-09-11 for the
+ * Gemma 4 and Gemma 3n rows, after a 5.2k-token system prompt made the default local brain fail on
+ * every turn against the old 4096: those models support far more than 4096, and 8192 is what can be
+ * asked of a laptop GPU without the cache itself exhausting it. THE 270m AND 1B ROWS STAY AT 2048
+ * ON PURPOSE — they are the phone rows (§12.6), where the KV cache competes with the browser for a
+ * few hundred megabytes, and a phone that loads nothing is worse than a phone with a short context.
  */
 export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // VERIFIED on the mirror (sha256 a642cc7b…), not in the README. The phone row: a quarter of a
@@ -180,7 +188,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     class: "small",
     local: true,
     supportsTools: true,
-    contextTokens: 4096,
+    contextTokens: 8192,
     vramMb: 3600,
     assetFile: "gemma-3n-E2B-it-int4-Web.litertlm",
     family: "gemma",
@@ -194,7 +202,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     class: "strong",
     local: true,
     supportsTools: true,
-    contextTokens: 4096,
+    contextTokens: 8192,
     vramMb: 5200,
     assetFile: "gemma-3n-E4B-it-int4-Web.litertlm",
     family: "gemma",
@@ -209,7 +217,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     class: "small",
     local: true,
     supportsTools: true,
-    contextTokens: 4096,
+    contextTokens: 8192,
     vramMb: 3600,
     assetFile: "gemma-4-E2B-it-web.task",
     family: "gemma",
@@ -223,7 +231,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     class: "strong",
     local: true,
     supportsTools: true,
-    contextTokens: 4096,
+    contextTokens: 8192,
     vramMb: 6800,
     assetFile: "gemma-4-E4B-it-web.task",
     family: "gemma",
@@ -238,7 +246,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
     class: "strong",
     local: true,
     supportsTools: true,
-    contextTokens: 4096,
+    contextTokens: 8192,
     vramMb: 9000,
     assetFile: "gemma-4-12B-it-web.litertlm",
     family: "gemma",
@@ -646,6 +654,9 @@ export class LiteRtProvider implements ModelProvider {
     this.createImageSource = opts.createImageSource ?? importImageSource;
     this.seesImages = opts.vision ?? this.model?.vision === true;
     this.cacheName = opts.cacheName ?? LITERT_MODEL_CACHE;
+    // THE ROW'S `contextTokens` IS WHAT IS ASKED FOR AT LOAD: `load()` hands `applied.maxTokens`
+    // straight to `createFromOptions`, so raising a row's number raises the KV cache the task is
+    // built with. A caller's explicit `maxTokens` still wins, for a host that knows its device.
     this.applied = { temperature: opts.temperature, maxTokens: opts.maxTokens ?? this.model?.contextTokens };
   }
 
@@ -885,7 +896,14 @@ export class LiteRtProvider implements ModelProvider {
    * that a picture too big to send fails BEFORE the generation starts rather than half way through.
    */
   private async buildPrompt(req: ChatRequest): Promise<LiteRtPrompt> {
-    const messages = req.tools?.length ? withToolInstruction(req.messages, fallbackToolPrompt(req.tools)) : req.messages;
+    /**
+     * Signatures, not schemas — unless this row's `contextTokens` says it has the room. Every row
+     * this package ships is 2048–8192, where the raw dump is a third of the whole KV cache.
+     */
+    const instruction = req.tools?.length
+      ? fallbackToolPrompt(req.tools, { schemas: (this.model?.contextTokens ?? 0) >= FALLBACK_SCHEMAS_MIN_CONTEXT })
+      : "";
+    const messages = instruction ? withToolInstruction(req.messages, instruction) : req.messages;
     if (!this.seesImages || !hasImages(messages)) return renderPrompt(messages, this.family);
     const parts: LiteRtPromptPart[] = [];
     for (const segment of renderPromptSegments(messages, this.family)) {

@@ -180,6 +180,19 @@ describe("readiness", () => {
 // ── chat and stream, against a mocked engine ────────────────────────────────────────────────────
 
 describe("chat", () => {
+  it("spends the raw schemas only on a row whose catalogue says it has the context for them", async () => {
+    withWebGpu();
+    const engine = mockEngine({ choices: [{ message: { content: "nothing" }, finish_reason: "stop" }] });
+    const provider = new WebLLMProvider({
+      createEngine: async () => engine,
+      modelId: "big",
+      catalog: [{ id: "big", label: "Big", class: "strong", local: true, supportsTools: true, contextTokens: 131072, vramMb: 1 }],
+    });
+    await provider.chat({ messages: [{ role: "user", content: "hi" }], tools: [{ name: "ls", description: "list", parameters: { type: "object" } }] });
+    const sent = engine.requests[0]?.messages as { role: string; content: string }[];
+    expect(sent[0]?.content).toContain("arguments schema:");
+  });
+
   it("folds the fallback instruction into the FIRST system turn rather than adding a second", async () => {
     withWebGpu();
     const engine = mockEngine({ choices: [{ message: { content: '{"tool_call": {"name": "ls", "arguments": {}}}' }, finish_reason: "stop" }] });
@@ -199,6 +212,10 @@ describe("chat", () => {
     expect(sent[0]?.content).toContain("tool_call");
     // No `tools` array: this model has no native function calling, so sending one would be a lie.
     expect(engine.requests[0]?.tools).toBeUndefined();
+
+    // A SIGNATURE, not the schema dump: every curated row here declares 4096 tokens of context.
+    expect(sent[0]?.content).toContain("ls() — list");
+    expect(sent[0]?.content).not.toContain("arguments schema:");
 
     expect(res.message.toolCalls).toEqual([{ id: "call_0", name: "ls", arguments: {} }]);
     expect(res.message.content).toBe("");

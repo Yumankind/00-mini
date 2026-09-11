@@ -46,6 +46,8 @@ export class FakeProvider implements ModelProvider {
       modelsThrows?: boolean;
       /** A brain that brings its own tools (the agent on the person's Mac) says false here. */
       supportsTools?: boolean;
+      /** What its rows declare as context. Absent = a catalogue that says nothing, like every cloud peer. */
+      contextTokens?: number;
     } = {},
   ) {}
 
@@ -66,6 +68,7 @@ export class FakeProvider implements ModelProvider {
       class: cls,
       local: true,
       supportsTools: this.opts.supportsTools ?? true,
+      ...(this.opts.contextTokens === undefined ? {} : { contextTokens: this.opts.contextTokens }),
     }));
   }
 

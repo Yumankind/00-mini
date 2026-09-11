@@ -68,6 +68,53 @@ export const DEFAULT_MAX_STEPS = 40;
 export const DEFAULT_WORKSPACE = "workspace";
 
 /**
+ * ── THE CONTEXT BUDGET (2026-09-11) ────────────────────────────────────────────────────────────
+ *
+ * A model row may declare how wide its context is (`ModelInfo.contextTokens`). Nothing used to read
+ * it, which was free while every brain was a cloud one and cost the product a day the moment the
+ * default brain was a LiteRT row that asks for its KV cache AT LOAD: the system prompt alone was
+ * wider than the whole cache, so every turn failed before the conversation started.
+ *
+ * The loop is the only place that knows both halves — the prompt it is about to build and the brain
+ * that is about to read it — so the budget is derived here and handed to the ContextManager, which
+ * knows what is safe to drop (context.ts, `TRIM_ORDER`).
+ *
+ * 45% TO THE SYSTEM PROMPT. The other 55% is the conversation, the tool results and the answer, and
+ * those are the parts that GROW: a system prompt is the same size on turn 12 as on turn 1, while
+ * the transcript behind it is not. A prompt allowed half the window leaves a ten-step run nowhere
+ * to put its observations.
+ */
+export const DEFAULT_CONTEXT_TOKENS = 8192;
+export const SYSTEM_PROMPT_SHARE = 0.45;
+
+/**
+ * How wide is this brain's context? The row that will answer, when it can be identified.
+ *
+ * A provider fixed to ONE model (both local brains) carries the id on `modelId`, and the router
+ * names one in `<providerId>/<modelId>` spelling; either identifies the row exactly. When neither
+ * does, the SMALLEST declared context in the catalogue is taken — if we cannot tell which row will
+ * answer, the prompt has to fit the narrowest one that could. A catalogue that declares none at all
+ * (every cloud peer in this package) gets the default, which is deliberately generous: those models
+ * have the room, and an over-trimmed prompt on a 200k-token brain is a self-inflicted wound.
+ */
+export async function contextTokensOf(provider: ModelProvider, model?: string): Promise<number> {
+  try {
+    const rows = await provider.models();
+    const loaded = (provider as { modelId?: unknown }).modelId;
+    const named =
+      (model ? rows.find((row) => row.id === model) : undefined) ??
+      (typeof loaded === "string" ? rows.find((row) => row.id === loaded) : undefined);
+    if (named) return named.contextTokens ?? DEFAULT_CONTEXT_TOKENS;
+    const declared = rows.map((row) => row.contextTokens).filter((n): n is number => typeof n === "number" && n > 0);
+    return declared.length ? Math.min(...declared) : DEFAULT_CONTEXT_TOKENS;
+  } catch {
+    // A catalogue that throws is a provider that cannot describe itself, not a reason to refuse to
+    // build a prompt — the same "I do not know means yes" rule `providerOffersTools` states below.
+    return DEFAULT_CONTEXT_TOKENS;
+  }
+}
+
+/**
  * Everything the loop needs beyond the frozen `AgentRuntimeOptions`.
  *
  * It EXTENDS rather than edits `api.ts`: that file is the contract the PWA and the embed are written
@@ -217,6 +264,17 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
       }
       return pending;
     };
+    /** One catalogue read per provider-and-model per run, the same budget the two questions above have. */
+    const contextCache = new Map<string, Promise<number>>();
+    const contextBudget = (provider: ModelProvider, model?: string): Promise<number> => {
+      const key = `${provider.id} ${model ?? ""}`;
+      let pending = contextCache.get(key);
+      if (!pending) {
+        pending = contextTokensOf(provider, model);
+        contextCache.set(key, pending);
+      }
+      return pending;
+    };
     const usage = { value: usageZero() };
     let steps = 0;
     let finalText = "";
@@ -243,11 +301,30 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
 
       const history = resuming ? await sessions.load(sessionId) : [];
       await sessions.appendUser(run.prompt);
+      /**
+       * The system turn is left EMPTY until a brain is picked, because how much of it fits is that
+       * brain's answer (`fitSystem` below). It is filled before the first model call of every step
+       * and rebuilt only when the budget actually changes, so a run that never switches brains
+       * builds the prompt exactly once — the cost this had before the budget existed.
+       */
       const messages: ChatMessage[] = [
-        { role: "system", content: await context.system() },
+        { role: "system", content: "" },
         ...history,
         { role: "user", content: run.prompt },
       ];
+      let systemBudget: number | null = null;
+      const fitSystem = async (provider: ModelProvider, model?: string): Promise<void> => {
+        const tokens = Math.floor((await contextBudget(provider, model)) * SYSTEM_PROMPT_SHARE);
+        if (tokens === systemBudget) return;
+        systemBudget = tokens;
+        messages[0] = {
+          role: "system",
+          content: await context.system({
+            tokens,
+            onTrim: (info) => emit({ type: "context_trimmed", ...info }),
+          }),
+        };
+      };
 
       const finish = (reason: RunResult["stopped"]): RunResult => {
         stopped = reason;
@@ -297,6 +374,9 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
           ({ provider, model } = attempt.value);
           answeredBy = { providerId: provider.id, model };
           emit({ type: "model_started", providerId: provider.id, model, brainClass: attempt.value.brainClass });
+          // After `model_started`, so a `context_trimmed` is attributable to the brain that caused
+          // it — a fallthrough to a narrower brain trims again, and the transcript shows which.
+          await fitSystem(provider, model);
           /** Set the instant a token is emitted: after this, this turn belongs to this provider. */
           let emitted = false;
           ownTools = schemas.length > 0 && !(await offersTools(provider));

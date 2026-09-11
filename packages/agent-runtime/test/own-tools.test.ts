@@ -69,8 +69,9 @@ describe("a provider that says it does not take tools", () => {
     const mac = new FakeProvider("remote-mac", [{ text: "one" }], { supportsTools: false });
     const { runtime } = harness(mac);
     await runtime.run({ prompt: "hi" });
-    // One read for the class question, one for the tools question — and not one per step.
-    expect(mac.modelsCalls).toBeLessThanOrEqual(2);
+    // One read for the class question, one for the tools question, one for the context budget —
+    // each cached per run, and none of them per step.
+    expect(mac.modelsCalls).toBeLessThanOrEqual(3);
   });
 });
 

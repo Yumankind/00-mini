@@ -100,6 +100,15 @@ export type AgentEvent =
   | { type: "tool_failed"; callId: string; name: string; error: string }
   | { type: "permission_requested"; callId: string; name: string; tier: PermissionTier; args: Record<string, unknown> }
   | { type: "permission_answered"; callId: string; allowed: boolean; remember?: "session" | "always" }
+  /**
+   * WHAT THE SYSTEM PROMPT GAVE UP TO FIT THIS BRAIN'S CONTEXT (additive, 2026-09-11).
+   *
+   * Emitted at most once per model call, and only when something was actually dropped — `dropped`
+   * names the stages in the order they went (context.ts, `TRIM_ORDER`). It is a receipt, not a
+   * warning: a trimmed prompt is a working turn, and an untrimmed prompt that overflows is not. The
+   * token counts are the /3.5 heuristic, which is stated wherever they are shown.
+   */
+  | { type: "context_trimmed"; dropped: string[]; budgetTokens: number; usedTokens: number }
   | { type: "file_changed"; path: string; op: "write" | "delete" | "rename" }
   | { type: "command_started"; command: string }
   | { type: "command_completed"; command: string; exitCode: number }

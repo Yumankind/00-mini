@@ -37,7 +37,7 @@
 import { ProviderError, providerErrorFromThrow, throwIfAborted } from "./errors.js";
 import { withoutImages } from "./image-parts.js";
 import { mapFinishReason, mapUsage, parseToolArguments } from "./openai-compatible.js";
-import { fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
+import { FALLBACK_SCHEMAS_MIN_CONTEXT, fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
 import type { Readiness } from "./openai-compatible.js";
 import type {
   ChatChunk,
@@ -187,6 +187,16 @@ export class WebLLMProvider implements ModelProvider {
     return !supportsNativeTools(this.modelId);
   }
 
+  /**
+   * Can this row afford the raw JSON schemas? Read off its OWN `contextTokens`, not off a constant:
+   * every row this package ships says 4096, where the schema dump is most of the context, so the
+   * answer here is no — and stays no unless a caller brings a catalogue with the room.
+   */
+  private get fallbackSchemas(): boolean {
+    const row = (this.opts.catalog ?? WEBLLM_CATALOG).find((m) => m.id === this.modelId);
+    return (row?.contextTokens ?? 0) >= FALLBACK_SCHEMAS_MIN_CONTEXT;
+  }
+
   private hasWebGpu(): boolean {
     return Boolean((globalThis as { navigator?: { gpu?: unknown } }).navigator?.gpu);
   }
@@ -263,7 +273,7 @@ export class WebLLMProvider implements ModelProvider {
     if (!fallback) return messages;
     // Appended to the FIRST system turn rather than pushed as a second one: several of these models
     // only honour one system message, and the identity prompt must stay at the top of it.
-    const instruction = fallbackToolPrompt(req.tools ?? []);
+    const instruction = fallbackToolPrompt(req.tools ?? [], { schemas: this.fallbackSchemas });
     const first = messages[0];
     if (first && first.role === "system") {
       messages[0] = { ...first, content: `${String(first.content ?? "")}\n\n${instruction}` };

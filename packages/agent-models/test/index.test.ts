@@ -110,6 +110,11 @@ const EXPECTED = [
   // the shared prompt-based tool fallback and the turn formats
   "fallbackToolPrompt",
   "parseFallbackToolCalls",
+  // the compact signatures the fallback emits (2026-09-11, the 4096-token regression)
+  "toolSignature",
+  "FALLBACK_SCHEMAS_MIN_CONTEXT",
+  "FALLBACK_DESC_MAX",
+  "FALLBACK_ARGS_SHOWN",
   "GEMMA_MARKERS",
   "PROMPT_TEMPLATES",
   "PROMPT_SEGMENT_TEMPLATES",

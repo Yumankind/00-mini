@@ -24,11 +24,30 @@ export type {
   Usage,
 } from "@00/agent-models";
 
-export { createAgentRuntime, DEFAULT_MAX_STEPS, DEFAULT_WORKSPACE, OWN_TOOLS_FOOTER, providerOffersTools } from "./runtime.js";
+export {
+  createAgentRuntime,
+  contextTokensOf,
+  DEFAULT_CONTEXT_TOKENS,
+  DEFAULT_MAX_STEPS,
+  DEFAULT_WORKSPACE,
+  OWN_TOOLS_FOOTER,
+  providerOffersTools,
+  SYSTEM_PROMPT_SHARE,
+} from "./runtime.js";
 export type { AgentRuntimeOptionsExt, RuntimeExtensions } from "./runtime.js";
 
-export { ContextManager, IDENTITY_FILE_MAX_CHARS, MEMORY_INDEX_MAX_CHARS } from "./context.js";
-export type { ContextManagerOptions } from "./context.js";
+export {
+  CHARS_PER_TOKEN,
+  ContextManager,
+  estimateTokens,
+  IDENTITY_FILE_MAX_CHARS,
+  IDENTITY_TRIM_CHARS,
+  MEMORY_INDEX_MAX_CHARS,
+  MEMORY_INDEX_TRIM_LINES,
+  TRIMMABLE_IDENTITY_FILES,
+  TRIM_ORDER,
+} from "./context.js";
+export type { ContextBudget, ContextManagerOptions, TrimStage } from "./context.js";
 
 export { EventBus, EventRecorder, recordEvents } from "./events.js";
 export type { AgentEventListener, RecordedEvent } from "./events.js";

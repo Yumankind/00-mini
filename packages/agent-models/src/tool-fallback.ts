@@ -17,22 +17,90 @@ import { parseToolArguments } from "./openai-compatible.js";
 import type { ToolCall, ToolSchema } from "./types.js";
 
 /**
+ * ONE LINE PER TOOL, NOT ONE SCHEMA PER TOOL — and this is a size fix, not a style one.
+ *
+ * `JSON.stringify(t.parameters)` per tool used to be appended to every local turn. For the runtime's
+ * own default set that is 8.6 KB of JSON (~2.5k tokens by the /3.5 heuristic) in front of a model
+ * whose whole KV cache is 4096 tokens — the prompt alone overflowed the context and the brain failed
+ * on every turn, before the conversation had said a word. A signature carries what the model
+ * actually needs to emit a call (the argument NAMES, their types, which are optional) at a twentieth
+ * of the size; the prose in each argument's own `description` is what gets dropped, and a small
+ * model was not reading it anyway.
+ *
+ * The raw dump stays reachable behind `schemas: true`, for a caller whose model has the room —
+ * argument descriptions genuinely help a big model fill an awkward schema, and deleting the option
+ * would trade one wrong default for another.
+ */
+export interface FallbackToolPromptOptions {
+  /** Dump the full JSON schema per tool instead of a signature. For big-context models only. */
+  schemas?: boolean;
+}
+
+/** A row whose `contextTokens` is at least this can afford the schema dump. */
+export const FALLBACK_SCHEMAS_MIN_CONTEXT = 16384;
+/** How much of a tool's `description` survives: enough for a clause, never a paragraph. */
+export const FALLBACK_DESC_MAX = 56;
+/** Arguments named before the line ends in `…`. The rare tool with ten options does not get ten. */
+export const FALLBACK_ARGS_SHOWN = 4;
+
+/** A JSON-schema property as a type word: `string`, `number[]`, `object`, `any`. */
+function typeWord(prop: unknown): string {
+  const p = asRecord(prop);
+  if (!p) return "any";
+  const type = Array.isArray(p.type) ? p.type.filter((t) => typeof t === "string").join("|") : p.type;
+  if (typeof type !== "string" || !type) return Array.isArray(p.enum) ? "enum" : "any";
+  if (type !== "array") return type;
+  const item = asRecord(p.items);
+  return typeof item?.type === "string" ? `${item.type}[]` : "array";
+}
+
+/** First sentence, capped — the clause that says what the tool IS, with the manual left behind. */
+function shortDescription(description: string): string {
+  const flat = description.replace(/\s+/g, " ").trim();
+  const stop = flat.search(/\.(\s|$)/);
+  const first = stop === -1 ? flat : flat.slice(0, stop + 1);
+  return first.length > FALLBACK_DESC_MAX ? `${first.slice(0, FALLBACK_DESC_MAX - 1).trimEnd()}…` : first;
+}
+
+/** `name(arg: type, arg?: type) — what it is`. The whole of what a fallback model is told. */
+export function toolSignature(tool: ToolSchema): string {
+  const params = asRecord(tool.parameters);
+  const properties = asRecord(params?.properties) ?? {};
+  const required = new Set((Array.isArray(params?.required) ? params.required : []).filter((n) => typeof n === "string"));
+  const names = Object.keys(properties);
+  const shown = names
+    .slice(0, FALLBACK_ARGS_SHOWN)
+    .map((name) => `${name}${required.has(name) ? "" : "?"}: ${typeWord(properties[name])}`);
+  if (names.length > FALLBACK_ARGS_SHOWN) shown.push("…");
+  const description = shortDescription(tool.description ?? "");
+  return `${tool.name}(${shown.join(", ")})${description ? ` — ${description}` : ""}`;
+}
+
+/**
  * The instruction a model with no native tool support is given.
  *
  * Deliberately ONE shape rather than several: the parser below accepts more forms than this asks
  * for (a fenced block, a Hermes `<tool_call>` wrapper) because small models imitate whatever they
  * saw in training, but the prompt teaches exactly one so that the common case is the clean case.
  */
-export function fallbackToolPrompt(tools: ToolSchema[]): string {
-  const lines = tools.map((t) => `- ${t.name}: ${t.description}\n  arguments schema: ${JSON.stringify(t.parameters)}`);
+export function fallbackToolPrompt(tools: ToolSchema[], opts: FallbackToolPromptOptions = {}): string {
+  if (opts.schemas) {
+    return [
+      "You can use tools. To use one, reply with ONLY this JSON object and nothing else:",
+      '{"tool_call": {"name": "<tool name>", "arguments": {<arguments matching the schema>}}}',
+      "Do not explain the call, do not wrap it in prose, and call at most one tool per reply.",
+      "If no tool is needed, answer normally in plain text.",
+      "",
+      "Available tools:",
+      ...tools.map((t) => `- ${t.name}: ${t.description}\n  arguments schema: ${JSON.stringify(t.parameters)}`),
+    ].join("\n");
+  }
   return [
-    "You can use tools. To use one, reply with ONLY this JSON object and nothing else:",
-    '{"tool_call": {"name": "<tool name>", "arguments": {<arguments matching the schema>}}}',
-    "Do not explain the call, do not wrap it in prose, and call at most one tool per reply.",
-    "If no tool is needed, answer normally in plain text.",
-    "",
-    "Available tools:",
-    ...lines,
+    "To use a tool, reply with ONLY:",
+    '{"tool_call": {"name": "<name>", "arguments": {<args>}}}',
+    "One call per reply, no prose; otherwise answer in plain text.",
+    "Tools (`?` = optional, `…` = more optional args):",
+    ...tools.map(toolSignature),
   ].join("\n");
 }
 

@@ -256,6 +256,42 @@ describe("the curated catalogue", () => {
     expect(litertCatalogFor()).toHaveLength(LITERT_CATALOG.length);
   });
 
+  /**
+   * `contextTokens` is the KV-cache budget asked for at load, so the numbers are a trade and the
+   * trade is pinned: the phone rows stay small deliberately, and everything else got the room the
+   * 5.2k-token system prompt needed on 2026-09-11.
+   */
+  it("asks for 8192 tokens on the Gemma 4 and 3n rows, and keeps the phone rows at 2048", () => {
+    const byId = new Map(LITERT_CATALOG.map((m) => [m.id, m.contextTokens]));
+    expect(byId.get("gemma3-270m-it-q4_0-web")).toBe(2048);
+    expect(byId.get("gemma3-1b-it-int4-web")).toBe(2048);
+    for (const id of ["gemma-3n-E2B-it-int4-Web", "gemma-3n-E4B-it-int4-Web", "gemma-4-E2B-it-web", "gemma-4-E4B-it-web", "gemma-4-12B-it-web"]) {
+      expect(byId.get(id), id).toBe(8192);
+    }
+    // Nothing is left unsaid: a row with no budget would be loaded with MediaPipe's own default.
+    for (const model of LITERT_CATALOG) expect(typeof model.contextTokens, model.id).toBe("number");
+  });
+
+  it("hands the row's contextTokens to the task as `maxTokens` AT LOAD, and lets a caller override", async () => {
+    withWebGpu();
+    const seen: (number | undefined)[] = [];
+    const make = (over: Record<string, unknown>) =>
+      new LiteRtProvider({
+        modelBaseUrl: BASE,
+        caches: memoryCaches(),
+        fetch: assetFetch([1, 2, 3]).fetch,
+        createTask: async (options: LiteRtTaskOptions) => {
+          seen.push(options.maxTokens);
+          return mockTask(["ok"]);
+        },
+        ...over,
+      });
+    await make({ modelId: "gemma-4-E2B-it-web" }).load();
+    await make({ modelId: "gemma3-270m-it-q4_0-web" }).load();
+    await make({ modelId: "gemma-4-E2B-it-web", maxTokens: 1024 }).load();
+    expect(seen).toEqual([8192, 2048, 1024]);
+  });
+
   it("joins a host and a file name with exactly one slash, whatever the caller passed", () => {
     expect(litertAssetUrl("https://h/x/", "/a.task")).toBe("https://h/x/a.task");
     expect(litertAssetUrl("https://h/x", "a.task")).toBe("https://h/x/a.task");
@@ -515,10 +551,29 @@ describe("chat", () => {
       tools: [{ name: "ls", description: "list", parameters: { type: "object" } }],
     });
     expect(task.prompts[0]).toContain("you are 00");
-    expect(task.prompts[0]).toContain("- ls: list");
-    expect(task.prompts[0]?.indexOf("you are 00")).toBeLessThan(task.prompts[0]?.indexOf("- ls: list") ?? 0);
+    // A SIGNATURE, not the schema dump (2026-09-11): the whole instruction has to fit beside the
+    // conversation in a context this provider itself asks for at load.
+    expect(task.prompts[0]).toContain("ls() — list");
+    expect(task.prompts[0]).not.toContain("arguments schema:");
+    expect(task.prompts[0]?.indexOf("you are 00")).toBeLessThan(task.prompts[0]?.indexOf("ls() — list") ?? 0);
     expect(res.message.toolCalls).toEqual([{ id: "call_0", name: "ls", arguments: { path: "." } }]);
     expect(res.finishReason).toBe("tool_calls");
+  });
+
+  it("spends the raw schemas only on a row whose catalogue says it has the context for them", async () => {
+    withWebGpu();
+    const task = mockTask(["nothing"]);
+    const { instance } = provider(
+      {
+        modelId: "big",
+        catalog: [
+          { id: "big", label: "Big", class: "strong", local: true, supportsTools: true, contextTokens: 131072, vramMb: 1, assetFile: "big.task", family: "gemma", license: GEMMA_TERMS },
+        ],
+      },
+      task,
+    );
+    await instance.chat({ messages: [{ role: "user", content: "hi" }], tools: [{ name: "ls", description: "list", parameters: { type: "object" } }] });
+    expect(task.prompts[0]).toContain("arguments schema:");
   });
 
   it("adds a system turn when the history has none", async () => {
@@ -526,7 +581,7 @@ describe("chat", () => {
     const task = mockTask(["nothing to call"]);
     const { instance } = provider({}, task);
     await instance.chat({ messages: [{ role: "user", content: "hi" }], tools: [{ name: "ls", description: "l", parameters: {} }] });
-    expect(task.prompts[0]?.startsWith("<start_of_turn>user\nYou can use tools.")).toBe(true);
+    expect(task.prompts[0]?.startsWith("<start_of_turn>user\nTo use a tool, reply with ONLY:")).toBe(true);
   });
 
   it("cuts the answer at the turn the model wrote past its own", async () => {
@@ -935,7 +990,7 @@ describe("showing a picture to a local model", () => {
   it("keeps the tool-call instruction where it was, with the picture beside it", async () => {
     const { instance, task } = visionProvider();
     await instance.chat({ ...asked, tools: [{ name: "ls", description: "list", parameters: { type: "object" } }] });
-    expect(task.prompts[0]).toContain("- ls: list");
+    expect(task.prompts[0]).toContain("ls() — list");
     expect(task.prompts[0]).toContain("<image>");
   });
 

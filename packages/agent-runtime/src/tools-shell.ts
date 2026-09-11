@@ -62,7 +62,7 @@ export function bashTool(shell: Shell = NoShell): Tool {
     schema: {
       name: "bash",
       description:
-        "Execute a bash command in the current working directory. Returns stdout and stderr. Optionally provide a timeout in seconds.",
+        "Run a bash command. It runs in the current working directory and returns stdout and stderr; `timeout` is in seconds.",
       parameters: {
         type: "object",
         properties: {

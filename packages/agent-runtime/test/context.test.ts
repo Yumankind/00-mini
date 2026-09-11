@@ -81,7 +81,10 @@ describe("full-trust context", () => {
     // A5: the paragraph now names the ABSENCE of the tool, not what the tool would say — there is no
     // `bash` registered when there is no shell (tools.ts), and the prompt must not imply one.
     expect(none).toContain("There is no shell in this browser, and no `bash` tool.");
-    expect(none).toContain("What you have instead:");
+    // The tool NAMES are no longer repeated here — "Tools this session" lists them once (2026-09-11);
+    // what stays is the rule and the examples, and the examples are what a tight budget drops.
+    expect(none).toContain("Your file tools cover most of what a shell is reached for.");
+    expect(none).toContain("not `git` on the command line");
 
     const wasm = await new ContextManager(fullAgent(), { trust: "full", sandbox: "workspace", shell: "wasm", now }).system();
     expect(wasm).toContain("WASM shell in this tab");

@@ -66,7 +66,7 @@ export function finishOnboardingTool(opts: OnboardingToolOptions = {}): Tool {
     schema: {
       name: "finish_onboarding",
       description:
-        "Call this ONCE, at the end of first-run setup, after you have written what you learned into USER.md, SOUL.md and IDENTITY.md. It deletes BOOTSTRAP.md and marks you as set up. Nothing else ends setup — do not delete BOOTSTRAP.md by hand.",
+        "End first-run setup. Call this exactly ONCE, after you have written what you learned into USER.md, SOUL.md and IDENTITY.md: it deletes BOOTSTRAP.md and marks you as set up. Nothing else ends setup — do not delete BOOTSTRAP.md by hand.",
       parameters: { type: "object", properties: {} },
     },
     async run(_args, ctx) {

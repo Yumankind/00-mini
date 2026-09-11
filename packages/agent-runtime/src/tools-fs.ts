@@ -301,7 +301,7 @@ export function editTool(seen: SeenFiles = new SeenFiles()): Tool {
     schema: {
       name: "edit",
       description:
-        "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+        "Edit a file by exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
       parameters: {
         type: "object",
         properties: {
@@ -485,7 +485,7 @@ export function findTool(): Tool {
     tier: "safe",
     schema: {
       name: "find",
-      description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Output is truncated to ${FIND_DEFAULT_LIMIT} results or ${MAX_OUTPUT_CHARS / 1024}KB (whichever is hit first).`,
+      description: `Find files by glob pattern. Returns matching file paths relative to the search directory. Output is truncated to ${FIND_DEFAULT_LIMIT} results or ${MAX_OUTPUT_CHARS / 1024}KB (whichever is hit first).`,
       parameters: {
         type: "object",
         properties: {
@@ -577,7 +577,7 @@ export function statTool(): Tool {
     schema: {
       name: "stat",
       description:
-        "Check whether a path exists and what it is: file or directory, size in bytes, last modified time. Cheaper than reading a file you only need to know about.",
+        "Check what a path is, and whether it exists. Answers file or directory, size in bytes and last modified time — cheaper than reading a file you only need to know about.",
       parameters: { type: "object", properties: { path: pathProperty }, required: ["path"] },
     },
     async run(args, ctx) {
@@ -611,7 +611,7 @@ export function deleteTool(): Tool {
     schema: {
       name: "delete",
       description:
-        "Delete a file, or a directory and everything in it. There is no undo and no trash — deleting a directory needs `recursive: true` so it cannot happen by accident.",
+        "Delete a file or directory. A directory goes with everything in it, and there is no undo and no trash, so that needs `recursive: true` and cannot happen by accident.",
       parameters: {
         type: "object",
         properties: {
@@ -686,7 +686,7 @@ export function copyTool(): Tool {
     schema: {
       name: "copy",
       description:
-        "Copy a file, or a directory and everything in it. Fails rather than overwriting something that is already at the destination.",
+        "Copy a file or directory. A directory goes with everything in it; it fails rather than overwriting something already at the destination.",
       parameters: {
         type: "object",
         properties: { from: pathProperty, to: pathProperty },

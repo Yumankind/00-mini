@@ -21,7 +21,7 @@ export function searchWorkspaceTool(index: WorkspaceIndex): Tool {
     schema: {
       name: "search_workspace",
       description:
-        "Search everything you have written — notes, memory, projects, skills — by MEANING rather than by exact string, and get back the best passages with their file and line numbers. Use this when you remember roughly what something said; use grep when you know the exact text to look for. Then read the file for the full context.",
+        "Search what you wrote, by meaning not exact text. Notes, memory, projects and skills; you get the best passages with their file and line numbers. Use it when you remember roughly what something said, and grep when you know the exact text. Then read the file for the full context.",
       parameters: {
         type: "object",
         properties: {
