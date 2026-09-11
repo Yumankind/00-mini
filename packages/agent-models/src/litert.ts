@@ -705,6 +705,12 @@ export class LiteRtProvider implements ModelProvider {
       return { ready: false, reason: "unsupported", detail: "This browser has no WebGPU, so it cannot run a local model." };
     }
     if (this.task) return { ready: true };
+    // Bytes in hand, task not built: the runtime is compiling the model for the GPU. That is a wait
+    // a person sees (tens of seconds for a 2 GB model) and it is not "ready", whatever the cache
+    // says — before this check the chip said 100 % and sat there, which reads as stuck.
+    if (this.loading && this.progress?.phase === "load") {
+      return { ready: false, reason: "download", detail: `Loading ${this.modelId} into the GPU…`, progress: this.progress };
+    }
     if (await this.isCached()) return { ready: true };
     return {
       ready: false,
@@ -822,6 +828,15 @@ export class LiteRtProvider implements ModelProvider {
     }
     this.loading ??= (async () => {
       const modelAssetBuffer = await this.assetBytes(signal);
+      // The download is over; what follows is the compile. Say so, with the bytes as a full bar and
+      // the phase set, so a host draws "loading" rather than a download stuck at 100 %.
+      this.progress = {
+        loadedBytes: modelAssetBuffer.byteLength,
+        totalBytes: modelAssetBuffer.byteLength,
+        percent: 100,
+        phase: "load",
+      };
+      this.opts.onProgress?.({ progress: 1, loadedBytes: modelAssetBuffer.byteLength, totalBytes: modelAssetBuffer.byteLength, text: `Loading ${this.modelId} into the GPU…` });
       return this.createTask({
         modelAssetBuffer,
         wasmBaseUrl: this.wasmBaseUrl,

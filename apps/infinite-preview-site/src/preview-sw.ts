@@ -80,10 +80,26 @@ const INSPECTOR_TAG = '<script src="/__inspector.js"></' + 'script>';
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
+/**
+ * EVERY DOCUMENT THIS WORKER SERVES CARRIES THE HOST'S EMBEDDER POLICY. The bootstrap page at `/`
+ * is sent by the Worker with `Cross-Origin-Embedder-Policy: credentialless` (src/index.ts says why:
+ * the app that frames it is cross-origin isolated). A page with a COEP has a rule about what IT may
+ * frame — every nested document must carry a compatible COEP too, its own origin included — and the
+ * `#view` frame inside the bootstrap loads `/p/…` and `/s/…`, which come from HERE. Without the
+ * header on these answers the browser refuses the inner frame outright ("refused to connect",
+ * 2026-09-11, Bruno). CORP `cross-origin` beside it, so the same answers stay loadable as
+ * subresources by the app's own origin. The value MUST stay equal to `COEP` in src/index.ts.
+ */
+function embeddable(headers) {
+  headers.set("cross-origin-embedder-policy", "credentialless");
+  headers.set("cross-origin-resource-policy", "cross-origin");
+  return headers;
+}
+
 function plain(status, text) {
   return new Response(text, {
     status,
-    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }
+    headers: embeddable(new Headers({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }))
   });
 }
 
@@ -130,7 +146,7 @@ async function serveSite(route) {
   }
   const type = found.hit.headers.get("content-type") || "";
   const source = found.hit.headers.get("x-00-source");
-  const headers = new Headers(found.hit.headers);
+  const headers = embeddable(new Headers(found.hit.headers));
   headers.set("cache-control", "no-store");
   headers.delete("x-00-source");
   if (type.indexOf("html") < 0) return new Response(found.hit.body, { status: 200, headers: headers });
@@ -202,7 +218,7 @@ async function servePort(route, request) {
 
   if (!answer) return plain(504, NO_HOST);
   if (!answer.ok) return plain(500, String(answer.error || "the app could not answer"));
-  const out = new Headers(answer.response.headers || {});
+  const out = embeddable(new Headers(answer.response.headers || {}));
   out.set("cache-control", "no-store");
   const type = out.get("content-type") || "";
   const status = answer.response.status || 200;

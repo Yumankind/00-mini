@@ -393,7 +393,11 @@ describe("readiness", () => {
       createTask: async () => mockTask(["ok"]),
     });
     await again.load();
-    expect(reports).toEqual([{ progress: 1, loadedBytes: 0, text: expect.stringContaining("already on this device") }]);
+    // Two reports: the cache hit, then the compile that follows every load (phase "load", 2026-09-11).
+    expect(reports).toEqual([
+      { progress: 1, loadedBytes: 0, text: expect.stringContaining("already on this device") },
+      expect.objectContaining({ progress: 1, text: expect.stringContaining("into the GPU") }),
+    ]);
   });
 
   it("reads the whole body at once when the response has no stream to read", async () => {
@@ -1032,5 +1036,38 @@ describe("showing a picture to a local model", () => {
     await instance.chat(asked);
     expect(blobs).toEqual([{ type: "image/png", size: shot.data.length }]);
     expect((task.parts[0] as { imageSource: LiteRtImageSource }[])[1]).toEqual({ imageSource: "an-image-bitmap" });
+  });
+});
+
+describe("the load phase (2026-09-11: the compile after the download is a wait of its own)", () => {
+  it("answers 'download' with phase=load while the task is being built, then ready", async () => {
+    withWebGpu();
+    let finish: (t: unknown) => void = () => {};
+    const gate = new Promise<unknown>((resolve) => {
+      finish = resolve;
+    });
+    const seen: string[] = [];
+    const provider = new LiteRtProvider({
+      modelId: "gemma3-270m-it-q4_0-web",
+      modelBaseUrl: BASE,
+      caches: memoryCaches(),
+      fetch: assetFetch([1, 2, 3, 4]).fetch,
+      onProgress: (p) => seen.push(p.text),
+      createTask: async () => (await gate) as LiteRtTaskLike,
+    });
+    const loading = provider.load();
+    // Let the download finish and the compile begin.
+    await new Promise((r) => setTimeout(r, 10));
+    const mid = await provider.readiness();
+    expect(mid).toMatchObject({
+      ready: false,
+      reason: "download",
+      progress: { phase: "load", percent: 100, loadedBytes: 4, totalBytes: 4 },
+    });
+    expect((mid as { detail?: string }).detail).toMatch(/Loading .* into the GPU/);
+    expect(seen.at(-1)).toMatch(/Loading .* into the GPU/);
+    finish(mockTask(["ok"]));
+    await loading;
+    expect(await provider.readiness()).toEqual({ ready: true });
   });
 });

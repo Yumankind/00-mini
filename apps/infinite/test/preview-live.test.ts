@@ -511,6 +511,14 @@ describe("the preview host carries the same code this app does", () => {
    * and `vite.config.ts` in dev), so the two values have to agree, and neither file's error message
    * would ever mention the other. Hence this.
    */
+  it("stamps the same COEP on every document the service worker serves into the frame", () => {
+    // The bootstrap has a COEP, so the /p/ and /s/ pages framed inside it must carry one too, or
+    // the browser refuses the inner frame ("refused to connect", 2026-09-11).
+    const sw = read("../../infinite-preview-site/src/preview-sw.ts");
+    expect(sw).toContain('headers.set("cross-origin-embedder-policy", "credentialless")');
+    expect(sw.match(/embeddable\(/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+  });
+
   it("consents to being embedded by the isolated app, with the same COEP the app uses", () => {
     expect(read(HOST_INDEX)).toContain('const COEP = "credentialless"');
     const site = read("../../infinite-site/src/headers.ts");

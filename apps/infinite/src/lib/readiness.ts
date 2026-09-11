@@ -49,6 +49,8 @@ export function downloadPercent(readiness?: Readiness | string): number | null {
   if (typeof readiness === "object") {
     if (readiness.ready) return null;
     const p = readiness.progress;
+    // A compile has no percentage; a bar frozen at 100 while it runs is the "stuck" look.
+    if (p?.phase === "load") return null;
     if (p?.percent !== undefined) return clampPercent(p.percent);
     // Bytes with no total is an honest "we do not know how far this is": no bar, and the byte count
     // is what a card shows instead.

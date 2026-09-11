@@ -104,6 +104,12 @@ export interface ReadinessProgress {
   totalBytes?: number;
   /** 0…100, present only when it can be computed honestly. */
   percent?: number;
+  /**
+   * Which wait this is (additive, 2026-09-11). `download` is bytes arriving; `load` is the bytes in
+   * hand and the runtime compiling them for the GPU — a wait with no byte count, which used to show
+   * as a download stuck at 100 %. Absent means `download`, as every older provider meant.
+   */
+  phase?: "download" | "load";
 }
 
 export type Readiness =

@@ -162,6 +162,9 @@ export function compactBytes(progress?: { loadedBytes: number; totalBytes?: numb
  */
 export function downloadLine(name: string, readiness: Readiness): string | null {
   if (readiness.ready || readiness.reason !== "download" || !readiness.progress) return null;
+  // The bytes are here and the runtime is compiling them: a different wait, said in its own words,
+  // with no percentage (there is none to give) — Bruno saw "100 %" sit there and read it as stuck.
+  if (readiness.progress.phase === "load") return `Loading ${name} into the GPU…`;
   const parts = [`Downloading ${name}`];
   const percent = downloadPercent(readiness);
   if (percent !== null) parts.push(`${percent}%`);

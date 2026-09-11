@@ -190,3 +190,17 @@ describe("refusing to start a run, by name", () => {
     expect(noBrainReason([])).toBe("No brain is set up yet. Choose one to answer with.");
   });
 });
+
+describe("the load phase line", () => {
+  it("says loading, not a download stuck at 100 %, and draws no bar", async () => {
+    const { downloadPercent } = await import("../src/lib/readiness.js");
+    const loading = {
+      ready: false as const,
+      reason: "download" as const,
+      detail: "Loading x into the GPU…",
+      progress: { loadedBytes: 4, totalBytes: 4, percent: 100, phase: "load" as const },
+    };
+    expect(downloadLine("Gemma 4 E2B", loading)).toBe("Loading Gemma 4 E2B into the GPU…");
+    expect(downloadPercent(loading)).toBeNull();
+  });
+});
