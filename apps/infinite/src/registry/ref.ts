@@ -84,8 +84,13 @@ export function refMintedAtSeconds(ref: string): number | null {
  * own Worker site"). Hard-coding a host here would produce a snippet that works on production and
  * silently points a developer's localhost build at production too.
  */
-export function embedSnippet(ref: string, origin: string): string {
-  return `<script async src="${origin.replace(/\/+$/, "")}/e/${ref}.js"><\/script>`;
+export function embedSnippet(ref: string, origin: string, attrs: Record<string, string> = {}): string {
+  // Attribute values are base64url or a ref: no quotes can occur, and the regex below keeps it so.
+  const extra = Object.entries(attrs)
+    .filter(([k, v]) => /^[a-z][a-z-]*$/.test(k) && /^[A-Za-z0-9_.:\/-]*$/.test(v) && v.length > 0)
+    .map(([k, v]) => ` ${k}="${v}"`)
+    .join("");
+  return `<script async src="${origin.replace(/\/+$/, "")}/e/${ref}.js"${extra}><\/script>`;
 }
 
 /** Read the ref this agent already has, or mint one and remember it. Never mints twice. */

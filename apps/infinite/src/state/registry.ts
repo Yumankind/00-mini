@@ -14,6 +14,7 @@
  * how a lead is lost.
  */
 import { computed, ref, shallowRef } from "vue";
+import { encodeDataSite } from "../../embed/src/site-config.js";
 import { agent } from "./agent.js";
 import {
   createRegistryClient,
@@ -75,6 +76,22 @@ export const registryVapidKey = computed<string | null | undefined>(() => card.v
 export const snippet = computed(() =>
   refValue.value ? embedSnippet(refValue.value, typeof location === "undefined" ? "" : location.origin) : "",
 );
+
+/**
+ * The snippet READY FOR EVERYTHING (Bruno, 2026-09-11: "the embedded link should be ready to use,
+ * with all the keys"): the same tag, plus a `data-site` that carries this agent's ref and its link
+ * public key. Level 0 needs none of it — the bare tag works — but a site that later wants the
+ * router's extra power must present the link key from its own origin (§5.3), and a tag that already
+ * carries it means no second visit to copy a key. The private half never leaves this browser.
+ */
+export const readySnippet = computed(() => {
+  if (!refValue.value) return "";
+  const origin = typeof location === "undefined" ? "" : location.origin;
+  if (!linkPub.value) return embedSnippet(refValue.value, origin);
+  return embedSnippet(refValue.value, origin, {
+    "data-site": encodeDataSite({ version: 1, ref: refValue.value, linkPub: linkPub.value }),
+  });
+});
 
 function clearBanner(): void {
   failure.value = null;

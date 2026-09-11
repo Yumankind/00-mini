@@ -98,3 +98,15 @@ describe("one ref per browser", () => {
     expect(next).toBe("ia_abcdef_abcdefghijkl");
   });
 });
+
+describe("embedSnippet with attributes", () => {
+  it("adds data-* attributes and refuses anything that could break out of the quotes", async () => {
+    const { embedSnippet } = await import("../src/registry/ref.js");
+    expect(embedSnippet("ia_abc_defghijklmno", "https://x.test/", { "data-site": "eyJ2IjoxfQ" })).toBe(
+      '<script async src="https://x.test/e/ia_abc_defghijklmno.js" data-site="eyJ2IjoxfQ"><\/script>',
+    );
+    expect(embedSnippet("ia_abc_defghijklmno", "https://x.test", { 'data-x"': "a", "data-y": 'b"c', "data-z": "" })).toBe(
+      '<script async src="https://x.test/e/ia_abc_defghijklmno.js"><\/script>',
+    );
+  });
+});
