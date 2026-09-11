@@ -41,6 +41,7 @@ import { busy, listen } from "./state/conversation.js";
 import { refreshFiles, watchFileChanges } from "./state/files.js";
 import { startInstallWatch, startTheme } from "./state/install.js";
 import {
+  centrePane,
   openWorkspace,
   powerPane,
   setPower,
@@ -110,8 +111,11 @@ function bottom(id: (typeof BOTTOM)[number]["id"]): void {
     return;
   }
   pane.value = "chat";
+  // A bottom tab is a DESTINATION, not a switch: Workspace always lands on the workspace. Toggling
+  // here closed it whenever it was already open (on Files, or remembered from the last visit), and a
+  // tap on "Workspace" showed the chat — the bug Bruno hit on a phone, 2026-09-11.
   if (id === "files") openWorkspace("files");
-  else setPower(!workspaceOpen.value);
+  else openWorkspace(powerPane.value === "files" ? centrePane.value : powerPane.value);
 }
 
 function onKeydown(event: KeyboardEvent): void {

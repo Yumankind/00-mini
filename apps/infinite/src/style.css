@@ -561,3 +561,18 @@ body {
   font-size: 13px;
 }
 }
+
+/* iOS SAFARI ZOOMS A FOCUSED FIELD WHOSE FONT IS UNDER 16px — the whole page jumps in and does not
+   always come back (Bruno, on his phone, 2026-09-11). The floor is set for iOS only: the
+   `-webkit-touch-callout` property exists on no other engine, so a desk keeps the 13px fields the
+   design asks for. `!important` because the widget's `.mini-input` and the setup forms set `font:`
+   as a shorthand, and a floor that a shorthand can undo is not a floor. `maximum-scale=1` in the
+   viewport meta would be the other fix and it takes pinch-zoom away from everyone, so it is not used. */
+@supports (-webkit-touch-callout: none) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select,
+  [contenteditable="true"] {
+    font-size: 16px !important;
+  }
+}
