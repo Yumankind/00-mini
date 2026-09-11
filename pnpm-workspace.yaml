@@ -7,10 +7,10 @@ packages:
   - "!apps/infinite-preview-site"
 # `pnpm run <script>` never chains an install; installing is its own deliberate act.
 verifyDepsBeforeRun: false
+# The two native packages Transformers.js pulls in for its Node path are allowed to build, as the 00
+# repository allows them; sharp is its Node-only image path and nothing here reaches it.
 allowBuilds:
   esbuild: true
-  onnxruntime-node: set this to true or false
-  protobufjs: set this to true or false
-  sharp: false
   onnxruntime-node: true
   protobufjs: true
+  sharp: false
