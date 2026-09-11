@@ -33,6 +33,8 @@
   /* The primary button is INK ON VOID — white on black here, black on white in light — never mint. */
   --color-on-ink: var(--color-void);
   --color-glow: rgba(74, 222, 155, 0.05);
+  /* Behind the mark: a soft white halo on dark, a plain drop shadow on light — never the accent (Bruno, 2026-09-11). */
+  --face-shadow: drop-shadow(0 0 14px rgba(255, 255, 255, 0.16));
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-float: 0 12px 40px rgba(0, 0, 0, 0.45);
 
@@ -63,6 +65,7 @@
     --color-red: #d64545;
     --color-magenta: #a8368b;
     --color-glow: rgba(22, 163, 122, 0.05);
+    --face-shadow: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.22));
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06);
     --shadow-float: 0 12px 40px rgba(0, 0, 0, 0.18);
   }
@@ -84,6 +87,7 @@
   --color-red: #d64545;
   --color-magenta: #a8368b;
   --color-glow: rgba(22, 163, 122, 0.05);
+  --face-shadow: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.22));
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-float: 0 12px 40px rgba(0, 0, 0, 0.18);
 }

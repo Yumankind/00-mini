@@ -1,6 +1,9 @@
 # Infinite Agent — the browser runtime (plan, 2026-09-10)
 
-Working name: **Infinite Agent**. Tagline under test: *an AI agent that runs in your browser*. Longer
+**Product name, decided 2026-09-11: "00 Mini"** — Bruno's ruling; §12.2 is closed. "Infinite Agent"
+stays the working name of this document and of the code (`apps/infinite`, `ia_` refs, `@00/agent-*`);
+nothing a person reads says it any more. The design brief is `apps/infinite/DESIGN.md`.
+Working name: **Infinite Agent**. Tagline under test: *an AI agent you don't install*. Longer
 form: *a computer for your AI — filesystem, terminal, Git, browser and local AI, with no install, no
 account, and offline.* It connects to 0-0 Cloud (an Overblast workspace), to a sponsoredtokens account
 or app, to the 00 Mac app and to the 00 mobile app **only when a step needs them**, and never before.
@@ -233,6 +236,44 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
     Connections → Receive, where the code is already in the field. The live receive road itself is
     still the `.invalid` placeholder of item 12, so the phone lands on "not connected yet" and the
     file road is the one that works today.
+    **Done later the same morning:** `App.vue` reads `receiveRequested` after `loadMoveReceipt()` and
+    opens the Move pane.
+
+23. **The whole app was redesigned as "00 Mini"** (2026-09-11, Bruno's ask: professional, Codex-like,
+    plus a floating one-session version). Three surfaces share one look (`apps/infinite/DESIGN.md`):
+    the FULL APP at `/app` (sidebar with threads grouped by day, a centred thread with rendered
+    markdown and folded "activity" cards, a rounded composer with image attach + model chip, a
+    workspace panel for files/editor/preview/git/terminal, ⌘K palette, light and dark); the FLOATING
+    widget over the LANDING at `/` (one session, follows the scroll, expand → `/app`); and the website
+    EMBED, now pixel-identical to the widget through the import-free `src/mini/mini-css.ts` +
+    `brand.ts` (e.js 49.9 KB gz, budget 60). The landing lives INSIDE the PWA so the widget in its
+    corner is the live agent, and the agent gets five `page_*` tools over the embed's DOM bridge on `/`
+    (through the new `setExtraTools`, revision 2026-09-11 (e)) so "where do I set the vault?" scrolls
+    to `#vault`. Deployed to the dev link. Rulings taken on the way: the mark is WHITE pixels (icons,
+    brand SVG, the Vue face) and the halo behind it is white-on-dark / a plain shadow on light, never
+    mint; the Nuxt `landing/pages/infinite.vue` is now secondary to the PWA's own landing. Images on a
+    turn are written to `workspace/uploads/` and named in the message (the frozen `RunOptions.prompt`
+    has no image field; `lib/attachments.ts` says what to delete when it grows one). The setup flow of
+    the embed is being turned into a centred step-by-step modal wizard (Bruno's ask) in a follow-up.
+
+24. **Registration is for embedded 00 Minis only, and optional** (Bruno, 2026-09-11, confirming §5.3
+    and §6.2): the hosted agent at our origin never registers as an app; an embed runs on the local
+    model with nothing signed, and the owner registers the site as a sponsoredtokens frontend app only
+    when they want the router's extra power (ads / balance / their own keys, priority between local,
+    sponsored and own keys read from the app). The separate `infinite_apps` registration in the
+    moltworker module should collapse onto that app once the sponsoredtokens side (being built by
+    another agent) exposes: the app card fields a frontend caller may read (purse mode, brain
+    priority, allowance, origins, country policy, models), one register-or-link call from the site's
+    origin returning the app id and a claim nonce, and the device popup as built. Until that contract
+    exists nothing on the backend is touched.
+
+25. **The phone rows ask for 4096 tokens, not 2048.** Bruno hit the named refusal on a phone ("needs
+    about 2479 tokens; the window holds 2048") — the full agent's first turn never fit. 40–110 MB more
+    KV cache buys a brain that answers. (`packages/agent-models/src/litert.ts`, pinned in its test.)
+
+26. **The read-only proxy is live on the dev link** and answered the smoke this round: a same-origin
+    caller got 0-0.chat as HTML (200, `x-mini-final-url`, CSP sandbox), an outside caller got 403.
+    The plumbing builder's "no outbound network" was example.com failing DNS on this Mac, nothing else.
 
 **Things I did NOT do, on purpose**
 - No deploy of the landing, the site Worker, or moltworker (your call each time).

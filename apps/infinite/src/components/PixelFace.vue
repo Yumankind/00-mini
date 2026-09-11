@@ -88,7 +88,7 @@ onUnmounted(stop);
     class="pixel-face shrink-0"
     role="img"
     aria-label="00 Mini"
-    :style="glow ? { filter: 'drop-shadow(0 0 10px color-mix(in srgb, var(--color-phosphor) 30%, transparent))' } : undefined"
+    :style="glow ? { filter: 'var(--face-shadow)' } : undefined"
   >
     <rect x="0" y="0" width="8" height="8" rx="1.6" fill="#08090b" />
     <template v-for="(row, r) in grid" :key="r">
