@@ -21,6 +21,8 @@ import type { PageBridge } from "../page/bridge.js";
 import { matchLandmark, planNoBrainReply } from "./no-brain.js";
 import { renderSetup, type AdminFlow } from "./setup.js";
 import { PANEL_CSS } from "./styles.js";
+import { MINI_NAME, pixelFaceSvg } from "../../../src/mini/brand.js";
+import { renderMarkdown } from "../../../src/lib/markdown-lite.js";
 
 export interface PanelDeps {
   shadow: ShadowRoot;
@@ -128,43 +130,83 @@ export function createPanel(deps: PanelDeps): PanelHandle {
   let live: HTMLElement | null = null;
 
   deps.shadow.append(el("style", { textContent: PANEL_CSS }));
-  const wrap = el("div", { className: "wrap" });
-  const panel = el("div", { className: "panel" });
+  const wrap = el("div", { className: "mini" });
+  const panel = el("div", { className: "mini-panel" });
   panel.setAttribute("role", "dialog");
-  panel.setAttribute("aria-label", deps.config.intro.name || "Site guide");
+  panel.setAttribute("aria-label", deps.config.intro.name || MINI_NAME);
 
-  const body = el("div", { className: "body" });
-  const input = el("input", { type: "text", placeholder: brain ? "Ask about this site" : "Search this site" });
+  const body = el("div", { className: "mini-body" });
+  const input = el("input", { type: "text", className: "mini-input", placeholder: brain ? "Ask about this site" : "Search this site" });
   input.setAttribute("aria-label", "Ask about this site");
-  const form = el("form", {}, [input, el("button", { className: "send", type: "submit", textContent: "Ask" })]);
-
-  const title = el("div", {}, [
-    el("div", { className: "name", textContent: deps.config.intro.name || "Site guide" }),
-    el("div", { className: "line", textContent: deps.config.intro.line || `${deps.index.size()} pages known` }),
+  const form = el("form", { className: "mini-composer" }, [
+    input,
+    el("button", { className: "mini-send", type: "submit", textContent: "↑", title: "Ask" }),
   ]);
-  const gear = el("button", { className: "iconbtn", type: "button", textContent: "⚙", title: "Owner setup" });
-  const close = el("button", { className: "iconbtn", type: "button", textContent: "✕", title: "Close" });
-  const header = el("header", {}, [title, el("div", { className: "grow" }), gear, close]);
+
+  /** The face, drawn from the same cells as the app's logo — and it thinks while a turn is in flight. */
+  const faceHost = el("div", { className: "mini-face" });
+  const drawFace = (thinking: boolean): void => {
+    faceHost.innerHTML = pixelFaceSvg({ size: 26, frame: thinking ? "think" : "idle" });
+  };
+  drawFace(false);
+
+  const title = el("div", { className: "mini-heading" }, [
+    el("div", { className: "mini-title", textContent: deps.config.intro.name || MINI_NAME }),
+    el("div", { className: "mini-sub", textContent: deps.config.intro.line || `${deps.index.size()} pages known` }),
+  ]);
+  const gear = el("button", { className: "mini-icon", type: "button", textContent: "⚙", title: "Owner setup" });
+  const close = el("button", { className: "mini-icon", type: "button", textContent: "✕", title: "Close" });
+  // The expand button belongs to the app's own widget; on somebody else's site there is nothing to
+  // expand into, so it is absent rather than disabled (DESIGN.md: "the embed hides it").
+  const header = el("div", { className: "mini-header" }, [faceHost, title, el("div", { className: "mini-actions" }, [gear, close])]);
 
   const clear = el("button", { type: "button", textContent: "Clear memory" });
-  const sponsor = el("div", { className: "sponsor" });
-  const footer = el("footer", {}, [clear, el("span", { textContent: "· on your device only" }), sponsor]);
+  const sponsor = el("div", { className: "mini-sponsor" });
+  const footer = el("div", { className: "mini-footer" }, [clear, el("span", { textContent: "· on your device only" }), sponsor]);
 
   panel.append(header, body, form, footer);
-  const launcher = el("button", { className: "launcher", type: "button" }, [
-    el("span", { className: "dot" }),
-    el("span", { textContent: deps.config.intro.name || "Ask about this site" }),
+  const launcher = el("button", { className: "mini-launcher", type: "button" }, [
+    el("span", { className: "mini-face", innerHTML: pixelFaceSvg({ size: 22 }) }),
+    el("span", { textContent: deps.config.intro.name || MINI_NAME }),
   ]);
   wrap.append(panel, launcher);
   deps.shadow.append(wrap);
 
   // ── transcript ─────────────────────────────────────────────────────────────────────────────
+  /**
+   * AN AGENT'S ANSWER IS MARKDOWN, and it is rendered — the same renderer the full app uses
+   * (`src/lib/markdown-lite.ts`), which escapes every character of the input BEFORE any markup is
+   * added and allowlists a link's scheme. That is what makes it safe to put a model's words into a
+   * panel that is sitting on somebody else's website: nothing the model writes can become markup it
+   * did not build itself, and raw HTML in the source stays visible as text.
+   *
+   * The person's own line and a status line are plain text, and stay plain text.
+   */
+  const setText = (node: HTMLElement, text: string): void => {
+    const md = node.querySelector(".mini-md");
+    if (md) md.innerHTML = renderMarkdown(text);
+    else node.textContent = text;
+  };
+  /** What is in a row, without asking the DOM to un-render it (the markdown is one-way). */
+  const textOf = new WeakMap<HTMLElement, string>();
+
   const say = (who: "me" | "them" | "status", text: string, remember = true): HTMLElement => {
-    const node = el("div", { className: `msg ${who === "me" ? "me" : who === "status" ? "status" : ""}`, textContent: text });
+    const kind = who === "me" ? "me" : who === "status" ? "status" : "them";
+    const node = el("div", { className: `mini-row ${kind}` });
+    if (kind === "them") node.append(el("div", { className: "mini-md" }));
+    setText(node, text);
+    textOf.set(node, text);
     body.append(node);
     body.scrollTop = body.scrollHeight;
     if (remember) transcript.push({ who, text });
     return node;
+  };
+
+  /** Replace a row's words — the one path that keeps the rendered markup and the remembered text in step. */
+  const rewrite = (node: HTMLElement, text: string): void => {
+    setText(node, text);
+    textOf.set(node, text);
+    body.scrollTop = body.scrollHeight;
   };
 
   /**
@@ -176,13 +218,13 @@ export function createPanel(deps: PanelDeps): PanelHandle {
    */
   const confirmAsk = (question: string, detail?: string): Promise<boolean> =>
     new Promise<boolean>((resolve) => {
-      const box = el("div", { className: "ask" }, [el("p", { textContent: question })]);
-      if (detail) box.append(el("p", { className: "note", textContent: detail }));
+      const box = el("div", { className: "mini-ask" }, [el("p", { textContent: question })]);
+      if (detail) box.append(el("p", { className: "mini-note", textContent: detail }));
       const yes = el("button", { className: "yes", type: "button", textContent: "Send" });
       const no = el("button", { type: "button", textContent: "Not now" });
       const answer = (value: boolean): void => {
         box.replaceChildren(
-          el("p", { className: "note", textContent: value ? "Sent to the site owner." : "Nothing was sent." }),
+          el("p", { className: "mini-note", textContent: value ? "Sent to the site owner." : "Nothing was sent." }),
         );
         resolve(value);
       };
@@ -195,10 +237,11 @@ export function createPanel(deps: PanelDeps): PanelHandle {
     });
 
   const ownerMessage = (text: string): void => {
-    const node = el("div", { className: "msg owner" }, [
+    const node = el("div", { className: "mini-row owner" }, [
       el("b", { textContent: "From the site owner" }),
-      el("div", { textContent: text }),
+      el("div", { className: "mini-md" }),
     ]);
+    setText(node, text);
     body.append(node);
     body.scrollTop = body.scrollHeight;
     transcript.push({ who: "them", text: `From the site owner: ${text}` });
@@ -207,7 +250,7 @@ export function createPanel(deps: PanelDeps): PanelHandle {
 
   const suggest = (hits: { url: string; title: string; heading: string; passage: string }[]): void => {
     for (const hit of hits) {
-      const button = el("button", { className: "hit", type: "button" }, [
+      const button = el("button", { className: "mini-hit", type: "button" }, [
         el("b", { textContent: hit.title || pathOf(hit.url) }),
         el("span", { textContent: `${pathOf(hit.url)} · ${hit.heading}` }),
         el("div", { textContent: hit.passage }),
@@ -235,14 +278,17 @@ export function createPanel(deps: PanelDeps): PanelHandle {
   const answerWithBrain = async (question: string, active: Brain): Promise<void> => {
     const bubble = say("them", "…", false);
     live = bubble;
+    drawFace(true);
     try {
       const result = await active.ask(question);
-      bubble.textContent = result.text || bubble.textContent.replace(/^…$/, "I could not find that on this site.");
-      transcript.push({ who: "them", text: bubble.textContent });
+      const said = result.text || (textOf.get(bubble) === "…" ? "I could not find that on this site." : textOf.get(bubble) ?? "");
+      rewrite(bubble, said);
+      transcript.push({ who: "them", text: said });
     } catch (err) {
-      bubble.textContent = `That did not work (${String(err)}). The site search still does.`;
+      rewrite(bubble, `That did not work (${String(err)}). The site search still does.`);
     } finally {
       live = null;
+      drawFace(false);
     }
   };
 
@@ -309,13 +355,13 @@ export function createPanel(deps: PanelDeps): PanelHandle {
 
   // ── the local-AI offer: shown, never taken automatically (§5.2.3) ───────────────────────────
   if (!brain) {
-    const offer = el("div", { className: "offer" }, [
+    const offer = el("div", { className: "mini-offer" }, [
       el("p", { textContent: "Answers here come from this site's own pages. A small AI can talk them through — it downloads to this device only." }),
     ]);
     // The licence is named where the download is offered, not after it: a model's terms bind the
     // person who runs it, and Gemma's carry use restrictions they must be able to read first.
     const m = deps.localAi.model;
-    const licence = el("p", { className: "licence" }, [
+    const licence = el("p", { className: "mini-licence" }, [
       el("span", { textContent: `${m.name} · ` }),
       el("a", { href: m.licenseUrl, target: "_blank", rel: "noopener", textContent: m.licenseName }),
     ]);
@@ -325,7 +371,7 @@ export function createPanel(deps: PanelDeps): PanelHandle {
     offer.append(licence);
     // Said BEFORE the button, not after a failed download: a browser with no WebGPU may manage
     // neither of the two, and a quarter of a gigabyte is not a thing to find that out with.
-    if (deps.localAi.note) offer.append(el("p", { className: "licence", textContent: deps.localAi.note }));
+    if (deps.localAi.note) offer.append(el("p", { className: "mini-licence", textContent: deps.localAi.note }));
     const button = el("button", { type: "button", textContent: `Load local AI · ${deps.localAi.sizeMb} MB` });
     button.addEventListener("click", () => {
       button.disabled = true;
@@ -409,18 +455,26 @@ export function createPanel(deps: PanelDeps): PanelHandle {
     isOpen: () => open,
     confirm: confirmAsk,
     ownerMessage,
-    /** The runtime's events, while a turn is in flight: text streams into the waiting bubble. */
+    /**
+     * The runtime's events, while a turn is in flight: text streams into the waiting bubble.
+     *
+     * The bubble's words are read back from `textOf` rather than from the DOM, because the DOM now
+     * holds RENDERED markdown — asking an element what its text is would hand back the rendering,
+     * and appending the next token to that would slowly turn the answer into its own output.
+     */
     onAgentEvent: (event) => {
-      if (event.type === "agent_message" && live) live.textContent = event.text;
-      if (event.type === "tool_started" && live && live.textContent === "…") live.textContent = `looking (${event.name})…`;
-      if (event.type === "error" && live) live.textContent = event.message;
+      if (!live) return;
+      const soFar = textOf.get(live) ?? "";
+      if (event.type === "agent_message") rewrite(live, event.text);
+      if (event.type === "tool_started" && soFar === "…") rewrite(live, `looking (${event.name})…`);
+      if (event.type === "error") rewrite(live, event.message);
       // `agent_delta` is landing in @00/agent-runtime as this is written, and its payload may be
       // `delta` or `text`. Read through a widened view so the panel compiles and behaves both
       // before and after the union carries it: a token stream appends, a whole message replaces.
       const streaming = event as { type: string; delta?: unknown; text?: unknown };
-      if (streaming.type === "agent_delta" && live) {
+      if (streaming.type === "agent_delta") {
         const piece = typeof streaming.delta === "string" ? streaming.delta : typeof streaming.text === "string" ? streaming.text : "";
-        live.textContent = (live.textContent === "…" ? "" : (live.textContent ?? "")) + piece;
+        rewrite(live, (soFar === "…" ? "" : soFar) + piece);
       }
     },
   };
@@ -428,6 +482,6 @@ export function createPanel(deps: PanelDeps): PanelHandle {
 
 /** The sponsor-footer slot: the provider's `footer` is shown, never fed back to a model. */
 export function setSponsorFooter(shadow: ShadowRoot, text: string): void {
-  const slot = shadow.querySelector(".sponsor");
+  const slot = shadow.querySelector(".mini-sponsor");
   if (slot) slot.textContent = text.slice(0, 120);
 }
