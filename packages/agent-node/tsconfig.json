@@ -10,6 +10,10 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": true,
+    // For test/sync-fs-worker.ts only: that file is loaded by Node ITSELF (type stripping) inside a
+    // real worker_threads Worker, with no bundler in front of it, so its one import has to name the
+    // .ts file. Nothing under src/ uses a .ts specifier; noEmit makes the flag safe.
+    "allowImportingTsExtensions": true,
     "types": []
   },
   "include": ["src", "test"]
