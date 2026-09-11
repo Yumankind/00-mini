@@ -6,7 +6,9 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
@@ -15,6 +17,7 @@
     "@00/agent-fs": "workspace:*",
     "@00/shared": "workspace:*",
     "buffer": "^6.0.3",
+    "esbuild-wasm": "0.25.9",
     "events": "^3.3.0",
     "path-browserify": "^1.0.1",
     "readable-stream": "^4.7.0",
