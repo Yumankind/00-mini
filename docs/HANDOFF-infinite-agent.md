@@ -141,6 +141,27 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
     load for the desktop rows; a fresh agent's prompt plus tool block went from 4060 to 1718 tokens;
     verified live on the dev link, which now streams a truthful answer from Gemma 4 E2B under the
     isolation headers), and the browser pane blocks service-worker registration (the app's own too).
+24. **The embed is a light core and three lazy modules** (2026-09-11, Bruno: "the embedded agent
+    doesn't need these extra things like git, ts, etc — make it more light"): `e.js` was 167.7 KB raw
+    / 56.7 KB gz and carried @00/agent-runtime, @00/agent-fs (git-ops, OPFS, node-dir, transfer
+    crypto), @00/shared, @00/agent-models' router, the owner's setup wizard, the registry client and
+    the markdown highlighter — none of which a visitor at level 0 can reach. It is now **84.8 KB raw
+    / 29.1 KB gz** (−49%), and a level-0 visitor downloads that ONE file and nothing else: search the
+    site, open a page, have a control outlined, with no `/m/` request at all. Three modules sit behind
+    a person's press, each fetched from the product host by computed URL and served with the CORP
+    header `/m/*` already carries: `m/brain.js` (33.1 KB gz — the agent loop and the local model pair,
+    was `m/m.js`) on "Load local AI"; `m/setup.js` (10.2 KB gz — the wizard) on the gear;
+    `m/registry.js` (6.0 KB gz — the client, the ed25519 device key, the bundle reader) on the first
+    call that genuinely needs the registry. What stayed in the loader is what level 0 reads without a
+    network: the persisted registry record, the cached public bundle (carrier 1) and the claim link.
+    The panel shows a line while a module comes and a plain sentence if it does not. Proven live on a
+    static site: `e/…js` alone on load, `m/setup.js` only on the gear, `m/brain.js` only on the
+    button. `test/embed/bundle-budget.test.ts` walks the import graph from `loader.ts` and fails on a
+    value import of any of the four packages; the source map of the built file agrees (no `packages/`
+    source). Two smaller cuts came with it: `renderMarkdown` takes its highlighter as an option so the
+    embed's `renderMarkdownPlain` drops the 9 KB tokeniser (every app caller unchanged), and the embed
+    build minifies `mini-css.ts`'s string with esbuild's CSS minifier (6.3 → 4.7 KB gz; the file on
+    disk keeps its comments).
 20. **An overflowing turn is refused by name** (2026-09-11): the engines' "too long" sentences map
     to one `context_overflow` code with the numbers; the loop drops the older turns once and asks the
     same brain again before showing the sentence; a raw engine trace can no longer reach the chat.
@@ -1220,7 +1241,8 @@ subscription.
   packages/agent-fs/         OPFS adapter + in-memory adapter for tests; isomorphic-git backend
   packages/agent-models/     ModelProvider + WebLLM / OpenAI-compatible providers
   apps/infinite/             the PWA (Vue 3, shares @00/shared and chosen web-vue components)
-  apps/infinite/embed/       the loader + panel, one bundle, no framework, < 60 KB gz
+  apps/infinite/embed/       the loader + panel, no framework: e.js < 60 KB gz (29.1 today) plus
+                             m/{brain,setup,registry}.js, fetched only when a person asks (item 24)
   apps/infinite-site/        the static Worker site that serves both (skills-site pattern, plain npm,
                              outside the pnpm workspace); no bindings until Phase 3
   apps/00d/src/bundle-routes.ts   + POST /api/agents/import-bundle

@@ -23,7 +23,7 @@ const FILES: Record<string, { body: string; type: string }> = {
   "/": { body: "<!doctype html><title>Infinite Agent</title>", type: "text/html; charset=utf-8" },
   "/sw.js": { body: "self.addEventListener('fetch', () => {});", type: "text/javascript" },
   "/e.js": { body: "(function(){})();", type: "text/javascript" },
-  "/m/m.js": { body: "export const load = () => {};", type: "text/javascript" },
+  "/m/brain.js": { body: "export const load = () => {};", type: "text/javascript" },
   "/assets/index-abc123.js": { body: "console.log(1)", type: "text/javascript" },
   "/manifest.webmanifest": { body: "{}", type: "application/manifest+json" },
 };
@@ -104,7 +104,7 @@ describe("the cross-origin decision", () => {
     expect(kindFor("/assets/index-abc123.js")).toBe("asset");
     expect(kindFor("/manifest.webmanifest")).toBe("asset");
     expect(kindFor("/e/ia_test_abcdefgh.js")).toBe("embed");
-    expect(kindFor("/m/m.js")).toBe("embed");
+    expect(kindFor("/m/brain.js")).toBe("embed");
     expect(kindFor("/mediapipe/genai/wasm/genai_wasm_internal.wasm")).toBe("mirror");
     expect(kindFor("/litert/catalog.json")).toBe("mirror");
     expect(kindFor("/~/3000/")).toBe("served");
@@ -138,7 +138,7 @@ describe("the site Worker's responses", () => {
   });
 
   it("leaves the loader's model chunk loadable too, since the loader is what imports it", async () => {
-    const response = await get("/m/m.js");
+    const response = await get("/m/brain.js");
     expect(policy(response)).toEqual({ coop: null, coep: null, corp: "cross-origin" });
   });
 

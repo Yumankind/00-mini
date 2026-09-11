@@ -30,10 +30,12 @@ fi
 echo "→ building the embed (apps/infinite → dist/embed/e.js)"
 (cd "$app" && npx vite build --config vite.embed.config.ts)
 
-# The optional local model, its own bundle because it carries the WebGPU runtime (megabytes). The
-# loader fetches it ONLY when a visitor presses "Load local AI", so it never costs a page load.
-echo "→ building the local-model module (apps/infinite → dist/embed/m/)"
-(cd "$app" && npx vite build --config embed/vite.model.config.ts)
+# The three lazy modules, each its own bundle and none of them in e.js: the brain (the agent loop and
+# the WebGPU model pair, megabytes), the owner's setup wizard, and the registry client. The loader
+# fetches one ONLY when a person asks for it — "Load local AI", the gear, the first message to the
+# owner — so none of them costs a page load. AFTER the embed build, which empties dist/embed.
+echo "→ building the lazy modules (apps/infinite → dist/embed/m/)"
+(cd "$app" && npx vite build --config embed/vite.modules.config.ts)
 
 mkdir -p "$public"
 # public/ is entirely generated. Clearing it keeps a file deleted upstream from living on here.
@@ -57,5 +59,11 @@ echo "public/ now holds:"
 ls -la "$public"
 echo
 echo "the loader is $(wc -c < "$public/e.js" | tr -d ' ') bytes, $(gzip -9 -c "$public/e.js" | wc -c | tr -d ' ') gzipped"
+echo "that is what a level-0 visitor downloads. The lazy modules under m/ are fetched only when"
+echo "somebody asks for one (a brain, the gear, the registry):"
+for m in "$public"/m/*.js; do
+  [ -f "$m" ] || continue
+  echo "  m/$(basename "$m") — $(wc -c < "$m" | tr -d ' ') bytes, $(gzip -9 -c "$m" | wc -c | tr -d ' ') gzipped"
+done
 echo "mediapipe/ and litert/ are NOT here: the Worker serves them from R2 (00-downloads) at"
 echo "  /mediapipe/genai/wasm/*  and  /litert/*  — see src/index.ts and README.md"

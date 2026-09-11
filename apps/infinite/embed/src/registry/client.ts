@@ -32,6 +32,7 @@
 import type { Store } from "../index/store.js";
 import { infiniteApiBase } from "./api-base.js";
 import { EMPTY_BUNDLE, parsePublicBundle, type PublicBundle } from "./bundle.js";
+import { bundleKey, claimUrlFor, readCachedBundle, type CachedBundle } from "./local.js";
 import { devicePublicJwk, ensureDeviceKey, signedHeaders } from "./device.js";
 import {
   createRegistryState,
@@ -210,6 +211,12 @@ export interface ClientOptions {
   linkPub: () => string | null;
   base?: string;
   nowMs?: () => number;
+  /**
+   * The state store the caller has already read (`registry/gate.ts` holds one, because the loader
+   * reads this browser's record at level 0 without ever fetching this module). Absent ⇒ one is made
+   * here, which is what a test that builds the client directly does.
+   */
+  state?: RegistryStateStore;
 }
 
 export interface RegistryClient {
@@ -232,14 +239,11 @@ export interface RegistryClient {
   claimUrl(productOrigin: string): string | null;
 }
 
-export interface CachedBundle {
-  etag: string | null;
-  siteFile: unknown | null;
-  files: Record<string, string>;
-  at: number;
-}
-
-const bundleKey = (origin: string, ref: string): string => `registry:bundle:${origin}:${ref}`;
+/**
+ * Re-exported, not re-declared: the shape and its key live in `local.ts`, which stays in the loader
+ * because reading the copy this browser already holds is carrier 1 of §5.1 and not a call at all.
+ */
+export type { CachedBundle };
 
 interface Answer {
   status: number;
@@ -250,7 +254,8 @@ interface Answer {
 export function createRegistryClient(opts: ClientOptions): RegistryClient {
   const base = (opts.base ?? infiniteApiBase()).replace(/\/+$/, "");
   const now = opts.nowMs ?? Date.now;
-  const state: RegistryStateStore = createRegistryState({ store: opts.store, origin: opts.origin, ref: opts.ref });
+  const state: RegistryStateStore =
+    opts.state ?? createRegistryState({ store: opts.store, origin: opts.origin, ref: opts.ref });
   /** Set once a conditional GET has been refused by CORS preflight — see `getPublicBundle`. */
   let conditionalGetWorks = true;
 
@@ -643,12 +648,7 @@ export function createRegistryClient(opts: ClientOptions): RegistryClient {
 
   // ── §5.5 the public bundle ────────────────────────────────────────────────────────────────────
 
-  const cachedBundle = async (): Promise<CachedBundle | null> => {
-    const held = await opts.store.get<CachedBundle>(bundleKey(opts.origin, opts.ref));
-    if (!held || typeof held !== "object") return null;
-    const files = held.files && typeof held.files === "object" ? held.files : {};
-    return { etag: typeof held.etag === "string" ? held.etag : null, siteFile: held.siteFile ?? null, files, at: held.at ?? 0 };
-  };
+  const cachedBundle = (): Promise<CachedBundle | null> => readCachedBundle(opts.store, opts.origin, opts.ref);
 
   /**
    * Fetch it, conditionally, and keep the copy.
@@ -739,17 +739,8 @@ export function createRegistryClient(opts: ClientOptions): RegistryClient {
     pollMessages,
     getPublicBundle,
     cachedBundle,
-    claimUrl(productOrigin: string): string | null {
-      const known = state.current();
-      if (!known.appId || !known.claimNonce) return null;
-      const url = new URL("/", productOrigin);
-      url.searchParams.set("claim", known.appId);
-      url.searchParams.set("nonce", known.claimNonce);
-      // The REGISTRATION origin when the worker has named it, this page's origin only as a last
-      // resort: the claim signature is over `appId‖origin‖nonce`, and an allowed-but-different host
-      // (`www.` of the registered one) signing its own address would sign a string nobody holds.
-      url.searchParams.set("origin", known.claimOrigin ?? opts.origin);
-      return url.toString();
-    },
+    // The REGISTRATION origin when the worker has named it, this page's origin only as a last
+    // resort — `local.ts` holds the rule, because the loader can build this link without this file.
+    claimUrl: (productOrigin: string) => claimUrlFor(state.current(), opts.origin, productOrigin),
   };
 }

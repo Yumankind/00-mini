@@ -17,7 +17,7 @@
  * a button and a background read of the site's own pages.
  */
 
-import { createBrain, loadLocalProvider, type Brain } from "./brain.js";
+import { loadBrainModule, loadLocalProvider, type Brain } from "./brain.js";
 import { CRAWL_DEFAULTS, Crawler, type CrawlProgress } from "./crawl/crawler.js";
 import { createDomExtractor } from "./crawl/extract.js";
 import { SiteIndex } from "./index/site-index.js";
@@ -28,8 +28,9 @@ import { localAiOffer, type LocalAiOffer } from "./local-ai.js";
 import { createDomBridge } from "./page/dom-bridge.js";
 import { createSessionHost, currentAuthState, watchSession } from "./page/session-host.js";
 import { createPanel, park, readParked, setSponsorFooter, type PanelHandle } from "./panel/panel.js";
-import { createRegistryClient } from "./registry/client.js";
+import { createRegistryGate } from "./registry/gate.js";
 import { createOwnerOutbox } from "./registry/send.js";
+import { BRAIN_MODULE } from "./modules.js";
 import { pollerFor } from "./registry/poll.js";
 import {
   decodeDataSite,
@@ -53,8 +54,13 @@ export const LOCAL_AI_OFFER: LocalAiOffer = localAiOffer();
 export const LOCAL_AI_MB = LOCAL_AI_OFFER.sizeMb;
 /** What that number buys, and under whose terms. Named beside the button, before any download. */
 export const LOCAL_AI_MODEL = LOCAL_AI_OFFER.model;
-/** Built by `embed/vite.model.config.ts`, served next to the loader, fetched only when asked for. */
-export const LOCAL_MODEL_MODULE = "/m/m.js";
+/**
+ * The brain module — built by `embed/vite.modules.config.ts`, served next to the loader, fetched
+ * only when asked for. It was `m/m.js` and carried the model alone; it carries the agent loop too
+ * now, because nothing ever wants one without the other. `embed/src/modules.ts` holds the three
+ * names and the one mechanism; this re-export is here because the tests and the panel read it here.
+ */
+export const LOCAL_MODEL_MODULE = BRAIN_MODULE;
 const WELL_KNOWN = "/.well-known/infinite-agent.json";
 
 interface CachedSiteFile {
@@ -137,15 +143,18 @@ export async function start(): Promise<EmbedHandle | null> {
   const fetchImpl = fetch.bind(globalThis);
   const store = createIdbStore();
 
-  // ── the registry, built but not called (§9.1) ─────────────────────────────────────────────
-  // Constructing this costs nothing and reaches nothing. `load()` and `cachedBundle()` read the
-  // browser's own IndexedDB — the same store the site index lives in — so a first visit to a site
-  // whose owner never registered makes no call to us at all, which is level 0's whole promise.
-  const registry = createRegistryClient({
+  // ── the registry, neither called NOR FETCHED (§9.1) ───────────────────────────────────────
+  // The gate costs nothing and reaches nothing: `load()` and `cachedBundle()` read the browser's own
+  // IndexedDB — the same store the site index lives in — so a first visit to a site whose owner
+  // never registered makes no call to us at all, which is level 0's whole promise. The CLIENT (the
+  // calls, the device key, the bundle reader) is `m/registry.js`, and the gate fetches it on the
+  // first call that genuinely needs the network. A site with no registry never asks for it.
+  const registry = createRegistryGate({
     origin,
     ref,
     store,
     fetchImpl,
+    productHost,
     linkPub: () => config.linkPub ?? null,
   });
   const known = await registry.load();
@@ -308,10 +317,14 @@ export async function start(): Promise<EmbedHandle | null> {
   const makeBrain = async (
     onProgress: (line: string) => void,
   ): Promise<{ brain: Brain; model: { name: string } } | null> => {
-    const picked = await loadLocalProvider(new URL(LOCAL_MODEL_MODULE, productHost).toString(), onProgress);
+    const picked = await loadLocalProvider(productHost, onProgress);
     if (!picked) return null;
+    // The loop lives in the same module as the providers, so this is already in this browser by the
+    // time the pick came back — one fetch, cached in `modules.ts`, not two.
+    const mod = await loadBrainModule(productHost, onProgress);
+    if (!mod) return null;
     const { provider, offer } = picked;
-    const brain = createBrain({
+    const brain = mod.createBrain({
       provider,
       tools,
       systemContext,

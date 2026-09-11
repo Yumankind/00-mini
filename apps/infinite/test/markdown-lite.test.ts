@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { blocksOf, escapeHtml, imageSrc, listItems, renderInline, renderMarkdown, safeHref } from "../src/lib/markdown-lite.js";
+import {
+  blocksOf,
+  escapeHtml,
+  imageSrc,
+  listItems,
+  renderInline,
+  renderMarkdown,
+  renderMarkdownPlain,
+  safeHref,
+} from "../src/lib/markdown-lite.js";
 import { highlight, normalizeLang } from "../src/lib/highlight.js";
 
 /**
@@ -160,5 +169,44 @@ describe("the fenced block's highlighter", () => {
   it("does not let one stray quote paint the rest of the block", () => {
     const html = highlight("it's fine\nconst a = 1;", "js");
     expect(html).toContain('<span class="tok-k">const</span>');
+  });
+});
+
+/**
+ * The highlighter is a PARAMETER now (2026-09-11), and the reason is the embed: `e.js` is one script
+ * on a stranger's website with a 60 KB budget (§10), and `lib/highlight.ts` is 9 KB of tokeniser for
+ * something a site guide's answers about a returns policy never contain. The app's own callers are
+ * untouched — `renderMarkdown` still colours — and the embed calls the plain one, which is what lets
+ * the bundler drop the tokeniser as dead code (test/embed/bundle-budget.test.ts).
+ */
+describe("who colours a fenced block", () => {
+  const fence = "```js\nconst a = 1;\n```";
+
+  it("colours by default, so every existing caller renders exactly as it did", () => {
+    expect(renderMarkdown(fence)).toContain('<span class="tok-k">const</span>');
+  });
+
+  it("takes one the caller hands in", () => {
+    const html = renderMarkdown(fence, { highlight: (code, lang) => `[${lang}]${escapeHtml(code)}` });
+    expect(html).toContain("[js]const a = 1;");
+    expect(html).not.toContain("tok-k");
+  });
+
+  it("escapes and nothing else when there is none — the embed's path", () => {
+    const html = renderMarkdownPlain(fence);
+    expect(html).toContain('<div class="md-code" data-lang="js">');
+    expect(html).toContain("<code>const a = 1;</code>");
+    expect(html).not.toContain("tok-k");
+  });
+
+  it("still escapes every character of a plain block, markup included", () => {
+    const html = renderMarkdownPlain("```\n</code></pre><script>x</script>\n```");
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("renders everything else identically, nested blocks included", () => {
+    const source = "> a note\n> - with a list\n\n| a | b |\n| :-- | --: |\n| 1 | 2 |\n";
+    expect(renderMarkdownPlain(source)).toBe(renderMarkdown(source));
   });
 });

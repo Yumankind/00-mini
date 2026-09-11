@@ -99,9 +99,14 @@ export function createReplyPoller(opts: PollerOptions): ReplyPoller {
   };
 }
 
-/** Convenience: the poller a panel wants, reading this browser's own device conversation. */
+/**
+ * Convenience: the poller a panel wants, reading this browser's own device conversation.
+ *
+ * Takes the one METHOD and not the whole client, so the loader can hand it `registry/gate.ts` — the
+ * client itself is `m/registry.js` and is not in this browser yet when the panel is built.
+ */
 export function pollerFor(
-  client: RegistryClient,
+  client: Pick<RegistryClient, "pollMessages">,
   onReply: (message: VisitorMessage) => void,
   extra: Partial<PollerOptions> = {},
 ): ReplyPoller {

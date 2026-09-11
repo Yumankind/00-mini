@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { WEBLLM_CATALOG, WEBLLM_DEFAULT_MODEL_ID } from "@00/agent-models";
 import type { ChatChunk, ChatRequest, ChatResponse, ModelProvider } from "@00/agent-models";
 import type { Tool } from "@00/agent-runtime";
-import { createBrain, hasModelProvider, loadLocalProvider, useModelProvider } from "../../embed/src/brain.js";
+import { hasModelProvider, loadLocalProvider, useModelProvider } from "../../embed/src/brain.js";
+// `createBrain` is NOT in the loader any more: it lives in the module `m/brain.js` carries, which is
+// what keeps @00/agent-runtime and @00/agent-fs out of `e.js` (see embed/src/brain.ts's header).
+import { createBrain } from "../../embed/src/brain-impl.js";
 import { LOCAL_AI_MB, LOCAL_AI_MODEL, LOCAL_AI_OFFER, LOCAL_MODEL_MODULE } from "../../embed/src/loader.js";
 
 /** A provider that answers from a script, and keeps every request so the prompt can be inspected. */
@@ -100,7 +103,8 @@ describe("the local model is never in the loader", () => {
 
   it("answers null rather than throwing when the model module will not load", async () => {
     const lines: string[] = [];
-    expect(await loadLocalProvider("https://nowhere.invalid/m/m.js", (l) => lines.push(l))).toBeNull();
+    // The PRODUCT HOST now, not a module URL: `modules.ts` owns the three paths under it.
+    expect(await loadLocalProvider("https://nowhere.invalid", (l) => lines.push(l))).toBeNull();
     expect(lines.join(" ")).toContain("did not load");
   });
 
@@ -114,6 +118,6 @@ describe("the local model is never in the loader", () => {
     expect(LOCAL_AI_OFFER.provider).toBe("webllm");
     expect(LOCAL_AI_MB).toBe(model!.vramMb);
     expect(LOCAL_AI_MODEL.name).toBe(model!.label);
-    expect(LOCAL_MODEL_MODULE).toBe("/m/m.js");
+    expect(LOCAL_MODEL_MODULE).toBe("/m/brain.js");
   });
 });

@@ -1,85 +1,32 @@
 /**
- * The optional brain: the real `@00/agent-runtime` loop, and the local model that is never loaded
- * until a visitor asks for it (§5.2.3).
+ * THE SEAM THE BRAIN IS BEHIND — and the reason `e.js` has no agent runtime in it (§5.2.3, §10).
  *
- * WHY the model lives behind a URL and not behind an import: `@00/agent-models`' local providers
- * pull `@mlc-ai/web-llm` (2.1 MB gzipped, measured) and `@mediapipe/tasks-genai` with them. The
- * loader's whole budget is 60 KB (§10) and level 0 must work with NO model at all, so the loader
- * imports the RUNTIME (9.6 KB gz, measured) and reaches the model only through
- * `embed/src/model-entry.ts`, built separately by `embed/vite.model.config.ts` into `m/m.js`. A
- * site nobody asks a model for never fetches a byte of it. Everything else here is the real thing:
+ * This file used to BE the brain: it imported `@00/agent-runtime`, `@00/agent-fs` and the local
+ * model pair, and every page load of every site running the embed paid for all three. Measured on
+ * 2026-09-11, that was the runtime's loop, its prompt text, its context builder, its sessions, its
+ * vault and its permissions, plus agent-fs' git-ops, OPFS and node-dir adapters — in a script whose
+ * budget is 60 KB gz and whose level-0 job is a site search (§5.2).
  *
- *   `createAgentRuntime`  — @00/agent-runtime, `trust: "light"` (read-only public knowledge, its own
- *                           thread sandbox, no shell, no secrets — ruling 2 of §0)
- *   `MemoryFs`            — @00/agent-fs, in memory ON PURPOSE: the light agent's thread folder on a
- *                           stranger's website must not outlive the tab, so its sessions, its
- *                           permissions and anything it writes die with the visit.
- *   the local pair        — @00/agent-models, through the module above: LiteRT's Gemma 3 270m from
- *                           the §12.7 mirror, and web-llm's Llama 3.2 1B behind it.
+ * So the implementation moved to `brain-impl.ts`, which is bundled into `m/brain.js`
+ * (`embed/vite.modules.config.ts`) together with the local providers, and THIS file is what stays
+ * in the loader: the types, the injected-provider seam, and two functions that fetch that module
+ * the moment a person asks for a brain and not one instant before.
  *
- * The one thing still injectable is the provider (`useModelProvider`), so the PWA — which does
- * bundle the models package — and the tests can hand one in without the URL dance.
+ * WHAT IS LEFT HERE MAY ONLY EVER BE `import type`. `test/embed/bundle-budget.test.ts` walks the
+ * import graph from `loader.ts` and fails if a VALUE import of @00/agent-runtime, @00/agent-fs,
+ * @00/agent-models or @00/shared can be reached from it. That test is the pin; this paragraph is
+ * the reason.
  */
 
-import { createAgentRuntime, type AgentEvent, type PermissionDecision, type RunResult, type Tool } from "@00/agent-runtime";
-import { MemoryFs } from "@00/agent-fs";
+import type { AgentEvent, PermissionDecision, RunResult, Tool } from "@00/agent-runtime";
 import type { ModelProvider } from "@00/agent-models";
+import { BRAIN_MODULE, loadModule } from "./modules.js";
 import { localAiOffer, type LocalAiOffer } from "./local-ai.js";
-
-/** The shape `m/m.js` exposes. Named here so the dynamic import is typed rather than `any`. */
-export interface LocalModelModule {
-  pickLocalProvider(options: {
-    onProgress?: (line: string) => void;
-  }): Promise<{ provider: ModelProvider; providerId: string; offer: LocalAiOffer } | null>;
-}
 
 /** What came up, and which row describes it — the panel relabels itself from this. */
 export interface LocalPick {
   provider: ModelProvider;
   offer: LocalAiOffer;
-}
-
-export type ProviderFactory = () => ModelProvider;
-
-let providerFactory: ProviderFactory | null = null;
-
-/** Hand in a provider directly (the PWA bundles one; a test fakes one). */
-export function useModelProvider(factory: ProviderFactory | null): void {
-  providerFactory = factory;
-}
-
-export function hasModelProvider(): boolean {
-  return providerFactory != null;
-}
-
-/**
- * The "Load local AI" path, and the ONLY place the model module is fetched.
- *
- * The module walks the pair (LiteRT, then WebLLM) and hands back whichever came up, so what
- * returns here carries the row that describes what was actually downloaded — which is not always
- * the row the button promised, and the panel says so rather than leaving the wrong label up.
- * `null` means neither could run: the panel then stays a site search, which is a working product
- * at level 0, not an error state.
- */
-export async function loadLocalProvider(
-  moduleUrl: string,
-  onProgress?: (line: string) => void,
-): Promise<LocalPick | null> {
-  if (providerFactory) return { provider: providerFactory(), offer: localAiOffer() };
-  try {
-    // A computed specifier on purpose: the bundler must NOT resolve this, or the loader inherits
-    // the whole WebGPU runtime it exists to avoid.
-    const mod = (await import(/* @vite-ignore */ moduleUrl)) as LocalModelModule;
-    const picked = await mod.pickLocalProvider({ ...(onProgress ? { onProgress } : {}) });
-    if (!picked) {
-      onProgress?.("This browser cannot run a local model.");
-      return null;
-    }
-    return { provider: picked.provider, offer: picked.offer };
-  } catch (err) {
-    onProgress?.(`The local model did not load (${String(err)}).`);
-    return null;
-  }
 }
 
 export interface BrainOptions {
@@ -99,46 +46,69 @@ export interface Brain {
   abort(): void;
 }
 
-export function createBrain(opts: BrainOptions): Brain {
-  // Mutable, and read on every run: the runtime spreads `opts.context` per run, so the site map the
-  // agent sees is the one the crawl has reached by then, not the one it had when the panel opened.
-  const context: { extra: string; light: { channel: string; from: string } } = {
-    extra: opts.systemContext(),
-    light: { channel: "this website", from: "a visitor to this website" },
-  };
-
-  const runtime = createAgentRuntime({
-    // In memory: nothing the light agent writes on somebody else's website survives the tab.
-    fs: new MemoryFs(),
-    providers: [opts.provider],
-    tools: opts.tools,
-    askPermission: (req) => opts.askPermission(req),
-    trust: "light",
-    origin: opts.origin,
-    /** The light agent's sandbox is its own thread folder, never a workspace (§0, ruling 2). */
-    workspace: "threads/embed",
-    context,
-  });
-  runtime.on(opts.onEvent);
-
-  return {
-    async readiness() {
-      try {
-        const r = await opts.provider.readiness();
-        return r.ready ? { ready: true } : { ready: false, reason: r.reason, ...(r.detail ? { detail: r.detail } : {}) };
-      } catch (err) {
-        return { ready: false, reason: "unsupported", detail: String(err) };
-      }
-    },
-    ask(prompt, signal) {
-      context.extra = opts.systemContext();
-      return runtime.run(signal ? { prompt, signal } : { prompt });
-    },
-    abort: () => runtime.abort(),
-  };
+/** The shape `m/brain.js` exposes. Named here so the dynamic import is typed rather than `any`. */
+export interface BrainModule {
+  createBrain(opts: BrainOptions): Brain;
+  pickLocalProvider(options: {
+    onProgress?: (line: string) => void;
+  }): Promise<{ provider: ModelProvider; providerId: string; offer: LocalAiOffer } | null>;
 }
 
-/** A thread-scoped, in-memory filesystem for tools the panel runs itself, outside a model turn. */
-export function threadFs(): MemoryFs {
-  return new MemoryFs();
+export type ProviderFactory = () => ModelProvider;
+
+let providerFactory: ProviderFactory | null = null;
+
+/** Hand in a provider directly (the PWA bundles one; a test fakes one). */
+export function useModelProvider(factory: ProviderFactory | null): void {
+  providerFactory = factory;
+}
+
+export function hasModelProvider(): boolean {
+  return providerFactory != null;
+}
+
+/**
+ * Fetch `m/brain.js` — the agent loop, the in-memory thread filesystem and the local providers.
+ *
+ * Called from exactly two places, both of them a person asking for a brain: the panel's
+ * "Load local AI" button, and a site whose owner configured one. `null` with a sentence is the
+ * answer when it cannot be had; the panel stays a site search, which is a working product.
+ */
+export function loadBrainModule(
+  productHost: string,
+  onError?: (message: string) => void,
+): Promise<BrainModule | null> {
+  return loadModule<BrainModule>(productHost, BRAIN_MODULE, onError);
+}
+
+/**
+ * The "Load local AI" path.
+ *
+ * The module walks the pair (LiteRT, then WebLLM) and hands back whichever came up, so what returns
+ * here carries the row that describes what was actually downloaded — which is not always the row the
+ * button promised, and the panel says so rather than leaving the wrong label up. `null` means
+ * neither could run.
+ *
+ * An INJECTED provider short-circuits the walk but not the module: the loop itself lives in
+ * `m/brain.js` too, so `createBrain` still needs it. That is the PWA's and the tests' path, and
+ * both of those import `brain-impl.ts` directly rather than over a URL.
+ */
+export async function loadLocalProvider(
+  productHost: string,
+  onProgress?: (line: string) => void,
+): Promise<LocalPick | null> {
+  if (providerFactory) return { provider: providerFactory(), offer: localAiOffer() };
+  const mod = await loadBrainModule(productHost, (message) => onProgress?.(message));
+  if (!mod) return null;
+  try {
+    const picked = await mod.pickLocalProvider({ ...(onProgress ? { onProgress } : {}) });
+    if (!picked) {
+      onProgress?.("This browser cannot run a local model.");
+      return null;
+    }
+    return { provider: picked.provider, offer: picked.offer };
+  } catch (err) {
+    onProgress?.(`The local model did not load (${String(err)}).`);
+    return null;
+  }
 }

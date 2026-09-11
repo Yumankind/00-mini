@@ -18,8 +18,19 @@
  * WHAT IT DOES NOT DO ITSELF. The copy button in a fenced block's header is emitted here but WIRED
  * by the component, through one delegated listener: a renderer that returned live handlers would be
  * a renderer that had to be trusted with the document, and this one only ever returns a string.
+ *
+ * AND THE COLOURING IS NOW A PARAMETER (2026-09-11). `renderMarkdown` still colours fenced code with
+ * `lib/highlight.ts` and every caller in the app is unchanged; `renderMarkdownPlain` renders the same
+ * markdown with the source merely ESCAPED, which is what the EMBED uses. The reason is bytes: the
+ * embed loader is one script on a stranger's website with a 60 KB budget (§10), and a 9 KB tokeniser
+ * for prose answers about a shop's returns policy is not a trade that page load can make. Because the
+ * import is reached from `renderMarkdown` ALONE, a bundle that only uses the plain one drops the
+ * highlighter with it — which `test/embed/bundle-budget.test.ts` and the source-map check both pin.
  */
 import { highlight } from "./highlight.js";
+
+/** How a fenced block's source becomes HTML. It must escape everything it emits. */
+export type Highlighter = (code: string, lang: string) => string;
 
 const SAFE_SCHEME = /^(?:https?:|mailto:|#|\/|\.{0,2}\/)/i;
 /** `blob:` and `data:` are ours — `MarkdownBlock.vue` writes them after it has read the bytes. */
@@ -239,24 +250,23 @@ function renderItems(items: Item[], ordered: boolean): string {
 }
 
 /**
- * A fenced block: the language on a header line, a copy button beside it, and the source coloured by
- * `lib/highlight.ts` — which escapes every character it emits, as this file does.
+ * A fenced block: the language on a header line, a copy button beside it, and the source put through
+ * the highlighter — which escapes every character it emits, as this file does.
  */
-function renderCode(lang: string, source: string): string {
+function renderCode(lang: string, source: string, colour: Highlighter): string {
   const label = lang ? escapeHtml(lang) : "code";
   const attr = lang ? ` data-lang="${escapeHtml(lang)}"` : "";
   const head = `<div class="md-code-head"><span class="md-lang">${label}</span><button type="button" class="md-copy">Copy</button></div>`;
-  return `<div class="md-code"${attr}>${head}<pre${attr}><code>${highlight(source, lang)}</code></pre></div>`;
+  return `<div class="md-code"${attr}>${head}<pre${attr}><code>${colour(source, lang)}</code></pre></div>`;
 }
 
-/** Markdown → HTML, safe to put in the app's own document (see the module header). */
-export function renderMarkdown(markdown: string): string {
+function render(markdown: string, colour: Highlighter): string {
   const out: string[] = [];
   for (const block of blocksOf(markdown)) {
     const inline = (text: string): string => renderInline(escapeHtml(text));
     switch (block.kind) {
       case "code":
-        out.push(renderCode(block.lang ?? "", block.rows.join("\n")));
+        out.push(renderCode(block.lang ?? "", block.rows.join("\n"), colour));
         break;
       case "h":
         out.push(`<h${block.level}>${inline(block.rows[0] ?? "")}</h${block.level}>`);
@@ -270,7 +280,7 @@ export function renderMarkdown(markdown: string): string {
         break;
       case "quote":
         // A quote can hold blocks of its own — a list in an aside is ordinary in an agent's notes.
-        out.push(`<blockquote>${renderMarkdown(block.rows.join("\n"))}</blockquote>`);
+        out.push(`<blockquote>${render(block.rows.join("\n"), colour)}</blockquote>`);
         break;
       case "table": {
         const [head, divider, ...body] = block.rows;
@@ -293,4 +303,21 @@ export function renderMarkdown(markdown: string): string {
     }
   }
   return out.join("\n");
+}
+
+/**
+ * Markdown → HTML, safe to put in the app's own document (see the module header), with fenced code
+ * coloured by `lib/highlight.ts` unless the caller hands in its own.
+ */
+export function renderMarkdown(markdown: string, opts?: { highlight?: Highlighter }): string {
+  return render(markdown, opts?.highlight ?? highlight);
+}
+
+/**
+ * The same renderer with NO highlighter: fenced code is escaped and nothing else. What the embed
+ * loader uses, and the reason the highlighter is reachable from `renderMarkdown` alone — see the
+ * module header.
+ */
+export function renderMarkdownPlain(markdown: string): string {
+  return render(markdown, escapeHtml);
 }

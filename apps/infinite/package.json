@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && vite build --config vite.embed.config.ts && vite build --config embed/vite.model.config.ts",
+    "build": "vite build && vite build --config vite.embed.config.ts && vite build --config embed/vite.modules.config.ts",
     "build:app": "vite build",
-    "build:embed": "vite build --config vite.embed.config.ts && vite build --config embed/vite.model.config.ts",
+    "build:embed": "vite build --config vite.embed.config.ts && vite build --config embed/vite.modules.config.ts",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run"

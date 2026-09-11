@@ -11,20 +11,21 @@
  * clears) and a navigation the visitor asked for.
  */
 
-import type { Tool } from "@00/agent-runtime";
-import { threadFs, type Brain } from "../brain.js";
-import type { AgentEvent } from "@00/agent-runtime";
+import type { AgentEvent, Tool } from "@00/agent-runtime";
+import type { Brain } from "../brain.js";
 import type { Carrier, SiteConfig } from "../site-config.js";
 import type { SiteIndex } from "../index/site-index.js";
 import { pathOf } from "../index/site-index.js";
 import type { PageBridge } from "../page/bridge.js";
 import { matchLandmark, planNoBrainReply } from "./no-brain.js";
-import { renderSetup, type AdminFlow, type SetupHandle } from "./setup.js";
+import type { AdminFlow, SetupHandle } from "./setup.js";
+import { SETUP_LOADING, loadSetupModule } from "./setup-seam.js";
+import { scratchFs } from "../tools/scratch-fs.js";
 import { PANEL_CSS } from "./styles.js";
 import { CRAWL_BAR_LINGER_MS, crawlBarState } from "./crawl-progress.js";
 import type { CrawlProgress } from "../crawl/crawler.js";
 import { MINI_NAME, pixelFaceSvg } from "../../../src/mini/brand.js";
-import { renderMarkdown } from "../../../src/lib/markdown-lite.js";
+import { renderMarkdownPlain } from "../../../src/lib/markdown-lite.js";
 
 export interface PanelDeps {
   shadow: ShadowRoot;
@@ -219,7 +220,7 @@ export function createPanel(deps: PanelDeps): PanelHandle {
    */
   const setText = (node: HTMLElement, text: string): void => {
     const md = node.querySelector(".mini-md");
-    if (md) md.innerHTML = renderMarkdown(text);
+    if (md) md.innerHTML = renderMarkdownPlain(text);
     else node.textContent = text;
   };
   /** What is in a row, without asking the DOM to un-render it (the markdown is one-way). */
@@ -301,7 +302,9 @@ export function createPanel(deps: PanelDeps): PanelHandle {
 
   // The panel runs tools itself on the no-brain path. Same `ToolContext` the runtime would give
   // them, with the same in-memory thread sandbox — nothing about it survives the tab.
-  const fs = threadFs();
+  // Not agent-fs' `MemoryFs`: see `tools/scratch-fs.ts` — importing the package for a Map is how
+  // 50 KB of git, OPFS and transfer code used to end up in a script every page load fetches.
+  const fs = scratchFs();
   const runTool = async (name: string, args: Record<string, unknown>): Promise<string> => {
     const tool = deps.tools.find((t) => t.schema.name === name);
     if (!tool) return `no such tool: ${name}`;
@@ -446,10 +449,30 @@ export function createPanel(deps: PanelDeps): PanelHandle {
    * closed shadow root as everything else here — the flow never puts a node on the host page.
    */
   let setup: SetupHandle | null = null;
+  /** One press at a time: the module is one request, and a second press must not start a second. */
+  let opening = false;
   const setupHost = el("div");
   wrap.append(setupHost);
-  gear.addEventListener("click", () => {
-    setup ??= renderSetup(setupHost, {
+  /**
+   * THE WIZARD IS A MODULE, fetched here (`panel/setup-seam.ts`). Everything above this line is in
+   * `e.js` and costs a visitor nothing; the owner's flow costs one request, the first time the gear
+   * is pressed, on the press itself. While it comes there is a line in the transcript, and if it
+   * never comes that line becomes a sentence saying so — never a gear that does nothing.
+   */
+  const openSetup = async (): Promise<void> => {
+    if (setup) {
+      setup.open();
+      return;
+    }
+    if (opening) return;
+    opening = true;
+    const loading = say("status", SETUP_LOADING, false);
+    const mod = await loadSetupModule(deps.productHost, (message) => rewrite(loading, message));
+    opening = false;
+    // The failure sentence is already the loading row's text; leave it where the owner can read it.
+    if (!mod) return;
+    loading.remove();
+    setup = mod.renderSetup(setupHost, {
       origin: deps.origin,
       ref: deps.ref,
       productHost: deps.productHost,
@@ -472,7 +495,8 @@ export function createPanel(deps: PanelDeps): PanelHandle {
       onClose: () => input.focus(),
     });
     setup.open();
-  });
+  };
+  gear.addEventListener("click", () => void openSetup());
 
   /** Step 1 of the setup, applied: the name and the line a visitor reads are these. */
   const relabel = (next: SiteConfig): void => {
