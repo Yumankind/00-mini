@@ -138,6 +138,11 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
     load for the desktop rows; a fresh agent's prompt plus tool block went from 4060 to 1718 tokens;
     verified live on the dev link, which now streams a truthful answer from Gemma 4 E2B under the
     isolation headers), and the browser pane blocks service-worker registration (the app's own too).
+20. **An overflowing turn is refused by name** (2026-09-11): the engines' "too long" sentences map
+    to one `context_overflow` code with the numbers; the loop drops the older turns once and asks the
+    same brain again before showing the sentence; a raw engine trace can no longer reach the chat.
+    The `contextTokens` rows are the KV budget asked at load, not the models' ceilings (Gemma 4 E2B
+    accepts far more); 8192 on desktop rows is the memory trade, and the picker lets a person choose.
 19. **The shell runs Node programs with their npm packages** (2026-09-11): the runner is a vite
     module Worker serving `@00/agent-node`'s process model; `npm install`, `npm ls`, `npm run` with
     `.bin` tools on the shell's PATH, `npx <local bin>`, live stdout, and `http.createServer` on a
