@@ -208,3 +208,33 @@ describe("the targeted round (§5.2.1, deeper on demand)", () => {
     expect(round.pages.length).toBeGreaterThan(0);
   });
 });
+
+describe("crawl progress (the count behind the panel's bar)", () => {
+  it("counts every fetched page against the round's bound, and says when it is finished", async () => {
+    const seen: import("../../embed/src/crawl/crawler.js").CrawlProgress[] = [];
+    const f = fakeFetch({
+      [`${ORIGIN}/`]: { body: html('<a href="/a">a</a><a href="/b">b</a>') },
+      [`${ORIGIN}/a`]: { body: html("<p>a</p>") },
+      [`${ORIGIN}/b`]: { body: html("<p>b</p>") },
+    });
+    const c = new Crawler({
+      origin: ORIGIN,
+      config: { ...DEFAULT_SITE_CONFIG },
+      extractor: testExtractor,
+      authState: () => "anon",
+      fetchImpl: f.fn,
+      now: () => 1_000,
+      sleep: async () => {},
+      onCrawlProgress: (p) => seen.push(p),
+    });
+    await c.crawlOnLoad(`${ORIGIN}/`);
+    expect(seen[0]).toMatchObject({ phase: "load", done: 0, max: 60 });
+    const done = seen.filter((p) => !p.finished).map((p) => p.done);
+    expect(done).toEqual([0, 1, 2, 3]);
+    expect(seen.at(-1)).toMatchObject({ phase: "load", done: 3, finished: true, queued: 0 });
+    // A hint round names its phase and its own bound.
+    seen.length = 0;
+    await c.crawlWithHint("anything", [`${ORIGIN}/a`]);
+    expect(seen[0]).toMatchObject({ phase: "hint", max: 40 });
+  });
+});

@@ -18,7 +18,7 @@
  */
 
 import { createBrain, loadLocalProvider, type Brain } from "./brain.js";
-import { CRAWL_DEFAULTS, Crawler } from "./crawl/crawler.js";
+import { CRAWL_DEFAULTS, Crawler, type CrawlProgress } from "./crawl/crawler.js";
 import { createDomExtractor } from "./crawl/extract.js";
 import { SiteIndex } from "./index/site-index.js";
 import { createIdbStore, type Store } from "./index/store.js";
@@ -119,6 +119,11 @@ export interface EmbedHandle {
   ref: string;
   carrier: Carrier;
   open(): void;
+  /**
+   * Follow the crawl's count (the bar in the panel). `null` unsubscribes. A new watcher is told the
+   * last state at once, so it draws where the crawl is rather than from zero.
+   */
+  watchCrawl(fn: ((progress: CrawlProgress) => void) | null): void;
 }
 
 export async function start(): Promise<EmbedHandle | null> {
@@ -171,6 +176,19 @@ export async function start(): Promise<EmbedHandle | null> {
   await index.load();
 
   const extractor = createDomExtractor();
+  /**
+   * Where the crawl's count goes. The panel does not exist yet when the idle crawl starts (it is
+   * built on the first click), so the loader keeps the LAST progress and hands it to the panel the
+   * moment there is one — a visitor who opens the panel mid-crawl sees the bar where it is, not a
+   * bar that starts when they arrive.
+   */
+  let lastCrawl: CrawlProgress | null = null;
+  let crawlWatcher: ((p: CrawlProgress) => void) | null = null;
+  /** The panel subscribes here when it is built, and is told where the crawl already is. */
+  const watchCrawl = (fn: ((p: CrawlProgress) => void) | null): void => {
+    crawlWatcher = fn;
+    if (fn && lastCrawl) fn(lastCrawl);
+  };
   const crawler = new Crawler({
     origin,
     config,
@@ -178,6 +196,10 @@ export async function start(): Promise<EmbedHandle | null> {
     authState: readAuth,
     fetchImpl,
     known: (url) => index.get(url),
+    onCrawlProgress: (p) => {
+      lastCrawl = p;
+      crawlWatcher?.(p);
+    },
   });
 
   const absorb = async (pages: Parameters<typeof index.merge>[0]): Promise<void> => {
@@ -394,7 +416,7 @@ export async function start(): Promise<EmbedHandle | null> {
     })();
   });
 
-  return { ref, carrier: resolved.carrier, open: () => handle.open() };
+  return { ref, carrier: resolved.carrier, open: () => handle.open(), watchCrawl };
 }
 
 // The one global: a website owner opening the console should be able to see what is on their page.

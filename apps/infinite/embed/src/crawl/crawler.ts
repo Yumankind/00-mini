@@ -62,6 +62,29 @@ export interface CrawlerOptions {
   sleep?: (ms: number) => Promise<void>;
   /** `looking through the catalog…` — the one line the visitor sees while a round runs. */
   onProgress?: (line: string) => void;
+  /**
+   * The COUNT, for a bar (Bruno, 2026-09-11: "progress bars in the embedded AI when it is crawling").
+   * Sent once when a round starts (`done` 0), after every page that was fetched or refused, and once
+   * more with `finished: true`. `max` is the round's page bound, which is the only total a crawl knows
+   * before it has run — the frontier grows as pages are read — so a bar drawn from it is honest about
+   * the bound and never claims to know the site's size. `queued` is what is waiting right now.
+   */
+  onCrawlProgress?: (progress: CrawlProgress) => void;
+}
+
+export type CrawlPhase = "load" | "hint" | "refresh";
+
+export interface CrawlProgress {
+  phase: CrawlPhase;
+  /** Pages fetched so far in this round (kept or refused after the fetch). */
+  done: number;
+  /** The round's page bound — the denominator a bar can honestly use. */
+  max: number;
+  /** URLs waiting in the frontier at this moment. */
+  queued: number;
+  /** The page just finished, when there is one. */
+  url?: string;
+  finished?: boolean;
 }
 
 export class Crawler {
@@ -166,7 +189,7 @@ export class Crawler {
       .map((c) => ({ url: c.url, depth: 0, source: "hint" as CrawlSource }));
 
     this.opts.onProgress?.(`looking through ${hintLabel(hint)}…`);
-    return this.run([...explicit, ...ranked], bounds);
+    return this.run([...explicit, ...ranked], bounds, { phase: "hint" });
   }
 
   /** Re-fetch named pages under the on-load bounds (staleness, §5.2.1). ETags make most a 304. */
@@ -196,9 +219,20 @@ export class Crawler {
   private async run(
     seeds: { url: string; depth: number; source: CrawlSource }[],
     bounds: CrawlBounds,
-    opts: { refresh?: boolean } = {},
+    opts: { refresh?: boolean; phase?: CrawlPhase } = {},
   ): Promise<CrawlResult> {
     const result: CrawlResult = { pages: [], skipped: [], fetched: 0, hitBound: false };
+    const phase: CrawlPhase = opts.phase ?? (opts.refresh ? "refresh" : "load");
+    let attempted = 0;
+    const tell = (url?: string, finished = false): void =>
+      this.opts.onCrawlProgress?.({
+        phase,
+        done: attempted,
+        max: bounds.maxPages,
+        queued: Math.max(0, frontier.length - cursor),
+        ...(url ? { url } : {}),
+        ...(finished ? { finished } : {}),
+      });
 
     const queued = new Set<string>();
     const frontier: { url: string; depth: number; source: CrawlSource }[] = [];
@@ -230,10 +264,10 @@ export class Crawler {
       frontier.push({ url: abs, depth, source });
     };
 
-    for (const s of seeds) enqueue(s.url, s.depth, s.source, true);
-
     const sleep = this.opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     let cursor = 0;
+    for (const s of seeds) enqueue(s.url, s.depth, s.source, true);
+    tell();
 
     const worker = async (): Promise<void> => {
       for (;;) {
@@ -244,8 +278,12 @@ export class Crawler {
         if (cursor >= frontier.length) return;
         const job = frontier[cursor++]!;
         const fetched = await this.fetchPage(job.url, job.depth, job.source, bounds, result);
+        attempted += 1;
         await sleep(bounds.delayMs);
-        if (!fetched) continue;
+        if (!fetched) {
+          tell(job.url);
+          continue;
+        }
         result.fetched += 1;
         if (fetched.text.length > textBudget) {
           fetched.text = fetched.text.slice(0, Math.max(0, textBudget));
@@ -256,10 +294,12 @@ export class Crawler {
         if (job.depth < bounds.depth && !fetched.requiresAuth) {
           for (const link of fetched.linksIn) enqueue(link, job.depth + 1, "link");
         }
+        tell(job.url);
       }
     };
 
     await Promise.all(Array.from({ length: bounds.concurrency }, () => worker()));
+    tell(undefined, true);
     return result;
   }
 
