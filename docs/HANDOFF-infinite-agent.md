@@ -275,6 +275,39 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
     caller got 0-0.chat as HTML (200, `x-mini-final-url`, CSP sandbox), an outside caller got 403.
     The plumbing builder's "no outbound network" was example.com failing DNS on this Mac, nothing else.
 
+27. **The embed's owner setup is a centred modal wizard** (Bruno's ask, 2026-09-11): five steps —
+    name and line (live launcher preview), what it may read (depth, TTL, path chips, the sign-out
+    rule), knowledge and persona (skippable), brain (device model by default; the router card only
+    when a registry is configured, and it says registration is never required), review and install
+    (the `infinite-agent.json` to download or copy, and the `data-site` tag). Backdrop, Esc with an
+    inline "Discard changes?", focus trapped, a full-screen sheet on a phone. `e.js` is 56.6 KB gz
+    (budget 60). Tapping through the wizard on a real phone is still unverified (the harness's mobile
+    emulation refuses clicks).
+
+28. **A progress bar while the embed reads a site** (Bruno's ask): the crawler reports phase, pages
+    done and the round's bound after every fetch; the panel draws "Reading this site · 12 of 44
+    pages" under its header with a bar, the launcher's face pulses while a closed panel is reading,
+    and the finished bar says "Read N pages" for a moment before going. The denominator is the
+    round's page bound — the only total a crawl knows before it has run — and the words say pages,
+    never a percentage of "the site". Verified live on a 44-page test site.
+
+29. **No browser outlines anywhere, and the widget is isolated in both directions** (Bruno's asks):
+    focus is a soft ink ring on buttons and links only, fields mark focus with their border; iOS gets
+    a 16px floor on fields so Safari stops zooming them. The FLOATING widget now renders in a shadow
+    root of its own (open, host appended to `<body>`, `<Teleport>`), so the landing's stylesheet and
+    Tailwind's preflight no longer touch it — the same string, the same look as the embed on a
+    customer's site, which pins every inheritable text property on `.mini` and sizes in px. Verified
+    on a test page with serif, uppercase, letter-spaced, hot-pink CSS: nothing reached the panel. The
+    theme rides on the `.mini` element (`data-theme`) because a shadow root cannot see an ancestor's.
+
+30. **The landing's script tag is real.** It shows THIS browser's ref (minted when the section
+    scrolls into view, after the agent has booted) and carries the public link key in `data-site`,
+    so the site can be registered for extra power later without a second visit. Level 0 needs none
+    of it; nothing private is in the tag.
+
+31. **On a phone the Workspace tab lands on the workspace** (it used to toggle, and a tap while the
+    panel was already open showed the chat — Bruno hit it).
+
 **Things I did NOT do, on purpose**
 - No deploy of the landing, the site Worker, or moltworker (your call each time).
 - No enabling of `INFINITE_ENABLED`, no D1 migration applied, no secrets created.

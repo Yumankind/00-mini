@@ -21,6 +21,8 @@ import type { PageBridge } from "../page/bridge.js";
 import { matchLandmark, planNoBrainReply } from "./no-brain.js";
 import { renderSetup, type AdminFlow, type SetupHandle } from "./setup.js";
 import { PANEL_CSS } from "./styles.js";
+import { CRAWL_BAR_LINGER_MS, crawlBarState } from "./crawl-progress.js";
+import type { CrawlProgress } from "../crawl/crawler.js";
 import { MINI_NAME, pixelFaceSvg } from "../../../src/mini/brand.js";
 import { renderMarkdown } from "../../../src/lib/markdown-lite.js";
 
@@ -79,6 +81,11 @@ export interface PanelHandle {
   confirm(question: string, detail?: string): Promise<boolean>;
   /** A reply the owner sent, shown as what it is: a person, not the agent (§5.6). */
   ownerMessage(text: string): void;
+  /**
+   * The crawl's count, drawn as a slim bar under the header while the loader reads the site
+   * (Bruno, 2026-09-11). The finished bar lingers for a moment with "Read N pages", then goes.
+   */
+  crawlProgress(progress: CrawlProgress): void;
 }
 
 /** Survives a `page_open` navigation: the panel reopens where it was (§5.2.2). */
@@ -164,7 +171,35 @@ export function createPanel(deps: PanelDeps): PanelHandle {
   const sponsor = el("div", { className: "mini-sponsor" });
   const footer = el("div", { className: "mini-footer" }, [clear, el("span", { textContent: "· on your device only" }), sponsor]);
 
-  panel.append(header, body, form, footer);
+  /** The reading, made visible: a line and a bar, hidden when nothing is being read. */
+  const crawlLine = el("span", { className: "mini-crawl-line" });
+  const crawlFill = el("span", { className: "mini-crawl-fill" });
+  const crawl = el("div", { className: "mini-crawl" }, [crawlLine, el("span", { className: "mini-crawl-bar" }, [crawlFill])]);
+  crawl.hidden = true;
+  crawl.setAttribute("role", "status");
+  let crawlHide: ReturnType<typeof setTimeout> | undefined;
+  const crawlProgress = (progress: CrawlProgress): void => {
+    const state = crawlBarState(progress);
+    if (crawlHide) clearTimeout(crawlHide);
+    crawl.hidden = !state.visible;
+    crawlLine.textContent = state.line;
+    crawlFill.style.width = `${state.percent}%`;
+    crawl.toggleAttribute("data-done", state.finished);
+    launcher.toggleAttribute("data-busy", state.visible && !state.finished);
+    if (state.finished) {
+      crawlHide = setTimeout(() => {
+        crawl.hidden = true;
+        // The subline counts pages when the owner gave it no line of their own; once a round has
+        // landed it says the new number rather than the one from before the reading.
+        const sub = title.querySelector(".mini-sub");
+        if (sub && (!deps.config.intro.line || /pages known$/.test(sub.textContent ?? ""))) {
+          sub.textContent = `${deps.index.size()} pages known`;
+        }
+      }, CRAWL_BAR_LINGER_MS);
+    }
+  };
+
+  panel.append(header, crawl, body, form, footer);
   const launcher = el("button", { className: "mini-launcher", type: "button" }, [
     el("span", { className: "mini-face", innerHTML: pixelFaceSvg({ size: 22 }) }),
     el("span", { textContent: deps.config.intro.name || MINI_NAME }),
@@ -484,6 +519,7 @@ export function createPanel(deps: PanelDeps): PanelHandle {
     isOpen: () => open,
     confirm: confirmAsk,
     ownerMessage,
+    crawlProgress,
     /**
      * The runtime's events, while a turn is in flight: text streams into the waiting bubble.
      *

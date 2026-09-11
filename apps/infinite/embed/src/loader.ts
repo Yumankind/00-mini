@@ -395,6 +395,9 @@ export async function start(): Promise<EmbedHandle | null> {
   };
 
   const handle = build();
+  // The bar under the panel's header follows the idle crawl from here on — and is told where the
+  // crawl already is, for a panel that was built after the reading started.
+  watchCrawl((p) => handle.crawlProgress(p));
   const parked = readParked(ref);
   if (parked?.open) handle.open();
 

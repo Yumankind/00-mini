@@ -7,10 +7,15 @@
  * transferred, because nothing was ever separate. That is the whole argument for the landing page
  * living inside the PWA — the widget in the corner is the product, running.
  *
- * IT BRINGS ITS OWN STYLESHEET. Every class below comes from `src/mini/mini-css.ts`, injected once
- * into a `<style data-mini>`, which is the SAME string the embed injects into its shadow root. The
- * widget therefore does not read `src/style.css` at all: the embed has no such file, and a widget
- * that looked right here and wrong on a customer's website would be two products.
+ * IT BRINGS ITS OWN STYLESHEET, IN ITS OWN SHADOW ROOT. Every class below comes from
+ * `src/mini/mini-css.ts`, the SAME string the embed injects into its closed shadow root — and since
+ * 2026-09-11 this widget renders inside a shadow root too (an open one, on a host element appended
+ * to <body>, reached with <Teleport>). Before that it sat in the app's own document, where the
+ * landing page's stylesheet and Tailwind's preflight reached it, so the widget here and the widget
+ * on a customer's site could drift apart. In a shadow root neither `src/style.css` nor a host page's
+ * CSS can touch it, which is the promise Bruno asked for ("make sure the css of a website doesn't
+ * leak into the embedded agent") kept in both directions. The theme cannot be read from an ancestor
+ * inside a shadow root, so it is written on the `.mini` element itself (`data-theme`).
  *
  * WHY NO ATTACH BUTTON YET. The composer's send path (`state/conversation.ts`) takes a string, and
  * nothing in the app can carry image parts into a run today. The class is in the stylesheet and the
@@ -23,6 +28,7 @@ import { busy, composerError, rows, send, startNewSession, stop } from "../state
 import { chip, download, openChip } from "../state/model-choice.js";
 import { profile, ready } from "../state/agent.js";
 import { needsUnlock } from "../state/vault.js";
+import { themeChoice } from "../state/install.js";
 import { MINI_CSS } from "../mini/mini-css.js";
 import { MINI_NAME, idleBlink, idleDelayMs, pixelFaceSvg, type FaceFrame } from "../mini/brand.js";
 import { goTo } from "../mini/nav.js";
@@ -35,6 +41,24 @@ const props = withDefaults(defineProps<{ expandable?: boolean; pageContext?: boo
 });
 
 const OPEN_KEY = "00.mini.open";
+
+/**
+ * The shadow root the widget renders into, made synchronously so <Teleport> has a target at mount.
+ * `null` where there is no document (a test in node), and the template then renders nothing.
+ */
+const shadow: ShadowRoot | null = (() => {
+  if (typeof document === "undefined") return null;
+  const host = document.createElement("div");
+  host.setAttribute("data-mini-host", "");
+  const root = host.attachShadow({ mode: "open" });
+  const style = document.createElement("style");
+  style.textContent = MINI_CSS;
+  root.append(style);
+  document.body.append(host);
+  return root;
+})();
+/** The app's own theme, carried onto the root: `system` leaves it to prefers-color-scheme. */
+const theme = computed(() => (themeChoice.value === "system" ? undefined : themeChoice.value));
 
 const open = ref(false);
 const draft = ref("");
@@ -125,13 +149,6 @@ function onEscape(event: KeyboardEvent): void {
 }
 
 onMounted(() => {
-  // ONE stylesheet for the document, however many widgets ask for it.
-  if (!document.querySelector("style[data-mini]")) {
-    const style = document.createElement("style");
-    style.setAttribute("data-mini", "");
-    style.textContent = MINI_CSS;
-    document.head.append(style);
-  }
   try {
     open.value = localStorage.getItem(OPEN_KEY) === "1";
   } catch {
@@ -144,6 +161,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearTimeout(idleTimer);
   window.removeEventListener("keydown", onEscape);
+  shadow?.host.remove();
 });
 
 // A new row means something to read: the transcript follows it, as a chat window should.
@@ -161,7 +179,8 @@ function userRow(row: Row & { kind: "user" }): { context: string | null; message
 </script>
 
 <template>
-  <div class="mini">
+  <Teleport v-if="shadow" :to="shadow">
+  <div class="mini" :data-theme="theme">
     <!-- The panel is BEFORE the launcher in the DOM: the stylesheet hides the launcher with a
          sibling selector, so there is no state to keep in two places. -->
     <div
@@ -263,4 +282,5 @@ function userRow(row: Row & { kind: "user" }): { context: string | null; message
       <span>{{ MINI_NAME }}</span>
     </button>
   </div>
+  </Teleport>
 </template>

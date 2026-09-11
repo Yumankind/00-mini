@@ -75,3 +75,26 @@ describe("the widget's stylesheet", () => {
     }
   });
 });
+
+describe("MINI_CSS — the isolation, the outlines and the crawl bar (2026-09-11)", () => {
+  it("resets what a host page could hand down, and never sizes in rem", () => {
+    expect(MINI_CSS).toContain(":host { all: initial; }");
+    for (const prop of ["letter-spacing: normal", "text-transform: none", "text-align: left", "direction: ltr"]) {
+      expect(MINI_CSS).toContain(prop);
+    }
+    expect(MINI_CSS).not.toMatch(/\d(\.\d+)?rem\b/);
+  });
+
+  it("carries the theme on the widget itself, for a shadow root with no ancestor to read", () => {
+    expect(MINI_CSS).toContain('.mini[data-theme="dark"]');
+    expect(MINI_CSS).toContain('.mini[data-theme="light"]');
+  });
+
+  it("has no browser outlines, a field floor for iOS, and the crawl bar", () => {
+    expect(MINI_CSS).toContain(".mini :focus { outline: none; }");
+    expect(MINI_CSS).not.toContain("outline: 2px solid");
+    expect(MINI_CSS).toContain("@supports (-webkit-touch-callout: none)");
+    for (const cls of ["mini-crawl", "mini-crawl-line", "mini-crawl-bar", "mini-crawl-fill"]) expect(MINI_CSS).toContain(`.${cls}`);
+    expect(MINI_CSS).toContain(".mini-launcher[data-busy]");
+  });
+});

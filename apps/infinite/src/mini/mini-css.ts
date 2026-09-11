@@ -39,6 +39,13 @@ export const MINI_CSS = `
   display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
   font: 400 13px/1.55 var(--mini-font); color: var(--mini-ink);
   -webkit-font-smoothing: antialiased;
+  /* Everything a host page could hand down by inheritance is pinned here, so the widget reads the
+     same on a site with letter-spaced uppercase buttons and a 62.5% root font as it does on ours.
+     Sizes below are px, never rem, for the same reason. */
+  letter-spacing: normal; word-spacing: normal; text-transform: none; text-align: left;
+  text-indent: 0; text-shadow: none; font-variant: normal; font-feature-settings: normal;
+  line-height: 1.55; white-space: normal; direction: ltr; visibility: visible; opacity: 1;
+  cursor: auto; pointer-events: auto; filter: none; transform: none;
 }
 @media (prefers-color-scheme: dark) {
   .mini {
@@ -48,13 +55,13 @@ export const MINI_CSS = `
     --mini-shadow: 0 12px 40px rgba(0,0,0,.5);
   }
 }
-[data-theme="dark"] .mini {
+[data-theme="dark"] .mini, .mini[data-theme="dark"] {
   --mini-void: #0f0f10; --mini-card: #131315; --mini-panel: #18181b; --mini-panel-2: #212124;
   --mini-line: #2a2a2e; --mini-ink: #ededef; --mini-dim: #9a9aa3; --mini-faint: #64646c;
   --mini-accent: #4ade9b; --mini-red: #f0555f; --mini-amber: #ecc36b;
   --mini-shadow: 0 12px 40px rgba(0,0,0,.5);
 }
-[data-theme="light"] .mini {
+[data-theme="light"] .mini, .mini[data-theme="light"] {
   --mini-void: #ffffff; --mini-card: #fafafa; --mini-panel: #f4f4f5; --mini-panel-2: #ececee;
   --mini-line: #e4e4e7; --mini-ink: #111113; --mini-dim: #6b6b74; --mini-faint: #9b9ba3;
   --mini-accent: #16a37a; --mini-red: #d64545; --mini-amber: #c98a12;
@@ -64,7 +71,15 @@ export const MINI_CSS = `
    colour here would out-specify every .mini-* control below (element + class beats a bare class),
    which is how a white arrow on a black send button once came out black on black. */
 .mini button, .mini input, .mini textarea, .mini select { font-family: inherit; }
-.mini :focus-visible { outline: 2px solid color-mix(in srgb, var(--mini-accent) 40%, transparent); outline-offset: 1px; }
+/* No browser outline anywhere (Bruno, 2026-09-11). Keyboard focus is a soft ink ring on buttons and
+   links; a field marks focus with its border. Never the accent, never on a click. */
+.mini :focus { outline: none; }
+.mini button:focus-visible, .mini a:focus-visible, .mini [tabindex]:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mini-ink) 18%, transparent);
+}
+.mini input:focus, .mini textarea:focus, .mini select:focus {
+  border-color: color-mix(in srgb, var(--mini-ink) 28%, transparent) !important; box-shadow: none !important;
+}
 .mini svg { display: block; }
 
 /* ── the launcher ─────────────────────────────────────────────────────────────────────────────── */
@@ -403,5 +418,27 @@ button.mini-card:hover { border-color: var(--mini-dim); }
   .mini-panel[data-open="1"] { animation: mini-rise .16s ease-out; }
   .mini-modal[data-open="1"] .mini-wizard { animation: mini-rise .16s ease-out; }
   @keyframes mini-rise { from { transform: translateY(8px); opacity: 0 } to { transform: none; opacity: 1 } }
+}
+
+/* ── the crawl, made visible: a line and a bar under the header while the site is being read ──── */
+.mini-crawl {
+  display: flex; flex-direction: column; gap: 5px; padding: 7px 12px 8px;
+  border-bottom: 1px solid var(--mini-line); background: var(--mini-card);
+  font-size: 11px; color: var(--mini-dim);
+}
+.mini-crawl-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-crawl-bar { display: block; height: 3px; border-radius: 999px; background: var(--mini-line); overflow: hidden; }
+.mini-crawl-fill { display: block; height: 100%; width: 0; border-radius: 999px; background: var(--mini-accent); transition: width .4s ease-out; }
+.mini-crawl[data-done] .mini-crawl-fill { background: var(--mini-dim); }
+/* The launcher pulses its face while the site is being read, so a closed panel still says so. */
+@media (prefers-reduced-motion: no-preference) {
+  .mini-launcher[data-busy] .mini-face { animation: mini-pulse 1.4s ease-in-out infinite; }
+  @keyframes mini-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
+}
+
+/* iOS Safari zooms a focused field whose font is under 16px. The floor is set for iOS only — the
+   property exists on no other engine — so a desk keeps the 13px fields. */
+@supports (-webkit-touch-callout: none) {
+  .mini input:not([type="checkbox"]):not([type="radio"]), .mini textarea, .mini select { font-size: 16px !important; }
 }
 `;
