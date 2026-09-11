@@ -24,7 +24,7 @@ import { lockNow, vaultState } from "../state/vault.js";
 const props = withDefaults(defineProps<{ pane: string; drawer?: boolean }>(), { drawer: false });
 
 const emit = defineEmits<{
-  (e: "go", pane: "chat" | "settings" | "vault" | "move"): void;
+  (e: "go", pane: "chat" | "settings"): void;
   (e: "picked"): void;
   (e: "palette"): void;
 }>();
@@ -39,11 +39,8 @@ const WORKSPACE = [
   { id: "preview", label: "Preview", icon: "world" },
 ] as const;
 
-const DESTINATIONS = [
-  { id: "settings", label: "Connections", icon: "plug-connected" },
-  { id: "vault", label: "Vault", icon: "lock" },
-  { id: "move", label: "Move & backup", icon: "device-laptop" },
-] as const;
+/** One door (Bruno, 2026-09-11): Connections, the vault, move & backup and the website live behind it as tabs. */
+const DESTINATIONS = [{ id: "settings", label: "Settings", icon: "settings" }] as const;
 
 const themeIcon = computed(() =>
   themeChoice.value === "light" ? "sun" : themeChoice.value === "dark" ? "moon" : "device-desktop",
@@ -149,7 +146,7 @@ function workspace(id: (typeof WORKSPACE)[number]["id"]): void {
           v-if="item.id === 'settings' && companionPaired"
           class="w-1.5 h-1.5 rounded-full bg-[var(--color-phosphor)] shrink-0"
           :class="rail ? '' : 'ml-auto'"
-          title="00 on this computer is connected"
+          title="00 on this computer is connected (Settings → Connections)"
         />
       </button>
 

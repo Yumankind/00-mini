@@ -17,22 +17,18 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import ApprovalsModal from "./components/ApprovalsModal.vue";
-import BackupPanel from "./components/BackupPanel.vue";
 import BootScreen from "./components/BootScreen.vue";
 import ClaimPane from "./components/ClaimPane.vue";
 import CommandPalette from "./components/CommandPalette.vue";
-import ConnectionsPane from "./components/ConnectionsPane.vue";
 import InstallNag from "./components/InstallNag.vue";
-import MovePanel from "./components/MovePanel.vue";
 import MovedReceipt from "./components/MovedReceipt.vue";
 import OfflineBanner from "./components/OfflineBanner.vue";
 import PixelFace from "./components/PixelFace.vue";
+import SettingsPane, { type SettingsTab } from "./components/SettingsPane.vue";
 import Sidebar from "./components/Sidebar.vue";
 import TablerIcon from "./components/TablerIcon.vue";
 import ThreadPane from "./components/ThreadPane.vue";
 import VaultGate from "./components/VaultGate.vue";
-import VaultPanel from "./components/VaultPanel.vue";
-import WebsitePanel from "./components/WebsitePanel.vue";
 import WorkspacePanel from "./components/WorkspacePanel.vue";
 import { goTo } from "./lib/nav.js";
 import { boot, profile, ready } from "./state/agent.js";
@@ -57,10 +53,27 @@ import { startOffline } from "./state/offline.js";
 import { claimRequestFromQuery, type ClaimRequest } from "./state/registry.js";
 import { needsUnlock, refreshVault, startVaultClock, touchVault } from "./state/vault.js";
 
-/** `move`, `vault` and `website` are destinations, not tabs: reached from the sidebar and returned from. */
-type Pane = "chat" | "settings" | "vault" | "move" | "website";
+/**
+ * Two screens: the conversation, and Settings — which holds Connections, the vault, move & backup
+ * and the website as TABS (Bruno, 2026-09-11). Everything that used to be its own destination is a
+ * tab now, and every road that led there (the palette, a claim link, a scanned QR, a card's button)
+ * lands on the right tab through `openSettings`.
+ */
+type Pane = "chat" | "settings";
+type Destination = "chat" | "settings" | "vault" | "move" | "website";
 
 const pane = ref<Pane>("chat");
+const settingsTab = ref<SettingsTab>("connections");
+
+/** Where a destination name lands: the chat, or Settings on a tab. */
+function showPane(target: Destination): void {
+  if (target === "chat") {
+    pane.value = "chat";
+    return;
+  }
+  settingsTab.value = target === "settings" ? "connections" : target;
+  pane.value = "settings";
+}
 /**
  * §5.4's one-time link: `/?claim=<appId>&nonce=…&origin=…`, opened by the admin flow ON THE SITE.
  * It takes the screen ahead of every pane, because it is a grant and not a destination.
@@ -74,17 +87,7 @@ const teardown: (() => void)[] = [];
 const phone = computed(() => viewportWidth.value < 640);
 /** The thread hides only when the workspace has the screen to itself — which is a phone thing. */
 const threadVisible = computed(() => !(phone.value && workspaceOpen.value));
-const headline = computed(() =>
-  pane.value === "settings"
-    ? "Connections"
-    : pane.value === "vault"
-      ? "Vault"
-      : pane.value === "move"
-        ? "Move & backup"
-        : pane.value === "website"
-          ? "Your website"
-          : "00 Mini",
-);
+const headline = computed(() => (pane.value === "settings" ? "Settings" : "00 Mini"));
 
 const BOTTOM = [
   { id: "chat", label: "Chat", icon: "message-2" },
@@ -152,7 +155,7 @@ onMounted(async () => {
   await loadMoveReceipt();
   // A scanned QR (`/?receive#code=…`, state/move.ts) lands on the receive screen with the code in the
   // field: the pane opens here, the one place that decides panes, not from the store.
-  if (receiveRequested.value) pane.value = "move";
+  if (receiveRequested.value) showPane("move");
   await boot();
   await refreshVault();
   listen();
@@ -178,7 +181,7 @@ onBeforeUnmount(() => {
 
 watch(pane, (next) => {
   drawer.value = false;
-  if (next === "settings" || next === "vault") void refreshFiles();
+  if (next === "settings") void refreshFiles();
 });
 watch(workspaceOpen, (open) => {
   if (open) void refreshFiles();
@@ -202,13 +205,13 @@ watch(workspaceOpen, (open) => {
           class="hidden sm:block shrink-0 transition-[width] duration-150"
           :style="{ width: sidebarRail ? '56px' : '260px' }"
         >
-          <Sidebar :pane="pane" @go="pane = $event" @palette="palette = true" />
+          <Sidebar :pane="pane" @go="showPane($event)" @palette="palette = true" />
         </aside>
 
         <!-- The phone's drawer: the same component, over the pane instead of beside it. -->
         <div v-if="drawer" class="fixed inset-0 z-50 sm:hidden flex">
           <div class="w-[17rem] h-full">
-            <Sidebar :pane="pane" drawer @go="pane = $event" @picked="drawer = false" @palette="palette = true" />
+            <Sidebar :pane="pane" drawer @go="showPane($event)" @picked="drawer = false" @palette="palette = true" />
           </div>
           <button type="button" class="flex-1 h-full" style="background: rgba(0, 0, 0, 0.5)" @click="drawer = false" />
         </div>
@@ -225,6 +228,16 @@ watch(workspaceOpen, (open) => {
             </button>
             <PixelFace :size="18" :thinking="busy" class="sm:hidden" />
 
+            <!-- Out of Settings in one press, from the header too — the phone has no sidebar to reach for. -->
+            <button
+              v-if="pane !== 'chat'"
+              type="button"
+              class="ia-btn ia-btn-ghost w-8 h-8 shrink-0"
+              title="Back to the chat"
+              @click="showPane('chat')"
+            >
+              <TablerIcon name="arrow-left" :size="16" />
+            </button>
             <div class="min-w-0 flex items-center gap-2">
               <span class="text-[13px] font-semibold tracking-tight truncate">{{ headline }}</span>
               <span v-if="pane === 'chat'" class="hidden sm:inline text-[12px] text-[var(--color-ink-faint)] truncate">
@@ -267,26 +280,14 @@ watch(workspaceOpen, (open) => {
               v-if="claimRequest"
               class="flex-1 min-w-0"
               :request="claimRequest"
-              @done="claimRequest = null; pane = 'website'"
+              @done="claimRequest = null; showPane('website')"
               @cancel="claimRequest = null"
             />
 
             <template v-else>
               <div v-if="threadVisible" class="flex-1 min-w-0 min-h-0">
                 <ThreadPane v-if="pane === 'chat'" :compact="workspaceOpen && !phone" />
-                <ConnectionsPane
-                  v-else-if="pane === 'settings'"
-                  @move="pane = 'move'"
-                  @website="pane = 'website'"
-                />
-                <MovePanel v-else-if="pane === 'move'" @close="pane = 'settings'" />
-                <WebsitePanel v-else-if="pane === 'website'" @close="pane = 'settings'" />
-                <div v-else class="h-full ia-scroll">
-                  <div class="max-w-lg mx-auto px-4 py-6 space-y-6">
-                    <VaultPanel />
-                    <BackupPanel />
-                  </div>
-                </div>
+                <SettingsPane v-else v-model:tab="settingsTab" @close="showPane('chat')" />
               </div>
 
               <!-- The workspace: a column beside the thread on a desk, the whole screen on a phone. -->
@@ -326,6 +327,6 @@ watch(workspaceOpen, (open) => {
     </template>
 
     <ApprovalsModal />
-    <CommandPalette :open="palette" @close="palette = false" @go="pane = $event" />
+    <CommandPalette :open="palette" @close="palette = false" @go="showPane($event)" />
   </div>
 </template>
