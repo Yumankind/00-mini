@@ -1708,3 +1708,45 @@ independently written inverse; what no test here can prove is that a phone agree
 floors. `apps/infinite` measured 76.0 / 82.6 / 79.6 / 76.0 with 1057 tests against floors of
 72/79/75/72 — up from 2026-09-10's 75.3 / 82.0 / 79.1 / 75.3, and the floors are again left alone
 while the embed and shell owners are mid-round.
+
+---
+
+## `@00/agent-node` grows a TypeScript transform, and a borrowed corpus (2026-09-11)
+
+Three things landed in `packages/agent-node`, all of them sparked by
+[macaly/almostnode](https://github.com/macaly/almostnode) (MIT, `6ab61f31`), which Bruno pointed at.
+We kept our layer and borrowed what was worth borrowing.
+
+**A `Transformer` seam, and esbuild-wasm behind it.** `src/loader/transform.ts` is the seam;
+`src/transform/esbuild.ts` is the implementation, and it is the ONLY file in `src/` that names
+`esbuild-wasm` — with an `await import()` inside a function, so a host that never runs a `.ts` file
+never downloads the **12.2 MB** of wasm. A browser host copies
+`node_modules/esbuild-wasm/esbuild.wasm` to its own origin under a versioned path
+(`/esbuild/0.25.9/esbuild.wasm`) and passes it as `wasmURL`; same-origin because COOP+COEP, which we
+already need for the synchronous filesystem, will not load it from anywhere else. `.ts` `.mts` `.cts`
+`.tsx` `.jsx` are transformed to **CommonJS** before our own ESM rewriter sees them, which means a
+file that goes through esbuild escapes all eight of `src/loader/esm.ts`'s limits. The resolver's
+extension ladder gained them after the JavaScript ones, so `a.js` still beats `a.ts`. Without a
+transformer a `.ts` refuses by name (`ERR_TRANSFORM_UNAVAILABLE`). Because esbuild's browser build has
+no synchronous transform and `require` does, the loader gained `warmup(entry)` — an async walk of the
+require graph that fills a cache keyed by (path, sha256) — and `runMainAsync`.
+
+**A 767-case compatibility corpus**, ported from almostnode's `tests/node-compat` onto our modules:
+`test/compat/`, with their LICENSE beside it and `SCOREBOARD.md` as the table. 663 pass, 104 are
+`it.skip` with a `// SKIP:` line naming the gap. Read the scoreboard before reading the numbers: 43 of
+those skips are `stream` cases that construct a bare `Readable`/`Writable` and would fail on Node
+itself, because we ship readable-stream (Node's own code) and almostnode ships something laxer. The
+port found and fixed ten real gaps on the way — sha256, HMAC and PBKDF2 in JS so Node's synchronous
+shapes work, `events.on()`'s async iterator, the `stream` module being the `Stream` function, `%i`/
+`%f` in `util.format`, `url.parse(x, true)` and `url.format`'s dropped port, `fs.rmdir`'s ENOTEMPTY,
+and `file:` URLs as fs paths.
+
+**`packages/agent-node/docs/dev-servers.md`** — the Vite/Next checklist, and its headline finding:
+almostnode does not run Vite or Next. It reimplements both (a 700-line Vite-shaped dev server, a
+1,688-line Next one) and loads esbuild/rollup/react from a CDN. The doc lists what the real `vite`
+would need from us — `fs.watch` and a `chokidar` shim first, then a WebSocket road in `HttpBridge`,
+`net.createServer` as a port probe, an `esbuild` package shim, and `module.createRequire` honouring
+its argument — as a numbered to-do. Nothing of it was attempted this round.
+
+Suite: 182 tests → **973** (869 running, 104 skipped). Coverage 96.6 / 89.9 / 94.6 / 96.6 against the
+unchanged 90 / 80 / 90 / 90 floors.

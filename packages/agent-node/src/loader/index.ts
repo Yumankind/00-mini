@@ -20,12 +20,23 @@
  * (a module is cached BEFORE it runs, so a cycle sees a half-built `exports` rather than looping);
  * `require.resolve` (with `paths`), `require.cache`, `require.main`, `module.paths`,
  * `module.children`; JSON modules; `.mjs` and `"type": "module"` as ESM; ESM syntax anywhere,
- * detected and transformed (`src/loader/esm.ts`, whose limits are listed in its own header).
+ * detected and transformed (`src/loader/esm.ts`, whose limits are listed in its own header);
+ * TypeScript and JSX through a host-supplied `Transformer` (`src/loader/transform.ts`).
+ *
+ * TYPESCRIPT, AND WHY IT NEEDS A WARM-UP. A `.ts` file is handed to `opts.transformer` BEFORE any of
+ * the CommonJS/ESM rewriting above — esbuild's output is already CommonJS and better than ours, so
+ * `src/loader/esm.ts` never sees it. But the only transform a browser can offer is asynchronous
+ * (esbuild's wasm lives in another Worker) and `require` is not, so the transform has to happen
+ * first: `await loader.warmup(entry)` walks the require graph from an entry, transforms every
+ * `.ts`/`.tsx`/`.jsx` it can reach and fills a cache the synchronous `require` then reads.
+ * `runMainAsync(entry)` is `warmup` + `runMain`. In Node — the test suite — esbuild also has a
+ * `transformSync`, so `require` transforms on demand and `warmup` is a no-op that costs one walk.
  *
  * DOES NOT: `require.extensions` (deprecated in Node, and a hook into a `new Function` call is a
  * footgun), `.node` addons (refused by name in the resolver), `NODE_PATH`, conditional exports the
- * host did not name in `conditions`, or source maps. It also needs `new Function`, which is
- * `unsafe-eval` — a Content-Security-Policy without it stops this dead, and the host must say so.
+ * host did not name in `conditions`, or source maps (the transformer can inline one). It also needs
+ * `new Function`, which is `unsafe-eval` — a Content-Security-Policy without it stops this dead, and
+ * the host must say so.
  */
 
 import { NodeCompatError, failModuleNotFound } from "../errors.js";
@@ -37,8 +48,17 @@ import { Buffer } from "../modules/core.js";
 import type { HttpBridge, NetworkBridge } from "../modules/http.js";
 import type { ProcessManager } from "../process/manager.js";
 import type { SyncCompressor } from "../modules/zlib.js";
-import { applyBrowserMap, EMPTY_MODULE, resolveRequest, nodeModulesPaths, type ResolveHost } from "./resolve.js";
-import { hasEsmSyntax, transformEsm } from "./esm.js";
+import { applyBrowserMap, EMPTY_MODULE, resolveRequest, nodeModulesPaths, findPackageDir, type ResolveHost } from "./resolve.js";
+import { hasEsmSyntax, maskSource, transformEsm } from "./esm.js";
+import {
+  TransformCache,
+  failTransformPending,
+  failTransformUnavailable,
+  isDeclarationFile,
+  transformLoaderFor,
+  type TransformRequest,
+  type Transformer,
+} from "./transform.js";
 
 /** The synchronous view of the filesystem `require` needs. Two implementations ship below. */
 export interface LoaderFs {
@@ -88,6 +108,14 @@ export interface CreateLoaderOptions {
   homedir?: string;
   /** Extra names injected into every module's scope, on top of the Node set. */
   globals?: Record<string, unknown>;
+  /**
+   * Strips types from `.ts`/`.tsx`/`.mts`/`.cts` and compiles `.jsx`. Without one, any of those
+   * files refuses by name (`ERR_TRANSFORM_UNAVAILABLE`). `createEsbuildTransformer` in
+   * `src/transform/esbuild.ts` is the implementation this package ships.
+   */
+  transformer?: Transformer | null;
+  /** Share one cache of transformed output across loaders (a process manager wants exactly this). */
+  transformCache?: TransformCache;
 }
 
 export interface Loader {
@@ -95,6 +123,17 @@ export interface Loader {
   resolve(request: string, fromDir?: string): string;
   /** Load `entry` as the main module: sets `require.main`, `process.argv[1]` and `module.parent`. */
   runMain(entry: string, argv?: string[]): unknown;
+  /**
+   * Walk the require graph from `entry` and transform every `.ts`/`.tsx`/`.jsx` in it, so the
+   * synchronous `require` that follows finds them ready. Returns the files it transformed. A
+   * specifier it cannot resolve statically is skipped, not thrown on: a `require(name)` built at
+   * runtime is the loader's problem later, not the walk's now.
+   */
+  warmup(entry: string): Promise<string[]>;
+  /** `warmup` then `runMain`. The entry point a browser host wants for anything TypeScript. */
+  runMainAsync(entry: string, argv?: string[]): Promise<unknown>;
+  /** Transformed output, keyed by (path, sha256 of source). Shared when the host passed one in. */
+  transformCache: TransformCache;
   cache: Map<string, NodeModule>;
   process: NodeProcess;
   conditions: string[];
@@ -226,6 +265,82 @@ export function createLoader(opts: CreateLoaderOptions): Loader {
     }
   };
 
+  const transformCache = opts.transformCache ?? new TransformCache();
+  const jsxRuntimes = new Map<string, "automatic" | "transform">();
+
+  /**
+   * Which JSX runtime this file's package expects. `automatic` needs a `react` (or whatever
+   * `jsxImportSource` names) to import from, so a package that does not depend on one gets the
+   * classic `React.createElement` runtime instead — which fails loudly at a missing `React` rather
+   * than quietly at a missing `react/jsx-runtime` three frames in.
+   */
+  function jsxRuntimeFor(dir: string): "automatic" | "transform" {
+    const known = jsxRuntimes.get(dir);
+    if (known) return known;
+    const packageDir = findPackageDir(dir, host);
+    const pkg = packageDir ? host.readJson(`${packageDir}/package.json`) : null;
+    const fields = ["dependencies", "devDependencies", "peerDependencies"] as const;
+    const dependsOnReact = fields.some((field) => {
+      const deps = pkg?.[field];
+      return Boolean(deps) && typeof deps === "object" && Object.prototype.hasOwnProperty.call(deps, "react");
+    });
+    const runtime = dependsOnReact ? "automatic" : "transform";
+    jsxRuntimes.set(dir, runtime);
+    return runtime;
+  }
+
+  /** The transform request for `filename`, or `null` when it is plain JavaScript or JSON. */
+  function transformRequestFor(filename: string): TransformRequest | null {
+    const loader = transformLoaderFor(filename);
+    if (!loader) return null;
+    if (isDeclarationFile(filename)) {
+      throw new NodeCompatError(
+        "ERR_MODULE_UNSUPPORTED",
+        `${filename}: a .d.ts file is type declarations only — it has no runtime and there is nothing to run. Require the JavaScript it describes.`,
+      );
+    }
+    const request: TransformRequest = { path: filename, loader, format: "cjs" };
+    if (loader !== "ts") request.jsx = jsxRuntimeFor(dirnameAbs(filename));
+    return request;
+  }
+
+  /**
+   * Source text as the module wrapper should see it: transformed if it is TypeScript or JSX,
+   * rewritten if it is ESM, untouched if it is neither. SYNCHRONOUS, because `require` is.
+   */
+  function prepareSource(filename: string, source: string): string {
+    const request = transformRequestFor(filename);
+    if (!request) {
+      return isModuleType(filename) || hasEsmSyntax(source) ? transformEsm(source, filename).code : source;
+    }
+    const cached = transformCache.get(filename, source);
+    if (cached) return cached.code;
+    if (!opts.transformer) failTransformUnavailable(filename);
+    if (!opts.transformer.transformSync) failTransformPending(filename);
+    return transformCache.set(filename, source, opts.transformer.transformSync(source, request)).code;
+  }
+
+  /**
+   * The static `require("…")` specifiers in a piece of already-prepared code. The mask from
+   * `src/loader/esm.ts` is what makes this safe: a `require("x")` inside a string or a comment is
+   * blanked there, so it is never followed, and the literal itself is read back out of the original
+   * text at the same offsets.
+   */
+  function scanRequires(code: string): string[] {
+    const mask = maskSource(code);
+    const out: string[] = [];
+    const pattern = /\brequire\s*\(\s*(["'])/g;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(mask))) {
+      const quote = match[1] as string;
+      const start = match.index + (match[0] as string).length;
+      const end = mask.indexOf(quote, start);
+      if (end < 0) continue;
+      out.push(code.slice(start, end));
+    }
+    return out;
+  }
+
   function resolve(request: string, fromDir: string): string {
     const bare = request.startsWith("node:") ? request.slice(5) : request;
     if (builtin(bare) !== undefined || BUILTIN_NAMES.includes(bare as (typeof BUILTIN_NAMES)[number])) return bare;
@@ -265,8 +380,7 @@ export function createLoader(opts: CreateLoaderOptions): Loader {
         module.loaded = true;
         return module.exports;
       }
-      let source = decoder.decode(bytes);
-      if (isModuleType(filename) || hasEsmSyntax(source)) source = transformEsm(source, filename).code;
+      const source = prepareSource(filename, decoder.decode(bytes));
       const requireForModule = makeRequire(module);
       // The CommonJS wrapper. `new Function` is what Node uses too; the extra names past Node's five
       // are the globals a Worker does not have (`process`, `Buffer`, `global`) plus whatever the host
@@ -373,17 +487,86 @@ export function createLoader(opts: CreateLoaderOptions): Loader {
   const rootRequire = makeRequire(null);
   context.loaderRequire = rootRequire;
 
+  function runMain(entry: string, argv?: string[]): unknown {
+    const filename = entry.startsWith("/") ? normalizeAbs(entry) : resolve(entry, normalizeAbs(opts.cwd));
+    process.argv = [process.argv[0] ?? "node", filename, ...(argv ?? [])];
+    const exports = load(filename, null);
+    mainModule = cache.get(filename);
+    rootRequire.main = mainModule;
+    return exports;
+  }
+
+  /**
+   * The asynchronous pass a browser needs before the synchronous one it wants. It reads each file,
+   * transforms it if it is TypeScript or JSX, scans the RESULT for `require` specifiers (esbuild's
+   * CommonJS output names every import as a literal, which is exactly what makes the walk possible),
+   * resolves each one with the real resolver and follows it. Anything it cannot resolve — a
+   * specifier computed at runtime, a package that is not installed — is skipped here and refused
+   * later by `require` itself, which is the side that knows how to say so.
+   */
+  async function warmup(entry: string): Promise<string[]> {
+    const start = entry.startsWith("/") ? normalizeAbs(entry) : resolve(entry, normalizeAbs(opts.cwd));
+    const seen = new Set<string>();
+    const queue: string[] = [start];
+    const transformed: string[] = [];
+    while (queue.length > 0) {
+      const filename = queue.shift() as string;
+      if (!filename.startsWith("/") || seen.has(filename)) continue;
+      seen.add(filename);
+      if (filename.endsWith(".json")) continue;
+      let source: string;
+      try {
+        source = decoder.decode(opts.fs.readFileSync(filename));
+      } catch {
+        continue; // it resolved a moment ago and is gone now; `require` will say so properly.
+      }
+      let code: string;
+      const request = transformRequestFor(filename);
+      if (request) {
+        const cached = transformCache.get(filename, source);
+        if (cached) {
+          code = cached.code;
+        } else {
+          if (!opts.transformer) failTransformUnavailable(filename);
+          code = transformCache.set(filename, source, await opts.transformer.transform(source, request)).code;
+          transformed.push(filename);
+        }
+      } else {
+        try {
+          code = isModuleType(filename) || hasEsmSyntax(source) ? transformEsm(source, filename).code : source;
+        } catch {
+          continue; // a top-level-await refusal belongs to `require`, at the moment somebody asks.
+        }
+      }
+      const dir = dirnameAbs(filename);
+      for (const spec of scanRequires(code)) {
+        const mapped = applyBrowserMap(spec, dir, host);
+        if (mapped === EMPTY_MODULE) continue;
+        const effective = mapped ?? spec;
+        const bare = effective.startsWith("node:") ? effective.slice(5) : effective;
+        if (builtin(bare) !== undefined || BUILTIN_NAMES.includes(bare as (typeof BUILTIN_NAMES)[number])) continue;
+        let target: string | null = null;
+        try {
+          target = resolveRequest(effective, dir, host);
+        } catch {
+          continue;
+        }
+        if (target && target.startsWith("/")) queue.push(target);
+      }
+    }
+    return transformed;
+  }
+
   return {
     require: rootRequire,
     resolve: (request, fromDir) => resolve(request, normalizeAbs(fromDir ?? opts.cwd)),
-    runMain(entry: string, argv?: string[]): unknown {
-      const filename = entry.startsWith("/") ? normalizeAbs(entry) : resolve(entry, normalizeAbs(opts.cwd));
-      process.argv = [process.argv[0] ?? "node", filename, ...(argv ?? [])];
-      const exports = load(filename, null);
-      mainModule = cache.get(filename);
-      rootRequire.main = mainModule;
-      return exports;
+    runMain,
+    warmup,
+    async runMainAsync(entry: string, argv?: string[]): Promise<unknown> {
+      await warmup(entry);
+      return runMain(entry, argv);
     },
+    transformCache,
     cache,
     process,
     conditions,

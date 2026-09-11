@@ -15,20 +15,25 @@ import { deepStrictEqual } from "./core.js";
 /**
  * DOES: the WHATWG half Node exposes (`URL`, `URLSearchParams`), `fileURLToPath`, `pathToFileURL`,
  * and `url.parse`/`url.format`/`url.resolve` in their legacy shape because half of npm still calls
- * them.
+ * them — including `parse(input, true)`'s `query` object and `format`'s `hostname` + `port` and
+ * `query` object, each of which was a silently different URL before.
  * DOES NOT: `domainToASCII`/`domainToUnicode` (punycode is not shipped), and `fileURLToPath` accepts
  * only `file:` URLs with an empty or `localhost` host — a UNC path has no meaning under this
  * filesystem.
  */
 export function fileURLToPath(url: string | URL): string {
   const parsed = typeof url === "string" ? new URL(url) : url;
+  // Node throws a TypeError here, not an Error, and code that checks `err instanceof TypeError`
+  // exists — so this one refusal wears Node's class with this package's code on it.
   if (parsed.protocol !== "file:") {
-    throw new NodeCompatError("ERR_INVALID_URL_SCHEME", `The URL must be of scheme file: (got ${parsed.protocol})`);
+    throw Object.assign(new TypeError(`The URL must be of scheme file: (got ${parsed.protocol})`), {
+      code: "ERR_INVALID_URL_SCHEME",
+    });
   }
   if (parsed.hostname !== "" && parsed.hostname !== "localhost") {
-    throw new NodeCompatError(
-      "ERR_INVALID_FILE_URL_HOST",
-      `File URL host must be empty or "localhost": ${parsed.hostname} names another machine, and there is none here`,
+    throw Object.assign(
+      new TypeError(`File URL host must be empty or "localhost": ${parsed.hostname} names another machine, and there is none here`),
+      { code: "ERR_INVALID_FILE_URL_HOST" },
     );
   }
   return decodeURIComponent(parsed.pathname);
@@ -41,7 +46,25 @@ export function pathToFileURL(path: string): URL {
 }
 
 export function urlModule(): Record<string, unknown> {
-  const legacyParse = (input: string): Record<string, unknown> => {
+  const legacyParse = (input: string, parseQueryString = false): Record<string, unknown> => {
+    const withQuery = (parsed: Record<string, unknown>): Record<string, unknown> => {
+      // `url.parse(input, true)` hands back `query` as an OBJECT, and half the packages that still
+      // call the legacy parser call it exactly that way.
+      if (!parseQueryString) return parsed;
+      const search = typeof parsed.search === "string" ? parsed.search.slice(1) : "";
+      const query: Record<string, string | string[]> = {};
+      for (const [key, value] of new URLSearchParams(search)) {
+        const seen = query[key];
+        if (seen === undefined) query[key] = value;
+        else if (Array.isArray(seen)) seen.push(value);
+        else query[key] = [seen, value];
+      }
+      parsed.query = query;
+      return parsed;
+    };
+    return withQuery(legacyParseOne(input));
+  };
+  const legacyParseOne = (input: string): Record<string, unknown> => {
     try {
       const u = new URL(input);
       return {
@@ -83,14 +106,29 @@ export function urlModule(): Record<string, unknown> {
     fileURLToPath,
     pathToFileURL,
     parse: legacyParse,
-    format: (value: unknown): string =>
-      value instanceof URL
-        ? value.href
-        : (() => {
-            const u = value as Record<string, string | null>;
-            const auth = u.auth ? `${u.auth}@` : "";
-            return `${u.protocol ?? ""}${u.protocol ? "//" : ""}${auth}${u.host ?? u.hostname ?? ""}${u.pathname ?? ""}${u.search ?? ""}${u.hash ?? ""}`;
-          })(),
+    format: (value: unknown): string => {
+      if (value instanceof URL) return value.href;
+      const u = value as Record<string, unknown>;
+      const str = (key: string): string => (typeof u[key] === "string" ? (u[key] as string) : "");
+      const auth = u.auth ? `${String(u.auth)}@` : "";
+      const protocol = str("protocol");
+      // `host` wins over `hostname` + `port` when it is there, which is Node's rule; when it is not,
+      // the port is part of the authority and dropping it (as this did) silently rewrites the URL.
+      const port = u.port === undefined || u.port === null || u.port === "" ? "" : `:${String(u.port)}`;
+      const authority = str("host") || (str("hostname") ? `${str("hostname")}${port}` : "");
+      // A `query` OBJECT is serialised; a `query` STRING is ignored unless it is the only thing
+      // there, both of which is what Node's own format does with them.
+      let search = str("search");
+      if (!search && u.query && typeof u.query === "object") {
+        const params = new URLSearchParams();
+        for (const [key, item] of Object.entries(u.query as Record<string, unknown>)) {
+          for (const one of Array.isArray(item) ? item : [item]) params.append(key, String(one));
+        }
+        const text = params.toString();
+        if (text) search = `?${text}`;
+      }
+      return `${protocol}${protocol ? "//" : ""}${auth}${authority}${str("pathname")}${search}${str("hash")}`;
+    },
     resolve: (from: string, to: string): string => new URL(to, from).href,
   };
 }

@@ -20,7 +20,7 @@ export { builtinModule, BUILTIN_NAMES, makeConsole, type BuiltinContext } from "
 export { createProcess, ExitSignal, type NodeProcess, type NodeProcessOptions, type WritableSink } from "./modules/process.js";
 export { bufferModule, eventsModule, pathModule, streamModule, stringDecoderModule, utilModule, deepStrictEqual, Buffer, EventEmitter, StringDecoder } from "./modules/core.js";
 export { assertModule, AssertionError, osModule, querystringModule, timersModule, urlModule, fileURLToPath, pathToFileURL } from "./modules/small.js";
-export { cryptoModule, Hash, Hmac, randomBytes, md5, sha1, bytesToHex, hexToBytes, bytesToBase64, base64ToBytes, HASH_BUFFER_LIMIT } from "./modules/crypto.js";
+export { cryptoModule, Hash, Hmac, randomBytes, md5, sha1, sha256, bytesToHex, hexToBytes, bytesToBase64, base64ToBytes, HASH_BUFFER_LIMIT } from "./modules/crypto.js";
 export { zlibModule, compress, decompress, sniffFormat, type SyncCompressor } from "./modules/zlib.js";
 export { fsModule, makeStats, type FsModules } from "./modules/fs.js";
 export {
@@ -60,6 +60,31 @@ export {
   type ResolveHost,
 } from "./loader/resolve.js";
 export { transformEsm, hasEsmSyntax, maskSource, type TransformResult } from "./loader/esm.js";
+export {
+  TransformCache,
+  TRANSFORM_EXTENSIONS,
+  TRANSFORM_EXTENSION_ORDER,
+  transformLoaderFor,
+  isDeclarationFile,
+  failTransformUnavailable,
+  failTransformPending,
+  type Transformer,
+  type TransformRequest,
+  type TransformOutput,
+  type TransformLoaderName,
+} from "./loader/transform.js";
+// Exported from here AND reachable at `@00/agent-node/transform/esbuild`. Both are safe for the same
+// reason: `src/transform/esbuild.ts` is the only file in this package that names `esbuild-wasm`, and
+// it names it inside a function (`await import("esbuild-wasm")`), so importing this package — or this
+// symbol — downloads none of the 12.2 MB of wasm. The deep path exists for a host that wants the
+// transformer in its own chunk, which a bundler can only do if nothing else pulls it in.
+export {
+  createEsbuildTransformer,
+  resetEsbuildForTests,
+  type EsbuildTransformer,
+  type EsbuildTransformerOptions,
+  type EsbuildApi,
+} from "./transform/esbuild.js";
 
 export {
   ChildProcess,

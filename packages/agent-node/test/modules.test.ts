@@ -261,11 +261,16 @@ describe("process", () => {
     process.chdir("/root");
     expect(process.cwd()).toBe("/root");
     expect(() => process.exit(3)).toThrow(ExitSignal);
+    // Node's exitCode survives the call, so a bare exit() afterwards carries the code that was set.
+    expect(process.exitCode).toBe(3);
+    const seen: number[] = [];
+    process.on("exit", (code: number) => void seen.push(code));
     try {
       process.exit();
     } catch (err) {
-      expect((err as ExitSignal).code).toBe(0);
+      expect((err as ExitSignal).code).toBe(3);
     }
+    expect(seen).toEqual([3]);
     expect(process.hrtime()).toHaveLength(2);
     const before = process.hrtime();
     expect(process.hrtime(before)[0]).toBeGreaterThanOrEqual(0);
@@ -273,7 +278,7 @@ describe("process", () => {
     expect(process.uptime()).toBeGreaterThanOrEqual(0);
     expect(process.memoryUsage().rss).toBe(0);
     expect(process.stdin.read()).toBeNull();
-    process.stdin.on();
+    process.stdin.on("data", () => undefined);
     process.stdin.setEncoding();
     process.stdin.resume();
     process.stdin.pause();

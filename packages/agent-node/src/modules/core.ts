@@ -51,6 +51,65 @@ export function bufferModule(): Record<string, unknown> {
   };
 }
 
+type AnyEmitter = {
+  on(name: string, fn: (...args: unknown[]) => void): unknown;
+  off(name: string, fn: (...args: unknown[]) => void): unknown;
+  listeners(name: string): unknown[];
+};
+
+/**
+ * `events.on(emitter, name)` — the async iterator Node added in 12 and the `events` package (3.3.0)
+ * does not have. Written out because modern code uses it in place of a `data` handler, and the
+ * alternative was for it to be `undefined` and fail as "events.on is not a function".
+ *
+ * The limits it shares with Node's: events that arrive with nobody awaiting are QUEUED without
+ * bound, an `error` event rejects the iterator, and `return()`/`break` unsubscribes.
+ */
+function eventsOn(emitter: AnyEmitter, name: string): AsyncIterableIterator<unknown[]> {
+  const queue: unknown[][] = [];
+  const waiting: { resolve: (r: IteratorResult<unknown[]>) => void; reject: (err: unknown) => void }[] = [];
+  let finished: { error: unknown } | null = null;
+
+  const push = (...args: unknown[]): void => {
+    const next = waiting.shift();
+    if (next) next.resolve({ value: args, done: false });
+    else queue.push(args);
+  };
+  const fail = (err: unknown): void => {
+    finished = { error: err };
+    stop();
+    for (const w of waiting.splice(0)) w.reject(err);
+  };
+  const stop = (): void => {
+    emitter.off(name, push);
+    emitter.off("error", fail);
+  };
+  emitter.on(name, push);
+  emitter.on("error", fail);
+
+  const iterator: AsyncIterableIterator<unknown[]> = {
+    next(): Promise<IteratorResult<unknown[]>> {
+      const ready = queue.shift();
+      if (ready) return Promise.resolve({ value: ready, done: false });
+      if (finished) return Promise.reject(finished.error);
+      return new Promise((resolve, reject) => void waiting.push({ resolve, reject }));
+    },
+    return(): Promise<IteratorResult<unknown[]>> {
+      stop();
+      for (const w of waiting.splice(0)) w.resolve({ value: undefined, done: true });
+      return Promise.resolve({ value: undefined, done: true });
+    },
+    throw(err: unknown): Promise<IteratorResult<unknown[]>> {
+      stop();
+      return Promise.reject(err);
+    },
+    [Symbol.asyncIterator]() {
+      return iterator;
+    },
+  };
+  return iterator;
+}
+
 /** The `events` module. Node exports the class itself AND as `.EventEmitter`; so does the package. */
 export function eventsModule(): Record<string, unknown> {
   const api = EventEmitter as unknown as Record<string, unknown>;
@@ -58,8 +117,11 @@ export function eventsModule(): Record<string, unknown> {
     EventEmitter,
     default: EventEmitter,
     once: api.once,
-    on: api.on,
+    on: (api.on as unknown) ?? eventsOn,
+    getEventListeners: (emitter: AnyEmitter, name: string) => emitter.listeners(name),
+    setMaxListeners: (api.setMaxListeners as unknown) ?? (() => undefined),
     captureRejectionSymbol: Symbol.for("nodejs.rejection"),
+    errorMonitor: (api.errorMonitor as unknown) ?? Symbol.for("events.errorMonitor"),
   }) as unknown as Record<string, unknown>;
 }
 
@@ -80,10 +142,25 @@ export function pathModule(cwd: () => string): Record<string, unknown> {
   return api;
 }
 
-/** `stream`, plus the submodule names Node answers separately. */
+/**
+ * `stream`. Node's `stream` module IS the legacy `Stream` constructor with everything else hung off
+ * it — `require("stream")` is callable and has a `.prototype.pipe`, and packages do subclass it — so
+ * this returns that function rather than a plain object holding the same names.
+ */
 export function streamModule(): Record<string, unknown> {
   const api = streams as unknown as Record<string, unknown>;
-  return Object.assign({}, api, { default: api, promises: (api.promises as unknown) ?? { pipeline: api.pipeline, finished: api.finished } });
+  const Stream = (api.Stream ?? api.default) as unknown as Record<string, unknown>;
+  // Only what is MISSING is added: readable-stream defines `promises` on its Stream as a getter with
+  // no setter, and an `Object.assign` over it throws rather than being ignored.
+  const add = (key: string, value: unknown): void => {
+    if (key in Stream) return;
+    Object.defineProperty(Stream, key, { value, enumerable: true, configurable: true, writable: true });
+  };
+  for (const [key, value] of Object.entries(api)) add(key, value);
+  add("Stream", Stream);
+  add("default", Stream);
+  add("promises", { pipeline: api.pipeline, finished: api.finished });
+  return Stream;
 }
 
 /** `util`. `promisify`, `inherits`, `format` and `inspect` come from the package; the rest is Node's shape. */
@@ -97,7 +174,43 @@ export function utilModule(): Record<string, unknown> {
         (err) => done(err ?? new Error("rejected with a falsy value")),
       );
     };
+  // The `util` package's `format` predates `%i` and `%f`, and leaves them in the output as literal
+  // text — which reads as a bug in the caller's own log line. Handled here before delegating.
+  const packageFormat = api.format as (...args: unknown[]) => string;
+  const format = (...args: unknown[]): string => {
+    if (typeof args[0] !== "string" || !/%[if]/.test(args[0])) return packageFormat(...args);
+    const rest = args.slice(1);
+    let at = 0;
+    const first = args[0].replace(/%[%if]/g, (token) => {
+      if (token === "%%") return "%%";
+      if (at >= rest.length) return token;
+      const value = Number(rest[at++]);
+      return token === "%i" ? String(Number.isNaN(value) ? NaN : Math.trunc(value)) : String(value);
+    });
+    return packageFormat(first, ...rest.slice(at));
+  };
+
+  // `inspect` from the package is pre-BigInt and renders a bigint, a symbol, a Map and a Set all as
+  // `{}`. These four are handled at the top level — nested ones still go through the package — so a
+  // `console.log(util.inspect(new Map(…)))` says what it holds instead of nothing.
+  const packageInspect = api.inspect as (value: unknown, ...rest: unknown[]) => string;
+  const inspect = (value: unknown, ...rest: unknown[]): string => {
+    if (typeof value === "bigint") return `${value}n`;
+    if (typeof value === "symbol") return value.toString();
+    if (value instanceof Map) {
+      const body = [...value].map(([k, v]) => `${packageInspect(k)} => ${packageInspect(v)}`).join(", ");
+      return value.size === 0 ? "Map(0) {}" : `Map(${value.size}) { ${body} }`;
+    }
+    if (value instanceof Set) {
+      const body = [...value].map((v) => packageInspect(v)).join(", ");
+      return value.size === 0 ? "Set(0) {}" : `Set(${value.size}) { ${body} }`;
+    }
+    return packageInspect(value, ...rest);
+  };
+
   return Object.assign({}, api, {
+    format,
+    inspect: Object.assign(inspect, packageInspect),
     callbackify: (api.callbackify as unknown) ?? callbackify,
     TextEncoder,
     TextDecoder,

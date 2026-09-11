@@ -67,14 +67,26 @@ export class NodeFsBackend implements SyncFsService {
     this.sync = opts.sync ?? null;
   }
 
+  /**
+   * Node's fs accepts a `file:` URL wherever it accepts a path, and `import.meta.url` handed
+   * straight to `readFile` is how half of ESM reads a file beside itself. A `URL` object and a
+   * `file://…` string both arrive here as the path they name; anything else is left alone.
+   */
+  private static asPath(p: unknown): string {
+    if (p instanceof URL) return decodeURIComponent(p.pathname);
+    const text = String(p);
+    if (!text.startsWith("file:")) return text;
+    return decodeURIComponent(new URL(text).pathname);
+  }
+
   /** A virtual path, however it was typed, as the `AgentFs` path underneath it. */
   agentPath(p: string): string {
-    return toAgentPath(this.root, resolveAbs(this.cwdOf(), p));
+    return toAgentPath(this.root, resolveAbs(this.cwdOf(), NodeFsBackend.asPath(p)));
   }
 
   /** The absolute virtual path, for anything that reports a path back to the script. */
   absolute(p: string): string {
-    return resolveAbs(this.cwdOf(), p);
+    return resolveAbs(this.cwdOf(), NodeFsBackend.asPath(p));
   }
 
   get hasSync(): boolean {
@@ -150,6 +162,12 @@ export class NodeFsBackend implements SyncFsService {
         const stat = await this.fs.stat(path);
         if (!stat) throw enoent("rmdir", String(args.path));
         if (stat.kind !== "dir") throw enotdir("rmdir", String(args.path));
+        // Node's rmdir refuses a directory with anything in it, and a script that deletes a tree by
+        // accident because this one did not is a script that loses work. `rm({ recursive: true })`
+        // is the deliberate spelling.
+        if ((await this.fs.readdir(path)).length > 0) {
+          throw new NodeCompatError("ENOTEMPTY", `ENOTEMPTY: directory not empty, rmdir '${String(args.path)}'`);
+        }
         await this.fs.remove(path);
         return {};
       }

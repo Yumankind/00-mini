@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, pbkdf2Sync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { Hash, Hmac, cryptoModule, md5, sha1, randomBytes, bytesToHex, hexToBytes, bytesToBase64, base64ToBytes, HASH_BUFFER_LIMIT } from "../src/modules/crypto.js";
 import { compress, decompress, sniffFormat, zlibModule } from "../src/modules/zlib.js";
@@ -15,14 +15,18 @@ describe("crypto digests", () => {
     }
   });
 
-  it("createHash answers synchronously for md5/sha1 and asynchronously for the WebCrypto ones", async () => {
+  it("createHash answers synchronously for md5/sha1/sha256 and asynchronously for the WebCrypto ones", async () => {
     const hash = new Hash("md5");
     expect(hash.update("a").update("bc").digest("hex")).toBe(createHash("md5").update("abc").digest("hex"));
     expect(new Hash("sha1").update("abc").digest("base64")).toBe(createHash("sha1").update("abc").digest("base64"));
     expect(await new Hash("md5").update("abc").digestAsync("hex")).toBe(createHash("md5").update("abc").digest("hex"));
     expect(await new Hash("sha1").update("abc").digestAsync("hex")).toBe(createHash("sha1").update("abc").digest("hex"));
+    // sha256 is in JS too (the loader's transform cache hashes source from inside a sync require).
+    expect(new Hash("sha256").update("a").update("bc").digest("hex")).toBe(createHash("sha256").update("abc").digest("hex"));
+    expect(new Hash("sha256").update("").digest("hex")).toBe(createHash("sha256").update("").digest("hex"));
+    expect(new Hash("sha256").update("x".repeat(1000)).digest("hex")).toBe(createHash("sha256").update("x".repeat(1000)).digest("hex"));
 
-    for (const algorithm of ["sha256", "sha384", "sha512"]) {
+    for (const algorithm of ["sha384", "sha512"]) {
       const ours = new Hash(algorithm).update("abc");
       expect(await ours.digestAsync("hex")).toBe(createHash(algorithm).update("abc").digest("hex"));
       expect(() => new Hash(algorithm).update("abc").digest("hex")).toThrow(/asynchronous here/);
@@ -61,8 +65,13 @@ describe("crypto digests", () => {
       createHmac("sha256", "key").update("abc").digest("base64"),
     );
     expect(await new Hmac("sha256", "key").update("abc").digestAsync()).toBeInstanceOf(Uint8Array);
-    expect(() => new Hmac("sha256", "key").digest()).toThrow(/asynchronous here/);
-    expect(() => new Hmac("md5", "key")).toThrow(/HMAC covers/);
+    // md5, sha1 and sha256 HMAC synchronously (RFC 2104 over the JS digests); sha384/512 do not.
+    expect(new Hmac("sha256", "key").update("abc").digest("hex")).toBe(createHmac("sha256", "key").update("abc").digest("hex"));
+    expect(new Hmac("sha1", "key").update("abc").digest("hex")).toBe(createHmac("sha1", "key").update("abc").digest("hex"));
+    expect(new Hmac("sha256", "k".repeat(100)).update("abc").digest("hex")).toBe(createHmac("sha256", "k".repeat(100)).update("abc").digest("hex"));
+    expect(() => new Hmac("sha512", "key").digest()).toThrow(/asynchronous here/);
+    expect(new Hmac("md5", "key").update("abc").digest("hex")).toBe(createHmac("md5", "key").update("abc").digest("hex"));
+    expect(() => new Hmac("whirlpool", "key")).toThrow(/the digests here are/);
   });
 });
 
@@ -118,10 +127,18 @@ describe("crypto randomness and helpers", () => {
   });
 
   it("the ciphers and key generators refuse by name and point at WebCrypto", () => {
-    for (const name of ["createCipheriv", "createDecipheriv", "createSign", "createVerify", "generateKeyPair", "generateKeyPairSync", "pbkdf2Sync", "scryptSync", "createDiffieHellman"]) {
+    for (const name of ["createCipheriv", "createDecipheriv", "createSign", "createVerify", "generateKeyPair", "generateKeyPairSync", "scryptSync", "createDiffieHellman"]) {
       expect(() => (api[name] as () => unknown)(), name).toThrow(/not implemented in this runtime/);
     }
     expect((api.getHashes as () => string[])()).toContain("sha512");
+    // PBKDF2 is here now, in JS over the JS HMAC, and it matches Node's for the digests it covers.
+    expect(bytesToHex((api.pbkdf2Sync as (...a: unknown[]) => Uint8Array)("pw", "salt", 100, 32, "sha256"))).toBe(
+      pbkdf2Sync("pw", "salt", 100, 32, "sha256").toString("hex"),
+    );
+    expect(bytesToHex((api.pbkdf2Sync as (...a: unknown[]) => Uint8Array)("pw", "salt", 7, 50, "sha1"))).toBe(
+      pbkdf2Sync("pw", "salt", 7, 50, "sha1").toString("hex"),
+    );
+    expect(() => (api.pbkdf2Sync as (...a: unknown[]) => unknown)("pw", "salt", 1, 32, "sha512")).toThrow(/derive synchronously/);
     expect((api as unknown as { webcrypto: unknown }).webcrypto).toBeDefined();
     expect((api.createHash as (a: string) => Hash)("sha256")).toBeInstanceOf(Hash);
     expect((api.createHmac as (a: string, k: string) => Hmac)("sha256", "k")).toBeInstanceOf(Hmac);

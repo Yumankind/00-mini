@@ -13,8 +13,9 @@
  * `package.json` `exports` with conditions (`browser`, `import`, `require`, `default`, plus whatever
  * the host adds), subpath keys, `./*` patterns, condition arrays and `null` blocks; `main`;
  * `browser` as a string and as a map, including `false` for "this module is empty in a browser";
- * `index.js`; the extension ladder `.js` `.cjs` `.mjs` `.json`; and `imports` (`#internal`) with the
- * same condition machinery.
+ * `index.js`; the extension ladder `.js` `.cjs` `.mjs` `.json` and then `.ts` `.tsx` `.mts` `.cts`
+ * `.jsx` (see `EXTENSIONS` for why in that order); and `imports` (`#internal`) with the same
+ * condition machinery.
  *
  * DOES NOT: `.node` (a native addon has no browser; it refuses by name), symlink realpath (there are
  * no symlinks in this filesystem, so `preserveSymlinks` is moot), `NODE_PATH`, the legacy
@@ -26,6 +27,7 @@
 
 import { NodeCompatError } from "../errors.js";
 import { normalizeAbs, resolveAbs } from "../paths.js";
+import { TRANSFORM_EXTENSION_ORDER } from "./transform.js";
 
 export interface ResolveHost {
   isFile(path: string): boolean;
@@ -40,7 +42,15 @@ export interface ResolveHost {
 /** What a `browser: { "x": false }` entry resolves to. The loader turns it into an empty exports. */
 export const EMPTY_MODULE = "\0empty";
 
-export const EXTENSIONS = [".js", ".cjs", ".mjs", ".json"] as const;
+/**
+ * The extension ladder, in the order Node tries it — with the transform extensions appended AFTER
+ * the JavaScript ones. `require("./a")` finds `a.js` when there is one and `a.ts` when there is not,
+ * which is the rule every TypeScript runtime settled on: a compiled `a.js` sitting beside its source
+ * is the artefact, and shadowing it with the source would run the wrong file. A `.ts` that resolves
+ * without a transformer configured refuses by name in the loader (`ERR_TRANSFORM_UNAVAILABLE`)
+ * rather than here, because "there is no such module" would be a lie about a file that exists.
+ */
+export const EXTENSIONS = [".js", ".cjs", ".mjs", ".json", ...TRANSFORM_EXTENSION_ORDER] as const;
 
 /** `NODE_MODULES_PATHS`: every `node_modules` from `fromDir` up to (and including) `root`. */
 export function nodeModulesPaths(fromDir: string, root = "/"): string[] {
