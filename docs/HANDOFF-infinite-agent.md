@@ -329,6 +329,38 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
 31. **On a phone the Workspace tab lands on the workspace** (it used to toggle, and a tap while the
     panel was already open showed the chat — Bruno hit it).
 
+32. **Stop stops everything, downloads resume, and the compile has a name** (Bruno's asks, 2026-09-11):
+    `ModelProvider.abortLoad` (additive) pulls a model download or abandons a compile; the composer
+    shows Stop while a model loads, not only during a run. LiteRT downloads land in 64 MiB parts in
+    Cache Storage and the next load asks for the rest with a Range header (a closed tab or a phone that
+    froze the page no longer restarts 2 GB); readiness phases `load` ("Loading … into the GPU") and
+    `paused` ("44% downloaded · resumes with your next message") replace a bar stuck at 100 %.
+
+33. **Settings is one door.** Connections, the vault, move & backup and the website are tabs of a
+    Settings pane whose first control is "Back to chat" on every width; the header carries the same
+    arrow. The sidebar's three destinations became one.
+
+34. **The companion shipped both halves** (§14): the engine's routes and CLI, and the browser's card,
+    key, signed client, remote git and proxy preference. Not yet done live end to end: the running
+    engine on this Mac predates the routes (a `scripts/deploy-dev.sh --restart` is the owner's call),
+    and the credential path of the git proxy (`git credential fill` with real credentials, a real
+    push) was exercised only on its empty path.
+
+35. **`node file.ts` runs in the tab** through esbuild-wasm (12 MB, served same-origin at
+    `/esbuild/<version>/esbuild.wasm`, fetched only when a `.ts` file runs); the Node layer measures
+    itself against 767 cases ported from macaly/almostnode (MIT) — the scoreboard is
+    `packages/agent-node/test/compat/SCOREBOARD.md`, and `docs/dev-servers.md` there says what a real
+    Vite would still need. almostnode reimplements Vite and Next rather than running them.
+
+36. **The public repository is prepared, not published** (Bruno: "00-mini", Apache-2.0, all
+    suggestions, no secret). A filter-repo cut of the slice (four packages, the three apps, the
+    publish scripts, this plan, four files of `@00/shared` pinned by sha256) with LICENSE, NOTICE,
+    README, a GitHub Actions gate and its own workspace files sits at the session's scratchpad as
+    `00-mini/` — it installs, builds and tests on its own. The sweep over the slice found no keys,
+    tokens or private keys (only test fakes and a vault key NAME); private references left are doc
+    mentions and the workers.dev account name. Creating the GitHub repository is the click the owner
+    makes.
+
 **Things I did NOT do, on purpose**
 - No deploy of the landing, the site Worker, or moltworker (your call each time).
 - No enabling of `INFINITE_ENABLED`, no D1 migration applied, no secrets created.
