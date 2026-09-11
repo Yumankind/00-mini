@@ -204,3 +204,16 @@ describe("the load phase line", () => {
     expect(downloadPercent(loading)).toBeNull();
   });
 });
+
+
+describe("the paused phase line", () => {
+  it("says how far a stopped download got and that it resumes", () => {
+    const paused = {
+      ready: false as const,
+      reason: "download" as const,
+      detail: "x is 44 % downloaded — it resumes with your next message.",
+      progress: { loadedBytes: 4, totalBytes: 9, percent: 44, phase: "paused" as const },
+    };
+    expect(downloadLine("Gemma 4 E2B", paused)).toBe("Gemma 4 E2B · 44% downloaded · resumes with your next message");
+  });
+});

@@ -78,6 +78,9 @@ function memoryCaches(): LiteRtCacheStorageLike & { buckets: Map<string, Map<str
         async put(request: string, response: Response) {
           bucket.set(request, await response.arrayBuffer());
         },
+        async delete(request: string) {
+          return bucket.delete(request);
+        },
       };
     },
     async delete(name: string) {
@@ -782,6 +785,8 @@ describe("readiness carries a typed progress while the asset is coming down", ()
     expect(before.ready === false && before.detail).toContain("has not been downloaded");
 
     const loading = instance.load();
+    // The resumable download reads its meta from the cache before it fetches; give it that tick.
+    await new Promise((r) => setTimeout(r, 5));
     await gate.push(1);
     const quarter = await instance.readiness();
     expect(quarter).toMatchObject({
@@ -1138,5 +1143,94 @@ describe("abortLoad (2026-09-11: Stop pulls the download or abandons the compile
     await expect(loading).rejects.toMatchObject({ code: "aborted" });
     expect(closed).toEqual(["closed"]);
     expect(await provider.readiness()).toMatchObject({ ready: true }); // the bytes are cached; a new load compiles again
+  });
+});
+
+
+describe("resumable downloads (2026-09-11: a closed tab or a Stop no longer starts a 2 GB download over)", () => {
+  /** A host that does ranges: 206 + Content-Range for a Range request, 200 otherwise; an abortable body. */
+  function rangeHost(data: number[], opts: { ranges?: boolean } = {}) {
+    const calls: { range: string | null }[] = [];
+    let abortNext = -1;
+    return {
+      calls,
+      /** Make the NEXT response's body error after `n` bytes, as a dropped connection would. */
+      cutAfter(n: number) {
+        abortNext = n;
+      },
+      async fetch(_url: string, init?: RequestInit) {
+        const range = new Headers(init?.headers).get("range");
+        calls.push({ range });
+        const from = range && opts.ranges !== false ? Number(/bytes=(\d+)-/.exec(range)![1]) : 0;
+        const slice = data.slice(from);
+        const cut = abortNext;
+        abortNext = -1;
+        // Pull-based, one byte per read: an `error()` inside `start()` would throw away the bytes
+        // already queued, which is not how a dropped connection behaves.
+        let sent = 0;
+        const body = new ReadableStream<Uint8Array>({
+          pull(c) {
+            if (cut >= 0 && sent >= cut) {
+              c.error(new TypeError("network dropped"));
+              return;
+            }
+            if (sent >= slice.length) {
+              c.close();
+              return;
+            }
+            c.enqueue(new Uint8Array([slice[sent]!]));
+            sent += 1;
+          },
+        });
+        const headers: Record<string, string> = {};
+        if (range && opts.ranges !== false) {
+          headers["content-range"] = `bytes ${from}-${data.length - 1}/${data.length}`;
+          return new Response(body, { status: 206, headers });
+        }
+        headers["content-length"] = String(data.length);
+        return new Response(body, { status: 200, headers });
+      },
+    };
+  }
+
+  it("keeps the complete parts of a cut-off download, says how far it got, and resumes with a Range", async () => {
+    withWebGpu();
+    const host = rangeHost([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    const caches = memoryCaches();
+    const make = () =>
+      new LiteRtProvider({ modelBaseUrl: BASE, caches, fetch: host.fetch, partBytes: 2, createTask: async () => mockTask(["ok"]) });
+    host.cutAfter(5);
+    await expect(make().load()).rejects.toBeTruthy();
+    // Two full parts (4 bytes) are on disk; the fifth byte, an incomplete part, is not.
+    const bucket = caches.buckets.get(LITERT_MODEL_CACHE)!;
+    expect([...bucket.keys()].filter((k) => k.includes("?part=")).length).toBe(2);
+    const paused = await make().readiness();
+    expect(paused).toMatchObject({ ready: false, reason: "download", progress: { loadedBytes: 4, totalBytes: 9, percent: 44, phase: "paused" } });
+    expect((paused as { detail: string }).detail).toContain("44 % downloaded");
+
+    const second = make();
+    await second.load();
+    expect(host.calls.at(-1)!.range).toBe("bytes=4-");
+    expect(await second.readiness()).toEqual({ ready: true });
+    // The whole asset, and nothing else, is what stays.
+    expect([...bucket.keys()].length).toBe(1);
+    expect([...bucket.keys()].some((k) => k.includes("?part=") || k.includes("?meta"))).toBe(false);
+    expect(new Uint8Array(bucket.get([...bucket.keys()][0]!)!)).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]));
+  });
+
+  it("starts over when the host ignores the Range, and never stitches two answers", async () => {
+    withWebGpu();
+    const host = rangeHost([1, 2, 3, 4, 5, 6], { ranges: false });
+    const caches = memoryCaches();
+    const make = () =>
+      new LiteRtProvider({ modelBaseUrl: BASE, caches, fetch: host.fetch, partBytes: 2, createTask: async () => mockTask(["ok"]) });
+    host.cutAfter(3);
+    await expect(make().load()).rejects.toBeTruthy();
+    const second = make();
+    await second.load();
+    expect(host.calls.at(-1)!.range).toBe("bytes=2-"); // asked for a resume…
+    const bucket = caches.buckets.get(LITERT_MODEL_CACHE)!;
+    const full = [...bucket.keys()].find((k) => !k.includes("?"))!;
+    expect(new Uint8Array(bucket.get(full)!)).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6])); // …got the whole file, kept it whole
   });
 });

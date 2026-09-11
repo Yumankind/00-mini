@@ -165,6 +165,11 @@ export function downloadLine(name: string, readiness: Readiness): string | null 
   // The bytes are here and the runtime is compiling them: a different wait, said in its own words,
   // with no percentage (there is none to give) — Bruno saw "100 %" sit there and read it as stuck.
   if (readiness.progress.phase === "load") return `Loading ${name} into the GPU…`;
+  // Stopped or cut off, bytes kept: not a download in flight, a download that will resume.
+  if (readiness.progress.phase === "paused") {
+    const percent = downloadPercent(readiness);
+    return `${name} · ${percent !== null ? `${percent}% downloaded` : `${compactBytes(readiness.progress) ?? "part"} downloaded`} · resumes with your next message`;
+  }
   const parts = [`Downloading ${name}`];
   const percent = downloadPercent(readiness);
   if (percent !== null) parts.push(`${percent}%`);

@@ -107,9 +107,11 @@ export interface ReadinessProgress {
   /**
    * Which wait this is (additive, 2026-09-11). `download` is bytes arriving; `load` is the bytes in
    * hand and the runtime compiling them for the GPU — a wait with no byte count, which used to show
-   * as a download stuck at 100 %. Absent means `download`, as every older provider meant.
+   * as a download stuck at 100 %. `paused` is a download that was stopped or cut off, with the bytes
+   * so far kept on disk; it resumes with the next load. Absent means `download`, as every older
+   * provider meant.
    */
-  phase?: "download" | "load";
+  phase?: "download" | "load" | "paused";
 }
 
 export type Readiness =
