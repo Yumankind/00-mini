@@ -33,8 +33,14 @@ export const COMPANION_PROBE_TIMEOUT_MS = 1500;
 /** Under this width, with a coarse pointer, there is no `00d` to find (§14.1: desktop widths only). */
 export const DESKTOP_MIN_WIDTH = 900;
 
+/**
+ * A `TypeError` from an https page is the browser refusing the request before it left: Safari's
+ * mixed-content rule, a privacy setting, an extension, or an embedded browser's own policy (the
+ * Claude desktop pane answers ERR_BLOCKED_BY_CLIENT, seen 2026-09-11). The sentence names the
+ * browser, not Safari, because Chrome showed it too.
+ */
 export const SAFARI_LOCALHOST_REASON =
-  "Safari does not let a page reach localhost; use the relay road or open the app from the companion";
+  "this browser did not let the page reach localhost (Safari's mixed-content rule, a privacy setting or an extension); use the relay road or open the app from the companion";
 
 export const NO_COMPANION_ROUTES_REASON = "the engine here has no companion yet — update 00d";
 

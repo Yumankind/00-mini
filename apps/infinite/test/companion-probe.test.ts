@@ -118,7 +118,7 @@ describe("what the engine says", () => {
 });
 
 describe("why the probe failed", () => {
-  it("names Safari's mixed-content rule on an https page, and offers the other road", () => {
+  it("names the browser's refusal on an https page (Safari's rule is one cause), and offers the other road", () => {
     expect(probeFailureReason(new TypeError("Load failed"), { protocol: "https:" })).toBe(SAFARI_LOCALHOST_REASON);
     expect(SAFARI_LOCALHOST_REASON).toContain("relay road");
   });

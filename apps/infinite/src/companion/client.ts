@@ -12,7 +12,9 @@
  * cap belongs to the thing doing the buffering: a push bigger than that would be buffered in this
  * tab's memory before it was ever refused over there.
  */
-import { COMPANION_DEV_HEADER, companionKey, signedHeaders, type CompanionKeyEnv } from "./key.js";
+import { COMPANION_DEV_HEADER, companionKey, signedHeaders, type CompanionKeyEnv,
+  adoptEngineFingerprint,
+} from "./key.js";
 
 export const COMPANION_PAIR_PATH = "/api/companion/pair";
 export const COMPANION_ME_PATH = "/api/companion/me";
@@ -112,7 +114,10 @@ export async function pair(req: PairRequest, env: CompanionEnv = {}): Promise<Co
     }),
   });
   if (!response.ok) throw await refusal(response, "This computer refused the pairing.");
-  return identityOf(await response.json().catch(() => null), device.deviceId);
+  const identity = identityOf(await response.json().catch(() => null), device.deviceId);
+  // The engine's fingerprint for this key is the one every signed call must carry (key.ts says why).
+  await adoptEngineFingerprint(req.engineFp, identity.fingerprint, env);
+  return identity;
 }
 
 /** Who this browser is to that engine, and what it is allowed to do — the readiness poll's answer. */

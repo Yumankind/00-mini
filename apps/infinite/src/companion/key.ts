@@ -171,6 +171,22 @@ export async function companionKey(engineFp: string, env: CompanionKeyEnv = {}):
   return device;
 }
 
+/**
+ * THE ENGINE'S NAME FOR THIS KEY WINS. `deviceId` starts as the browser's own fingerprint of the raw
+ * public-key bytes (§14.2), but the engine files the device under a fingerprint of ITS making — today
+ * a hash of the compact JWK text, not of the point — and `x-00-dev` has to be the name the engine
+ * filed, or every signed call after a successful pairing answers "not paired" (found live,
+ * 2026-09-11). So the pairing reply's fingerprint is adopted into the record, once, and the local
+ * derivation stays only as the value sent BEFORE an engine has spoken.
+ */
+export async function adoptEngineFingerprint(engineFp: string, fingerprint: string, env: CompanionKeyEnv = {}): Promise<void> {
+  if (!/^[0-9a-f]{16}$/.test(fingerprint)) return;
+  const store = storeFor(env);
+  const device = await companionKey(engineFp, env);
+  if (device.deviceId === fingerprint) return;
+  await store.put({ ...device, deviceId: fingerprint });
+}
+
 /** Forget this engine's key. Called when the person disconnects, or the engine says it is gone. */
 export async function forgetCompanionKey(engineFp: string, env: CompanionKeyEnv = {}): Promise<void> {
   await storeFor(env).delete(companionAppId(engineFp));

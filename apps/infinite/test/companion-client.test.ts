@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { MemoryDeviceKeyStore } from "@00/agent-models";
+import { companionFingerprint } from "../src/companion/key.js";
 import {
   COMPANION_FETCH_PATH,
   COMPANION_GIT_PATH,
@@ -268,5 +269,28 @@ describe("the git transport", () => {
     let seenBytes = 0;
     for await (const chunk of response.body) seenBytes += chunk.length;
     expect(seenBytes).toBeGreaterThan(0);
+  });
+});
+
+describe("the fingerprint the engine filed (2026-09-11: the two halves derived it differently)", () => {
+  it("adopts the engine's fingerprint at pairing, so every signed call after it names the device the engine knows", async () => {
+    const { seen, env } = recorder((row) =>
+      row.url.endsWith(COMPANION_PAIR_PATH)
+        ? json({ fingerprint: "b3c43ddc7271295d", engineName: "Mac", scopes: ["git", "fetch"] })
+        : json({ fingerprint: "b3c43ddc7271295d", name: "b", origin: BASE, agentId: "a", scopes: ["git", "fetch"], pairedAt: "t" }),
+    );
+    const before = await companionFingerprint(ENGINE, env);
+    expect(before).not.toBe("b3c43ddc7271295d"); // the browser's own derivation, over the raw point
+    await pair({ base: BASE, engineFp: ENGINE, code: "one two three four five six", name: "b", agentId: "a" }, env);
+    await me(BASE, ENGINE, env);
+    expect(seen[1].headers["x-00-dev"]).toBe("b3c43ddc7271295d");
+    expect(await companionFingerprint(ENGINE, env)).toBe("b3c43ddc7271295d");
+  });
+
+  it("ignores a malformed fingerprint in the pairing reply and keeps its own", async () => {
+    const { env } = recorder(() => json({ fingerprint: "not-a-fingerprint", engineName: "Mac", scopes: [] }));
+    const before = await companionFingerprint(ENGINE, env);
+    await pair({ base: BASE, engineFp: ENGINE, code: "a b c d e f", name: "b", agentId: "a" }, env).catch(() => undefined);
+    expect(await companionFingerprint(ENGINE, env)).toBe(before);
   });
 });

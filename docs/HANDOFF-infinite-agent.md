@@ -1471,7 +1471,12 @@ verified with WebCrypto ECDSA P-256 / SHA-256 over a raw 64-byte r‖s signature
 a browser's non-extractable key cannot be Ed25519 everywhere yet. Ed25519 devices are untouched.
 The browser key lives in `IndexedDbDeviceKeyStore` under `companion:<engineFp>`; the grant is
 bound to that key, this origin and this agent id — a second tab of the same agent on the same
-origin shares it, which is the same agent.
+origin shares it, which is the same agent. **The fingerprint is the engine's to issue** (found live
+2026-09-11: the engine hashes the compact JWK text, the browser hashed the raw point, and every
+signed call after a good pairing answered `not_paired`): the pairing reply's `fingerprint` is
+adopted into the browser's key record and is what `x-00-dev` carries from then on. Proven end to
+end the same day: paired from the dev server, `git clone` of a GitHub repository ran through the
+engine's proxy into the workspace.
 
 ### 14.3 Scopes, in the order they ship
 
