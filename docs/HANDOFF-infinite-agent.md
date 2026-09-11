@@ -2043,3 +2043,160 @@ model transcribing, not a wiring fault, and it is what the composer's upload pat
   arrives, this row already loads the encoder for it.
 - The 1.52 GB single-buffer allocation of fact 3 is a real ceiling, not a theoretical one. If it bites
   on a machine, the fix is upstream (a streaming `readResponse`), not here.
+
+---
+
+## `hosts` — a row says which harness may offer it, and five more ONNX rows (2026-09-11, later)
+
+Bruno, on the local-model catalogue: **"gate the models to the compatible harness"**, and five models
+he picked by name. Two changes, one vocabulary.
+
+### The `Host` type, and where it lives on both sides
+
+```ts
+type Host = "browser-desktop" | "browser-phone" | "mac" | "headless";
+```
+
+It is declared **once**, in `packages/shared/src/models.ts` (with `HOSTS` and `isHost` beside it), and
+both sides import that one definition: `@00/agent-models`'s `types.ts` re-exports it and adds
+`hosts?: Host[]` to `ModelInfo`, and the engine's `apps/00d/src/llm-catalog.ts` adds `hosts?: Host[]`
+to `LlmFacts`. Two definitions of the same four words is how two pickers start disagreeing about what
+a phone is.
+
+**What it is not.** Not readiness — a row offered on `browser-desktop` may still need two gigabytes
+downloading, and `readiness()` stays the only truth about that. Not a capability list — `vision`,
+`contextTokens` and `supportsTools` still say what a model can DO; `hosts` says only where it may be
+SHOWN.
+
+**The absent case, said in one place and obeyed everywhere:** `DEFAULT_HOSTS = ["browser-desktop"]`
+(`types.ts`), with `hostsOf(row)` and `offeredOn(row, host)` beside it. A row nobody has classified is
+desktop-only — the conservative reading, and the one that cannot put three gigabytes on a phone by
+omission. A mirror row this package has never heard of falls under exactly that rule.
+
+**Where it is filled in:** every row of `LITERT_CATALOG`, `TRANSFORMERS_CATALOG` and `WEBLLM_CATALOG`;
+every asset of `litert/catalog.json` (the publish script's new `hosts` column); and every entry of
+`catalogs/llm-models.json`, which carries `["mac","headless"]` — additive and **inert on the engine
+this round**: nothing there filters on it, the models table shows what it showed yesterday, and what
+the field buys today is the shared vocabulary for the day a row is genuinely harness-specific.
+
+The WebLLM rows were decided by size, since `vram_required_MB` is all that catalogue publishes: the
+879 MB Llama 3.2 1B (which is also `WEBLLM_DEFAULT_MODEL_ID`, the fallback brain) is offered on a
+phone, and the 1.4 GB Qwen3 0.6B and everything above it are not.
+
+### The picker: one gate, where there were two
+
+`apps/infinite/src/lib/litert-catalog.ts` derives the harness ONCE:
+
+- `thisHost(view?)` — `browser-phone` when `(pointer: coarse)` matches **and** the window is under
+  `PHONE_MAX_WIDTH_PX` (768, the width the old rule already used), `browser-desktop` otherwise. Either
+  signal alone is a device this would get wrong: a touchscreen laptop is a desktop, and a desktop
+  window dragged thin can still hold a 3 GB model. Where there is no `matchMedia` at all,
+  Chromium's `navigator.userAgentData.mobile` answers; failing both it is a desktop, which is the
+  reading that offers MORE rather than fewer.
+- `rowsForHost(rows, host)` — the filter, applied in `state/local-models.ts` **before any size rule**.
+- `localHost` (a ref, re-read when the rows are) replaced `localPicker`, and `localBrain().picker` is
+  gone from `runtime/bootstrap.ts`. §12.6's "a phone gets no picker" is now "a phone gets a picker of
+  the rows offered on a phone" — three today (Gemma 3 270m, Gemma 3 1B, Qwen3.5 0.8B), with one line
+  saying why the list is short. The 0.8B is the first phone row that **sees**, which is precisely why
+  one row chosen by a number was no longer the right answer.
+- The old VRAM rule survives only as a **tie-breaker**: `phoneRow()` picks the smallest row *offered
+  on a phone* as the DEFAULT a phone that has never chosen starts on, and still refuses a row whose
+  numbers were `estimated`.
+
+### The six ONNX rows, as the picker draws them
+
+| label | size | vision | licence | note |
+|---|---|---|---|---|
+| Gemma 4 E2B · vision (ONNX) | 3.4 GB | yes | Apache-2.0 | Sees pictures · ONNX runtime, slower than LiteRT · needs 3.4 GB of browser storage, and the download does not resume |
+| **Qwen3.5 0.8B · vision (ONNX)** | 666 MB | yes | Apache-2.0 | Sees pictures · small enough for a phone · ONNX runtime, and the download does not resume |
+| **Qwen3.5 2B · vision (ONNX)** | 1.6 GB | yes | Apache-2.0 | Sees pictures · 1.6 GB, desktop only · ONNX runtime, and the download does not resume |
+| **Qwen3.5 4B · vision (ONNX)** | 3.0 GB | yes | Apache-2.0 | Sees pictures · 3.0 GB, the largest local row that fits a laptop GPU · the download does not resume |
+| **Phi-4 mini (ONNX)** | 2.6 GB | no | MIT | Text only · 2.6 GB · ONNX runtime, and the download does not resume |
+| **Llama 3.2 3B (ONNX)** | 2.4 GB | no | Llama 3.2 Community License · use restrictions · copy · **Built with Llama** | Text only · 2.4 GB · built with Llama, under Meta's community licence · the download does not resume |
+
+Exact byte totals, which are the download bars' denominators and the publish script's rows:
+666 085 872 · 1 600 200 215 · 3 019 398 759 · 2 564 860 424 · 2 419 252 013 (and Gemma's
+3 401 448 652). Every file list, size and sha256 was read from
+`https://huggingface.co/api/models/<repo>?blobs=true` at the commit each row pins; the half-dozen
+small text files the Hub records no LFS hash for were fetched at that commit and hashed here.
+
+**Licences, and where each was verified.** The Qwen3.5 0.8B export declares `apache-2.0` itself. The
+two `-OPT` exports and the Phi-4-mini export declare **nothing** — their READMEs are front matter
+naming `base_model:` and no `license:` — so the licence was read at the base model through the pointer
+the export itself gives (`Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B` → Apache-2.0;
+`microsoft/Phi-4-mini-instruct` → MIT), and the catalogue row says so in a comment rather than
+assuming it from the name. Llama 3.2 is declared on the export, and it is the one row with an
+obligation beyond a link: §1.b.i asks that **"Built with Llama"** be displayed and §5 incorporates an
+Acceptable Use Policy, so `LLAMA_3_2` carries `useRestrictionsUrl`, `termsCopyUrl` and a new
+`ModelLicense.attribution` — a line to SHOW, which the picker prints beside the licence and the Local
+AI card repeats in its consent sentence. `scripts/litert-notices/` gained the two verbatim copies
+(`LLAMA_3_2_LICENSE.txt`, `LLAMA_3_2_USE_POLICY.md`, both byte-for-byte from the ONNX repo) and
+`NOTICE.txt` names every ONNX repo, its licence and the attribution line.
+
+### What the provider had to grow: a second door
+
+The Qwen3.5 rows are `Qwen3_5ForConditionalGeneration` — `ImageTextToText`, so embed_tokens + decoder
++ vision_encoder and, unlike Gemma 4's `ImageAudioTextToText`, **no audio encoder to pay for**. Phi-4
+and Llama 3.2 are `Phi3ForCausalLM` and `LlamaForCausalLM` — `DecoderOnly`, ONE `model` graph, and
+neither repo even ships a `processor_config.json`. So `TransformersProvider` now loads through
+`AutoTokenizer` + `AutoModelForCausalLM` for a text row and `AutoProcessor` +
+`AutoModelForImageTextToText` for a sighted one, behind one internal `PromptSide`
+(`tokenizer` / `template` / `encode`) so `chat()` and `stream()` stayed single-path. Which door is
+DERIVED from `vision`; the row's `files` and `probeFile` are per row, because no two rows fetch the
+same set (`use_external_data_format` decides how many `_data` chunks a graph has: one for the small
+Qwen rows, two for the 4B decoder and both text rows).
+
+**The templates are the models' own.** `apply_chat_template` renders the repo's
+`chat_template.jinja`, so three new model families cost no renderer here. What `family` is still read
+for is the **cut** — which strings mean "the turn is over" if a model types one as text — so
+`templates.ts` grew `chatml` (`<|im_start|>` / `<|im_end|>`), `phi` (`<|user|>` … `<|end|>`) and
+`llama3` (`<|start_header_id|>` … `<|eot_id|>`), each read out of that repo's own template, plus
+`turnStops(family)` and `turnMarkerMaxLength(family)`. Phi's stop list names its headers in full
+because its header opens with `<|`, and scanning a stream for two characters would cut an answer that
+merely mentioned them.
+
+`contextTokens: 8192` on all six is a **budget, not the weights' limit** (the repos claim 131072 and
+262144) — and worth knowing before picking a vision row: Gemma 4 spends a fixed 280 tokens per image,
+while the Qwen rows' `Qwen2VLImageProcessorFast` scales with the picture's resolution, so a large
+screenshot is thousands of tokens of that 8192. `TRANSFORMERS_MAX_IMAGES` (4) caps the count either way.
+
+### The publish, for the owner to run
+
+```sh
+scripts/publish-litert-models.sh --dry-run                 # prints every row and the whole catalog.json
+scripts/publish-litert-models.sh --only Qwen3.5-0.8B-ONNX  # the phone vision row first, 0.67 GB
+scripts/publish-litert-models.sh                           # everything: the five new repos ≈ 10.3 GB
+```
+
+No `HF_TOKEN` is needed — all five repos are ungated — and the script is idempotent, so the seven
+LiteRT rows and the Gemma ONNX directory are skipped by size. The run also re-puts `NOTICE.txt`,
+`GEMMA_TERMS.md` and the two new Llama copies, and rewrites `litert/catalog.json` with `hosts` on
+every asset. Until it runs, the five rows exist in the app's offline fallback list but their downloads
+would 404 — which is why `mergeMirrorCatalog` leaves out a package row the mirror does not serve.
+
+### Checked
+
+`--dry-run` writes a catalogue of thirteen assets whose byte totals match the package's own sums
+exactly, and a live picker at desktop width lists all thirteen rows with their notes and licence
+lines; at 375 px with a coarse pointer it lists Gemma 3 270m, Gemma 3 1B and Qwen3.5 0.8B and nothing
+larger. No model was downloaded: the five rows are ten gigabytes and the mirror does not serve them
+yet.
+
+`packages/agent-models` 418 tests, 98.27 / 91.14 / 96.47 / 98.27 against floors of 96 / 89 / 95 / 96 —
+branches rose (90.32 → 91.14) and the floors are left where they are, one ratchet step behind.
+`apps/infinite` 1299 tests, 75.82 / 83.63 / 80.21 / 75.82 against 73 / 81 / 78 / 73. Two new twin
+guards read `scripts/publish-litert-models.sh` itself and hold its rows — files, bytes, hashes,
+commit, licence word and `hosts` — equal to the package's, because the script runs with no TypeScript
+in reach and the package with no shell.
+
+### Undone
+
+- **The publish itself** (the owner's; the rows and the `--dry-run` are here).
+- **Nothing has run these five models.** The wiring is exercised against a fake library, the file
+  lists come from the Hub's own record, and the twenty-five-minute vision prefill measured on the
+  Gemma 4 ONNX row is the warning that applies to the Qwen rows until someone measures them.
+- **A saved choice is not re-checked against the harness.** Choosing a desktop row and then opening
+  the same browser profile at phone width leaves the chip on a row the picker no longer lists. Storage
+  is per device, so this is a narrow case; the fix is one comparison in `bootstrap.ts` if it bites.
+- **The visual token budget is still not wired** (the older round's item, and the Qwen rows make it
+  sharper: their image cost scales with resolution).

@@ -9,7 +9,9 @@
 import { describe, expect, it } from "vitest";
 import { withoutImages } from "../src/image-parts.js";
 import {
+  FAMILY_MARKERS,
   GEMMA_MARKERS,
+  PHI_MARKERS,
   PROMPT_SEGMENT_TEMPLATES,
   PROMPT_TEMPLATES,
   renderPrompt,
@@ -17,6 +19,8 @@ import {
   stopAtTurnEnd,
   TURN_MARKER_MAX_LENGTH,
   turnMarkerIndex,
+  turnMarkerMaxLength,
+  turnStops,
 } from "../src/templates.js";
 import type { PromptFamily } from "../src/templates.js";
 import type { ChatMessage, ImagePart } from "../src/types.js";
@@ -95,7 +99,10 @@ describe("the plain fallback format", () => {
 
   it("is what an unnamed family gets, rather than Gemma's markers by accident", () => {
     expect(renderPrompt([{ role: "user", content: "hi" }])).toContain("User: hi");
-    expect(Object.keys(PROMPT_TEMPLATES).sort()).toEqual(["gemma", "plain"]);
+    // Five families since 2026-09-11: Gemma, and the three the ONNX rows' own templates speak, plus
+    // the fallback. `chatml`, `phi` and `llama3` exist for the CUT — nothing in this package renders
+    // a prompt with them, because `apply_chat_template` renders those models' real templates.
+    expect(Object.keys(PROMPT_TEMPLATES).sort()).toEqual(["chatml", "gemma", "llama3", "phi", "plain"]);
     // A family this package has never heard of — a caller's typo, or a model added ahead of its
     // template — must not silently borrow Gemma's markers.
     expect(renderPrompt([{ role: "user", content: "hi" }], "martian" as PromptFamily)).toContain("User: hi");
@@ -118,6 +125,63 @@ describe("cutting the answer at the first marker", () => {
 
   it("says how much of a stream's tail could still be half a marker", () => {
     expect(TURN_MARKER_MAX_LENGTH).toBe(GEMMA_MARKERS.start.length);
+    // Per family since 2026-09-11: Llama's header token is five characters longer than Gemma's
+    // longest, so a hold-back sized for Gemma would stream the first half of one to a reader.
+    expect(turnMarkerMaxLength("gemma")).toBe(TURN_MARKER_MAX_LENGTH);
+    expect(turnMarkerMaxLength("llama3")).toBe("<|start_header_id|>".length);
+    expect(turnMarkerMaxLength("chatml")).toBe("<|im_start|>".length);
+    expect(turnMarkerMaxLength("phi")).toBe("<|assistant|>".length);
+    expect(turnMarkerMaxLength("plain")).toBe(0);
+  });
+
+  /**
+   * THE THREE FAMILIES THE ONNX ROWS BROUGHT. Each marker set was read out of that repo's own
+   * `chat_template.jinja` on 2026-09-11, and each is here for the CUT: `apply_chat_template` renders
+   * those models' prompts, and what this package still has to know is which strings mean "the turn
+   * ended" when a model types one as text instead of emitting the token.
+   */
+  it("cuts a ChatML answer at the Qwen rows' own markers", () => {
+    expect(turnStops("chatml")).toEqual(["<|im_end|>", "<|im_start|>"]);
+    expect(stopAtTurnEnd("the answer.<|im_end|>\n<|im_start|>user\nnext", "chatml")).toBe("the answer.");
+    expect(turnMarkerIndex("all fine", "chatml")).toBe(-1);
+    // A family's markers are ITS OWN: Gemma's cut must not fire on a ChatML stream, or a stream that
+    // merely quoted the other model's tokens would be truncated.
+    expect(stopAtTurnEnd("the answer.<|im_end|>", "gemma")).toBe("the answer.<|im_end|>");
+  });
+
+  it("cuts a Phi answer on its headers written out in full, never on the two characters `<|`", () => {
+    // `PHI_MARKERS.start` is "<|" because that is how its template builds a header — and scanning a
+    // stream for those two characters would cut an answer that merely mentioned them, which is the
+    // whole reason `stops` exists beside `start`.
+    expect(PHI_MARKERS.start).toBe("<|");
+    expect(turnStops("phi")).toContain("<|end|>");
+    expect(stopAtTurnEnd("use the <|pipe|> operator", "phi")).toBe("use the <|pipe|> operator");
+    expect(stopAtTurnEnd("done<|end|><|user|>again", "phi")).toBe("done");
+    expect(stopAtTurnEnd("done<|assistant|>", "phi")).toBe("done");
+  });
+
+  it("cuts a Llama 3 answer at `<|eot_id|>` and at the next header", () => {
+    expect(turnStops("llama3")).toEqual(["<|eot_id|>", "<|start_header_id|>", "<|end_of_text|>"]);
+    expect(stopAtTurnEnd("the answer.<|eot_id|>", "llama3")).toBe("the answer.");
+    expect(stopAtTurnEnd("the answer.<|start_header_id|>user<|end_header_id|>\n\nhi", "llama3")).toBe("the answer.");
+  });
+
+  it("renders each family's header in ITS OWN shape, not Gemma's with the words swapped", () => {
+    const turn = [{ role: "user" as const, content: "hi" }];
+    // Nothing in this package renders these today — `apply_chat_template` does — but the renderer is
+    // keyed by family and a family with a wrong header shape would be a silent trap for whoever
+    // reaches for it next. So each one is pinned to the template it was read from.
+    expect(renderPrompt(turn, "chatml")).toBe("<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n");
+    expect(renderPrompt(turn, "phi")).toBe("<|user|>hi<|end|>\n<|assistant|>");
+    expect(renderPrompt(turn, "llama3")).toBe(
+      "<|start_header_id|>user<|end_header_id|>\n\nhi<|eot_id|>\n<|start_header_id|>assistant<|end_header_id|>\n\n",
+    );
+  });
+
+  it("has no markers for `plain`, so an unknown family cuts nothing", () => {
+    expect(turnStops("plain")).toEqual([]);
+    expect(turnStops("martian" as PromptFamily)).toEqual([]);
+    expect(Object.keys(FAMILY_MARKERS).sort()).toEqual(["chatml", "gemma", "llama3", "phi"]);
   });
 });
 
@@ -166,7 +230,7 @@ describe("the segment form of a prompt", () => {
       { kind: "image", image: shot },
       { kind: "text", text: "u\n\nAssistant:" },
     ]);
-    expect(Object.keys(PROMPT_SEGMENT_TEMPLATES).sort()).toEqual(["gemma", "plain"]);
+    expect(Object.keys(PROMPT_SEGMENT_TEMPLATES).sort()).toEqual(["chatml", "gemma", "llama3", "phi", "plain"]);
   });
 });
 

@@ -236,6 +236,10 @@ const keyProblem = computed(() =>
                   <template v-if="chosenRow.termsCopyUrl">
                     (<a class="underline" :href="chosenRow.termsCopyUrl" target="_blank" rel="noopener">copy</a>)</template
                   >. Downloading it accepts them.
+                  <!-- A line the licence requires to be DISPLAYED rather than linked — the Llama 3.2
+                       Community License §1.b.i. It is the row's own, so it appears only for the rows
+                       whose licence asks for it. -->
+                  <template v-if="chosenRow.attribution"> {{ chosenRow.attribution }}.</template>
                 </template>
                 <template v-else>
                   Local models run under their publishers' licences, named on each row before it downloads.

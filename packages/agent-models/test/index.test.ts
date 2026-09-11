@@ -106,6 +106,9 @@ const EXPECTED = [
   "LITERT_UNVERIFIED_ASSETS",
   "GEMMA_TERMS",
   "APACHE_2",
+  // the two licences the ONNX text rows brought (2026-09-11)
+  "MIT",
+  "LLAMA_3_2",
   "litertCatalogFor",
   "litertAssetUrl",
   // the third local brain — Transformers.js on ONNX Runtime Web, the one that sees (2026-09-11)
@@ -123,6 +126,12 @@ const EXPECTED = [
   "ONNX_DEFAULT_WASM_PATH",
   "GEMMA_4_E2B_ONNX_FILES",
   "GEMMA_4_E2B_ONNX_PROBE_FILE",
+  // the five rows of 2026-09-11, each with the files its own q4f16 load fetches
+  "QWEN3_5_0_8B_ONNX_FILES",
+  "QWEN3_5_2B_ONNX_FILES",
+  "QWEN3_5_4B_ONNX_FILES",
+  "PHI_4_MINI_ONNX_FILES",
+  "LLAMA_3_2_3B_ONNX_FILES",
   "LOCAL_MODEL_CATALOG",
   "pathTemplateFor",
   "transformersCatalogFor",
@@ -139,6 +148,13 @@ const EXPECTED = [
   "FALLBACK_DESC_MAX",
   "FALLBACK_ARGS_SHOWN",
   "GEMMA_MARKERS",
+  // the three families the ONNX rows' own templates speak, read for the CUT (2026-09-11)
+  "CHATML_MARKERS",
+  "PHI_MARKERS",
+  "LLAMA3_MARKERS",
+  "FAMILY_MARKERS",
+  "turnStops",
+  "turnMarkerMaxLength",
   "PROMPT_TEMPLATES",
   "PROMPT_SEGMENT_TEMPLATES",
   "renderPromptSegments",
@@ -149,6 +165,12 @@ const EXPECTED = [
   "renderPrompt",
   "turnMarkerIndex",
   "stopAtTurnEnd",
+  // the harness gate — one vocabulary with the Mac side, defined in @00/shared (2026-09-11)
+  "HOSTS",
+  "isHost",
+  "DEFAULT_HOSTS",
+  "hostsOf",
+  "offeredOn",
   // the router
   "ModelRouter",
   "localProviders",

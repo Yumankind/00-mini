@@ -1,3 +1,39 @@
+/**
+ * WHERE A MODEL MAY BE OFFERED — one vocabulary for the Mac engine and for the browser runtime.
+ *
+ * Bruno's ask, 2026-09-11: "gate the models to the compatible harness". A model row is a row in
+ * several different pickers — the browser agent's local-brain list on a laptop and on a phone, the
+ * Mac app's model table, a headless install's — and until now each of those guessed from a number
+ * (VRAM, download size) whether the row belonged to it. A guess about a 3.4 GB ONNX bundle on a
+ * phone is a guess that ends in a tab being killed, so the ROW says which harnesses it may appear
+ * in and the picker filters on that and nothing else.
+ *
+ *   · `browser-desktop` — a tab on a computer: WebGPU, gigabytes of Cache Storage, a wide screen.
+ *   · `browser-phone`   — a tab on a phone: a few hundred megabytes of GPU and no room for a wall
+ *                         of rows. §12.6 of docs/HANDOFF-infinite-agent.md is this host.
+ *   · `mac`             — the 00 Mac app and the engine it runs (Ollama, LM Studio, cloud keys).
+ *   · `headless`        — the same engine with no app around it (00d on a server).
+ *
+ * TWO THINGS IT IS NOT. It is not readiness: a row offered on `browser-desktop` may still need two
+ * gigabytes downloading, and `readiness()` on the provider stays the only truth about that. And it
+ * is not a capability list: `vision`, `contextTokens` and `supportsTools` still say what a model can
+ * DO — `hosts` says only where it may be SHOWN.
+ *
+ * A row with no `hosts` at all means "wherever the reader already thought", and each reader spells
+ * its own default out loud: the browser picker treats an absent list as `browser-desktop` only (the
+ * conservative reading — a row nobody has classified must not reach a phone), and the Mac engine
+ * ignores absence entirely, because every model in its own catalogue runs there by construction.
+ */
+export type Host = "browser-desktop" | "browser-phone" | "mac" | "headless";
+
+/** Every harness, in the order a document lists them. The validator for a `hosts` array off the wire. */
+export const HOSTS: readonly Host[] = ["browser-desktop", "browser-phone", "mac", "headless"];
+
+/** Is this one of the four? For parsing a `hosts` array out of JSON somebody else wrote. */
+export function isHost(value: unknown): value is Host {
+  return typeof value === "string" && (HOSTS as readonly string[]).includes(value);
+}
+
 /** Providers whose model runs ON this machine. Mirrors LOCAL_PROVIDER_DEFS in the engine's
  *  local-providers.ts — agents on these are the ones a meeting can take memory away from. */
 export const LOCAL_LLM_PROVIDER_IDS = ["ollama", "lmstudio", "jan"] as const;

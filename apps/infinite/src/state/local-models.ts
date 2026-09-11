@@ -14,8 +14,8 @@
  * readiness poll, not this list.
  */
 import { computed, ref, shallowRef } from "vue";
-import type { LiteRtCatalogRow } from "@00/agent-models";
-import { rowSize } from "../lib/litert-catalog.js";
+import type { Host, LiteRtCatalogRow } from "@00/agent-models";
+import { rowSize, rowsForHost, thisHost } from "../lib/litert-catalog.js";
 import type { Readiness } from "../lib/readiness.js";
 import { agent } from "./agent.js";
 
@@ -36,6 +36,8 @@ export interface LocalModelRow {
    */
   runtime: "litert" | "transformers";
   runtimeNote?: string;
+  /** A line the row's licence requires to be DISPLAYED (the Llama rows' "Built with Llama"). */
+  attribution?: string;
   selected: boolean;
   /** null until the lazy readiness pass reaches this row. */
   downloaded: boolean | null;
@@ -71,8 +73,21 @@ export const localRowsLoaded = computed(() => loaded.value);
 type LocalBrain = ReturnType<NonNullable<typeof agent.value>["localBrain"]>;
 const brainRef = ref<LocalBrain | null>(null);
 
-/** What this device gets: a picker, or one row and a sentence (§12.6). */
-export const localPicker = computed(() => brainRef.value?.picker ?? true);
+/**
+ * WHICH HARNESS THIS TAB IS — derived when the rows are, and read by the picker.
+ *
+ * It replaced `localPicker` ("does this device get a list at all"), which was the old phone rule
+ * wearing a boolean: a phone got one row chosen for it and a sentence instead of a picker. A phone now
+ * gets a picker of the rows offered on a phone — two of them today — so what a screen needs to know is
+ * not "list or no list" but WHICH harness it is, which is also what filters the rows.
+ *
+ * A REF, not a computed over `thisHost()`: that function reads the window, which is not reactive, so a
+ * computed would cache the first answer for the life of the tab and disagree with the list beside it
+ * the moment anything (a rotation, a test) changed the window. One read, at the moment the rows are
+ * filtered, is what keeps the sentence and the list saying the same thing.
+ */
+const hostRef = ref<Host>(thisHost());
+export const localHost = computed(() => hostRef.value);
 export const localChoice = computed(() => brainRef.value?.choice ?? null);
 export const localAvailable = computed(() => brainRef.value?.available ?? false);
 
@@ -96,6 +111,7 @@ function toRow(row: LiteRtCatalogRow, chosenId: string | null): LocalModelRow {
     downloaded: null,
     licenseName: row.license.name,
     licenseUrl: row.license.url,
+    attribution: row.license.attribution,
     useRestrictionsUrl: row.license.useRestrictionsUrl,
     termsCopyUrl: row.license.termsCopyUrl,
     estimated: row.estimated === true,
@@ -111,7 +127,11 @@ export async function loadLocalRows(force = false): Promise<void> {
   try {
     const result = await owned.localCatalog(force);
     const chosen = owned.localBrain().choice?.id ?? null;
-    rowsRef.value = result.rows.map((row) => toRow(row, chosen));
+    // THE HARNESS GATE, BEFORE ANY SIZE RULE (2026-09-11). A phone is shown the rows whose `hosts`
+    // include `browser-phone` and a computer the rest; nothing downstream filters by memory again,
+    // because two gates is how a row ends up visible in one screen and not the other.
+    hostRef.value = thisHost();
+    rowsRef.value = rowsForHost(result.rows, hostRef.value).map((row) => toRow(row, chosen));
     origin.value = result.source;
     notice.value = result.notice ?? null;
     loaded.value = true;
@@ -154,6 +174,7 @@ export async function unloadLocal(): Promise<string> {
 /** Test seam. */
 export function resetLocalModels(): void {
   rowsRef.value = [];
+  hostRef.value = thisHost();
   busy.value = false;
   failure.value = null;
   origin.value = null;

@@ -16,8 +16,27 @@ Files their publisher lists under the Apache License 2.0 (litert-community on Hu
   gemma-4-E4B-it-web.task
   gemma-4-12B-it-web.litertlm
 
+Transformers.js / ONNX model directories under ../onnx/<org>/<repo>/, mirrored from the Hugging Face
+repository named in catalog.json's `source` for each of them, byte for byte:
+  onnx-community/gemma-4-E2B-it-ONNX          Apache License 2.0
+  onnx-community/Qwen3.5-0.8B-ONNX            Apache License 2.0
+  onnx-community/Qwen3.5-2B-ONNX-OPT          Apache License 2.0 (the base model Qwen/Qwen3.5-2B)
+  onnx-community/Qwen3.5-4B-ONNX-OPT          Apache License 2.0 (the base model Qwen/Qwen3.5-4B)
+  onnx-community/Phi-4-mini-instruct-ONNX     MIT License (the base model microsoft/Phi-4-mini-instruct)
+  onnx-community/Llama-3.2-3B-Instruct-ONNX   Llama 3.2 Community License
+
+Built with Llama.
+
+The Llama 3.2 files are Llama Materials, licensed under the Llama 3.2 Community License Agreement
+(a verbatim copy is in LLAMA_3_2_LICENSE.txt beside this notice, and at
+https://www.llama.com/llama3_2/license/). Their use is subject to the Llama 3.2 Acceptable Use
+Policy (LLAMA_3_2_USE_POLICY.md beside this notice, and at
+https://www.llama.com/llama3_2/use-policy). Llama 3.2 is licensed under the Llama 3.2 Community
+License, Copyright (c) Meta Platforms, Inc. All Rights Reserved.
+
 The MediaPipe runtime under ../mediapipe/ is Google's @mediapipe/tasks-genai, Apache License 2.0.
 
 By downloading or running any Gemma file you accept the Gemma Terms of Use, including the
-Prohibited Use Policy. 00 (0-0.chat) incorporates those restrictions into its own terms:
-https://0-0.chat/terms and https://0-0.chat/acceptable-use
+Prohibited Use Policy; by downloading or running any Llama 3.2 file you accept the Llama 3.2
+Community License, including its Acceptable Use Policy. 00 (0-0.chat) incorporates both sets of
+restrictions into its own terms: https://0-0.chat/terms and https://0-0.chat/acceptable-use

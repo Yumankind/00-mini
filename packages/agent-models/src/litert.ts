@@ -54,11 +54,13 @@ import type { FetchLike, Readiness } from "./openai-compatible.js";
 import { renderPrompt, renderPromptSegments, stopAtTurnEnd, TURN_MARKER_MAX_LENGTH, turnMarkerIndex } from "./templates.js";
 import type { PromptFamily } from "./templates.js";
 import { FALLBACK_SCHEMAS_MIN_CONTEXT, fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
+import { DEFAULT_HOSTS, isHost, offeredOn } from "./types.js";
 import type {
   ChatChunk,
   ChatMessage,
   ChatRequest,
   ChatResponse,
+  Host,
   ImagePart,
   ModelInfo,
   ModelProvider,
@@ -116,6 +118,16 @@ export interface LiteRtModelInfo extends ModelInfo {
   license: ModelLicense;
 }
 
+/**
+ * WHERE A ROW MAY BE OFFERED — `ModelInfo.hosts`, filled on every row of this package's catalogues.
+ *
+ * It is the ONE gate a picker asks, and it replaced a VRAM comparison: a phone used to be handed
+ * "the smallest row under 2000 MB", which is a number standing in for a judgement about a device.
+ * The judgement is now written down per row (`hosts`), `vramMb` stays what it always was — an
+ * estimate of the working set, useful for ordering — and §12.6's promise is kept by the list rather
+ * than by an inequality. The rule for a row that names none is `DEFAULT_HOSTS` in types.ts: desktop.
+ */
+
 export interface ModelLicense {
   /** `gemma` and `apache-2.0` are what this package's own rows carry; a mirror may name another. */
   id: string;
@@ -129,6 +141,15 @@ export interface ModelLicense {
    * redistributes the weights, which is exactly the thing this package refuses to hardcode.
    */
   termsCopyUrl?: string;
+  /**
+   * A LINE THE LICENCE REQUIRES TO BE DISPLAYED (additive, 2026-09-11).
+   *
+   * The Llama 3.2 Community License §1.b.i: a distribution that uses the materials must display
+   * "Built with Llama" prominently. That is not a URL and not a name — it is a sentence somebody
+   * has to SHOW — so it travels with the row and the picker prints it beside the licence. Apache and
+   * MIT rows have none, and a row with none prints nothing rather than a generic line.
+   */
+  attribution?: string;
 }
 
 export const GEMMA_TERMS: ModelLicense = {
@@ -138,6 +159,23 @@ export const GEMMA_TERMS: ModelLicense = {
   useRestrictionsUrl: "https://ai.google.dev/gemma/prohibited_use_policy",
 };
 export const APACHE_2: ModelLicense = { id: "apache-2.0", name: "Apache License 2.0", url: "https://www.apache.org/licenses/LICENSE-2.0" };
+/** Phi-4-mini's, as `microsoft/Phi-4-mini-instruct` declares it (read 2026-09-11). No use restrictions. */
+export const MIT: ModelLicense = { id: "mit", name: "MIT License", url: "https://opensource.org/license/mit" };
+/**
+ * Llama 3.2's, as `meta-llama/Llama-3.2-3B-Instruct` and the ONNX export both declare it.
+ *
+ * THE ONE ROW IN THIS PACKAGE WITH AN OBLIGATION BEYOND A LINK. It is not an open-source licence:
+ * it carries an Acceptable Use Policy (§5, incorporated by reference) and, in §1.b.i, a positive
+ * requirement to display "Built with Llama". So it fills three fields where Apache fills one, and
+ * the picker shows all three before the download — the same pattern the Gemma rows established.
+ */
+export const LLAMA_3_2: ModelLicense = {
+  id: "llama3.2",
+  name: "Llama 3.2 Community License",
+  url: "https://www.llama.com/llama3_2/license/",
+  useRestrictionsUrl: "https://www.llama.com/llama3_2/use-policy/",
+  attribution: "Built with Llama",
+};
 
 /**
  * The rows whose `assetFile` NOTHING vouches for. Two things can: the installed
@@ -177,6 +215,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // gigabyte, the one an embed's "Load local AI" can honestly offer.
   {
     id: "gemma3-270m-it-q4_0-web",
+    hosts: ["browser-desktop", "browser-phone"],
     label: "Gemma 3 270m (q4)",
     class: "small",
     local: true,
@@ -190,6 +229,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // VERIFIED on the mirror (sha256 74f37adc…), not in the README.
   {
     id: "gemma3-1b-it-int4-web",
+    hosts: ["browser-desktop", "browser-phone"],
     label: "Gemma 3 1B (int4)",
     class: "small",
     local: true,
@@ -203,6 +243,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // VERIFIED: named in full in the installed package's README.md.
   {
     id: "gemma-3n-E2B-it-int4-Web",
+    hosts: ["browser-desktop"],
     label: "Gemma 3n E2B (int4, vision)",
     class: "small",
     local: true,
@@ -217,6 +258,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // VERIFIED: the installed README's fourth download link. The larger vision row; desktop-class.
   {
     id: "gemma-3n-E4B-it-int4-Web",
+    hosts: ["browser-desktop"],
     label: "Gemma 3n E4B (int4, vision)",
     class: "strong",
     local: true,
@@ -232,6 +274,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // this is the name it exists under.
   {
     id: "gemma-4-E2B-it-web",
+    hosts: ["browser-desktop"],
     label: "Gemma 4 E2B",
     class: "small",
     local: true,
@@ -246,6 +289,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // VERIFIED: the installed README's second download link. Desktop-class; never offered to a phone.
   {
     id: "gemma-4-E4B-it-web",
+    hosts: ["browser-desktop"],
     label: "Gemma 4 E4B",
     class: "strong",
     local: true,
@@ -261,6 +305,7 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
   // — a picker that shrinks when the network drops looks broken rather than offline.
   {
     id: "gemma-4-12B-it-web",
+    hosts: ["browser-desktop"],
     label: "Gemma 4 12B",
     class: "strong",
     local: true,
@@ -278,10 +323,15 @@ export const LITERT_CATALOG: LiteRtModelInfo[] = [
  *  with the next publish), and because its licence carries no use restrictions to show first. */
 export const LITERT_DEFAULT_MODEL_ID = "gemma-4-E2B-it-web";
 
-/** §12.6: a phone gets one model, not a picker. Same filter as the WebLLM catalogue's. */
-export function litertCatalogFor(options: { maxVramMb?: number } = {}): LiteRtModelInfo[] {
+/**
+ * The rows a given harness may be offered, and the ones under a memory cap.
+ *
+ * `host` since 2026-09-11 — the gate §12.6 is actually about; `maxVramMb` stays, because "what fits
+ * in 2 GB" is a different question from "what may a phone be shown", and both callers exist.
+ */
+export function litertCatalogFor(options: { maxVramMb?: number; host?: Host } = {}): LiteRtModelInfo[] {
   const cap = options.maxVramMb ?? Number.POSITIVE_INFINITY;
-  return LITERT_CATALOG.filter((m) => m.vramMb <= cap);
+  return LITERT_CATALOG.filter((m) => m.vramMb <= cap && (!options.host || offeredOn(m, options.host)));
 }
 
 /** `<base>/<file>`, with exactly one slash between them whatever the caller passed. */
@@ -314,8 +364,16 @@ export interface LiteRtMirrorAsset {
   licenseUrl?: string;
   termsCopyUrl?: string;
   useRestrictionsUrl?: string;
+  /** A line the licence requires to be shown (the Llama rows' "Built with Llama"). */
+  attribution?: string;
   gatedAtSource?: boolean;
   vision?: boolean;
+  /**
+   * Which harnesses the publisher offers this row on (additive, 2026-09-11). The publish script
+   * writes it per row; a row without it is read as `DEFAULT_HOSTS` — desktop only — which is the
+   * conservative reading and the one that cannot put three gigabytes on a phone by omission.
+   */
+  hosts?: Host[];
   /**
    * Which runtime the row needs (additive, 2026-09-11). The publish script writes it for the
    * Transformers.js directories it mirrors; a row without it is a LiteRT bundle, as every row was
@@ -356,6 +414,13 @@ function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+/** A `hosts` array off the wire: the four known words, de-duplicated, or nothing at all. */
+function hostList(value: unknown): Host[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = [...new Set(value.filter(isHost))];
+  return out.length ? out : undefined;
+}
+
 /** `litert/catalog.json` → the shape above, or `null` when it is not that document. */
 export function parseMirrorCatalog(raw: unknown): LiteRtMirrorCatalog | null {
   const doc = raw as Partial<LiteRtMirrorCatalog> | null;
@@ -379,6 +444,11 @@ export function parseMirrorCatalog(raw: unknown): LiteRtMirrorCatalog | null {
       licenseUrl: str(asset.licenseUrl),
       termsCopyUrl: str(asset.termsCopyUrl),
       useRestrictionsUrl: str(asset.useRestrictionsUrl),
+      attribution: str(asset.attribution),
+      // Only the four words this repo knows, and only when at least one survives: an unknown harness
+      // is dropped rather than passed on, and a list that was ENTIRELY unknown becomes `undefined`,
+      // which reads as `DEFAULT_HOSTS` — desktop — rather than as "offered nowhere".
+      hosts: hostList(asset.hosts),
       gatedAtSource: typeof asset.gatedAtSource === "boolean" ? asset.gatedAtSource : undefined,
       vision: typeof asset.vision === "boolean" ? asset.vision : undefined,
       // Only the two runtimes this repo has providers for. An unknown word is DROPPED rather than
@@ -420,6 +490,7 @@ function licenceFrom(asset: LiteRtMirrorAsset, fallback?: ModelLicense): ModelLi
     url,
     useRestrictionsUrl: asset.useRestrictionsUrl ?? fallback?.useRestrictionsUrl,
     termsCopyUrl: asset.termsCopyUrl ?? fallback?.termsCopyUrl,
+    attribution: asset.attribution ?? fallback?.attribution,
   };
 }
 
@@ -446,6 +517,9 @@ export function mergeMirrorCatalog(
         ...known,
         ...(licence ? { license: licence } : {}),
         ...(typeof asset.vision === "boolean" ? { vision: asset.vision } : {}),
+        // The mirror may narrow (or widen) where a row is offered without a release of this package;
+        // when it says nothing, the package's own judgement stands.
+        ...(asset.hosts === undefined ? {} : { hosts: asset.hosts }),
         ...(asset.runtime === undefined ? {} : { runtime: asset.runtime }),
         ...(asset.bytes === undefined ? {} : { bytes: asset.bytes }),
         ...(asset.sha256 === undefined ? {} : { sha256: asset.sha256 }),
@@ -469,6 +543,9 @@ export function mergeMirrorCatalog(
       vramMb,
       assetFile: asset.file,
       family: "gemma",
+      // A row nobody here has ever heard of is offered on the DESKTOP and nowhere else, whatever its
+      // size suggests: `estimated` numbers are not a basis for putting a download on a phone.
+      hosts: asset.hosts ?? [...DEFAULT_HOSTS],
       ...(typeof asset.vision === "boolean" ? { vision: asset.vision } : {}),
       ...(asset.runtime === undefined ? {} : { runtime: asset.runtime }),
       license: licence,

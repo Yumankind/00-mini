@@ -35,6 +35,7 @@ import {
   TRANSFORMERS_PROVIDER_ID,
   TRANSFORMERS_VERSION,
   TransformersProvider,
+  QWEN3_5_0_8B_ONNX_FILES,
   pathTemplateFor,
   transformersCatalogFor,
   transformersFileUrl,
@@ -46,7 +47,8 @@ import type {
   TransformersLibrary,
   TransformersProgress,
 } from "../src/transformers.js";
-import { LITERT_CATALOG } from "../src/litert.js";
+import { LITERT_CATALOG, LLAMA_3_2, MIT } from "../src/litert.js";
+import { offeredOn } from "../src/types.js";
 import { collect } from "./helpers.js";
 
 /**
@@ -85,12 +87,36 @@ interface FakeLibrary extends TransformersLibrary {
   interrupts: number;
   /** The last `progress_callback` the model load was given, so a test can drive it. */
   emit: (info: TransformersProgress) => void;
+  /** What was handed to `TextStreamer` as its tokenizer — the processor's, or the tokenizer itself. */
+  streamerTokenizers: unknown[];
+  /** Which door the model came through, so a text row can be told from a vision one. */
+  doors: ("image-text-to-text" | "causal-lm")[];
+  /** Resolves once the model's `from_pretrained` has been entered and the callback is in hand. */
+  modelStarted: Promise<void>;
+  /** Lets a held model load finish. Only meaningful with `{ hold: true }`. */
+  release: () => void;
 }
 
+/**
+ * A LOAD HELD OPEN, rather than a count of microtasks.
+ *
+ * Every progress test below needs the same thing: the load far enough along that the library has
+ * handed its callback over, and NOT finished, so `readiness()` still describes a download. That used
+ * to be spelled `await Promise.resolve()` twice — a number that meant nothing and broke the day the
+ * provider awaited one more thing on the way (a text row loads a tokenizer where a vision row loads a
+ * processor, so the prompt side moved behind a method of its own). `{ hold: true }` parks the model's
+ * `from_pretrained` on a promise the test releases, which is the condition those tests are actually
+ * about.
+ */
 function fakeLibrary(
   pieces: string[],
-  opts: { fail?: unknown; slow?: boolean; failProcessor?: unknown } = {},
+  opts: { fail?: unknown; slow?: boolean; failProcessor?: unknown; hold?: boolean } = {},
 ): FakeLibrary {
+  let openGate = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    openGate = resolve;
+  });
+  let started = (): void => {};
   const lib = {
     env: { backends: { onnx: { wasm: {} } } },
     templated: [],
@@ -101,6 +127,12 @@ function fakeLibrary(
     disposals: 0,
     interrupts: 0,
     emit: () => {},
+    streamerTokenizers: [],
+    doors: [],
+    modelStarted: new Promise<void>((resolve) => {
+      started = resolve;
+    }),
+    release: openGate,
   } as unknown as FakeLibrary;
 
   const processor = Object.assign(
@@ -135,10 +167,13 @@ function fakeLibrary(
     },
   };
 
-  lib.AutoModelForImageTextToText = {
+  const modelFactory = (door: "image-text-to-text" | "causal-lm") => ({
     async from_pretrained(repo: string, options: Record<string, unknown> = {}) {
       lib.loads.push({ repo, options });
+      lib.doors.push(door);
       lib.emit = options.progress_callback as (info: TransformersProgress) => void;
+      started();
+      if (opts.hold) await gate;
       return {
         async generate(generateOptions: Record<string, unknown>) {
           lib.generated.push(generateOptions);
@@ -158,12 +193,44 @@ function fakeLibrary(
         },
       };
     },
+  });
+
+  lib.AutoModelForImageTextToText = modelFactory("image-text-to-text") as unknown as TransformersLibrary["AutoModelForImageTextToText"];
+  lib.AutoModelForCausalLM = modelFactory("causal-lm") as unknown as TransformersLibrary["AutoModelForCausalLM"];
+
+  // The TEXT door: a tokenizer is `Callable` too, its call is SYNCHRONOUS, and it carries the chat
+  // template itself rather than through a processor.
+  const tokenizer = Object.assign(
+    (prompt: string, options: Record<string, unknown> = {}) => {
+      lib.processed.push({ prompt, images: null, audio: null, options });
+      return { input_ids: `ids(${prompt.length})` };
+    },
+    {
+      apply_chat_template(messages: TransformersChatMessage[], options: Record<string, unknown> = {}) {
+        lib.templated.push({ messages, options });
+        return messages
+          .map((m) => {
+            const body =
+              typeof m.content === "string" ? m.content : m.content.map((part) => (part.type === "text" ? part.text : `<${part.type}>`)).join("");
+            return `<${m.role}>${body}`;
+          })
+          .join("");
+      },
+      label: "fake-tokenizer-direct",
+    },
+  );
+  lib.AutoTokenizer = {
+    async from_pretrained(repo: string, options: Record<string, unknown> = {}) {
+      lib.loads.push({ repo, options });
+      return tokenizer as unknown as Awaited<ReturnType<TransformersLibrary["AutoTokenizer"]["from_pretrained"]>>;
+    },
   };
 
   // The two library classes, as the shapes this provider actually uses.
   lib.TextStreamer = class {
     private readonly cb: (piece: string) => void;
-    constructor(_tokenizer: unknown, options: Record<string, unknown>) {
+    constructor(tokenizer: unknown, options: Record<string, unknown>) {
+      lib.streamerTokenizers.push(tokenizer);
       this.cb = options.callback_function as (piece: string) => void;
     }
     push(piece: string): void {
@@ -261,6 +328,44 @@ describe("what the installed library actually is", () => {
     expect(table.slice(0, table.indexOf("]);"))).toContain("'gemma4', 'Gemma4ForConditionalGeneration'");
   });
 
+  it("still maps qwen3_5 to the vision class, and phi3 / llama to the causal one", () => {
+    // Four mappings, one per door the provider uses. The Qwen rows load through
+    // `AutoModelForImageTextToText` only while `qwen3_5` is in the image-text-to-text table; the Phi
+    // and Llama rows load through `AutoModelForCausalLM` only while their `model_type` is in the
+    // causal one. A move in either table is fifteen files fetched for a model that never builds.
+    const registry = readFileSync(join(packageDir, "src/models/registry.js"), "utf8");
+    const table = (name: string): string => {
+      const from = registry.slice(registry.indexOf(`${name} = new Map`));
+      return from.slice(0, from.indexOf("]);"));
+    };
+    expect(table("MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES")).toContain("'qwen3_5', 'Qwen3_5ForConditionalGeneration'");
+    expect(table("MODEL_FOR_CAUSAL_LM_MAPPING_NAMES")).toContain("'phi3', 'Phi3ForCausalLM'");
+    expect(table("MODEL_FOR_CAUSAL_LM_MAPPING_NAMES")).toContain("'llama', 'LlamaForCausalLM'");
+  });
+
+  it("still builds ONE session for a text row, and no audio encoder for the Qwen vision rows", () => {
+    // Why the file lists differ row by row. `DecoderOnly` is a single `model` graph — which is why the
+    // Phi and Llama rows are `model_q4f16.onnx` plus its data chunks and nothing else — and plain
+    // `ImageTextToText` (the Qwen rows) builds embed_tokens + decoder + vision_encoder with no audio
+    // graph at all, unlike Gemma 4's `ImageAudioTextToText` below.
+    const config = readFileSync(join(packageDir, "src/models/session_config.js"), "utf8");
+    const block = (name: string): string => {
+      const from = config.slice(config.indexOf(`MODEL_TYPES.${name}]: {`));
+      return from.slice(0, from.indexOf("optional_configs"));
+    };
+    expect(block("DecoderOnly")).toContain("model: options.model_file_name ?? 'model'");
+    expect(block("ImageTextToText")).toContain("vision_encoder");
+    expect(block("ImageTextToText")).not.toContain("audio_encoder");
+  });
+
+  it("still declares the text rows' two auto classes under the names this provider uses", () => {
+    const declares = (file: string, name: string): void => {
+      expect(readFileSync(join(packageDir, file), "utf8"), `${name} in ${file}`).toContain(name);
+    };
+    declares("types/models/auto/modeling_auto.d.ts", "class AutoModelForCausalLM");
+    declares("types/models/auto/tokenization_auto.d.ts", "class AutoTokenizer");
+  });
+
   it("still builds the audio encoder for a vision load, which is why it is mirrored", () => {
     // Fact 5 of the provider's header: there is no vision-without-audio load, so the 171 MB audio
     // encoder is in `GEMMA_4_E2B_ONNX_FILES` on purpose. If the library ever splits them, the file
@@ -276,8 +381,15 @@ describe("what the installed library actually is", () => {
 // ── The catalogue ────────────────────────────────────────────────────────────────────────────────
 
 describe("the catalogue", () => {
-  it("offers one row, and it is the vision row", () => {
-    expect(TRANSFORMERS_CATALOG).toHaveLength(1);
+  it("offers six rows: the Gemma vision row, three Qwen3.5 and two text models", () => {
+    expect(TRANSFORMERS_CATALOG.map((r) => r.id)).toEqual([
+      "gemma-4-E2B-it-onnx-q4f16",
+      "qwen3.5-0.8B-onnx-q4f16",
+      "qwen3.5-2B-onnx-q4f16",
+      "qwen3.5-4B-onnx-q4f16",
+      "phi-4-mini-instruct-onnx-q4f16",
+      "llama-3.2-3B-instruct-onnx-q4f16",
+    ]);
     const row = TRANSFORMERS_CATALOG[0]!;
     expect(row).toMatchObject({
       id: "gemma-4-E2B-it-onnx-q4f16",
@@ -331,15 +443,98 @@ describe("the catalogue", () => {
     expect(GEMMA_4_E2B_ONNX_FILES.map((f) => f.file)).toContain(GEMMA_4_E2B_ONNX_PROBE_FILE);
   });
 
-  it("is far past the phone cap, so §12.6 never offers it to a phone", () => {
-    expect(transformersCatalogFor({ maxVramMb: 2000 })).toEqual([]);
-    expect(transformersCatalogFor()).toHaveLength(1);
+  it("gates every row to a harness, and only the 0.8B row reaches a phone", () => {
+    // THE ONE GATE (2026-09-11): `hosts`, not a VRAM inequality. Every row declares it — a row that
+    // declared none would be read as desktop-only by `DEFAULT_HOSTS`, which is the safe reading but
+    // not one this package should ever need.
+    for (const row of TRANSFORMERS_CATALOG) expect(row.hosts, row.id).toBeDefined();
+    expect(TRANSFORMERS_CATALOG.filter((r) => offeredOn(r, "browser-phone")).map((r) => r.id)).toEqual(["qwen3.5-0.8B-onnx-q4f16"]);
+    expect(TRANSFORMERS_CATALOG.every((r) => offeredOn(r, "browser-desktop"))).toBe(true);
+    // None of them runs on the Mac engine or a headless install: those hosts serve their own models.
+    expect(TRANSFORMERS_CATALOG.some((r) => offeredOn(r, "mac") || offeredOn(r, "headless"))).toBe(false);
+    // The old VRAM filter still exists and still answers about MEMORY rather than about a device.
+    expect(transformersCatalogFor({ maxVramMb: 2000 }).map((r) => r.id)).toEqual(["qwen3.5-0.8B-onnx-q4f16"]);
+    expect(transformersCatalogFor({ host: "browser-phone" }).map((r) => r.id)).toEqual(["qwen3.5-0.8B-onnx-q4f16"]);
+    expect(transformersCatalogFor()).toHaveLength(6);
+  });
+
+  it("lists the files each row's own load fetches, hashed, and adds them up to its sizeBytes", () => {
+    // Per row since these five landed: no two of them have the same set. `use_external_data_format`
+    // in each repo's `config.json` decides how many `_data` chunks a graph has — one for the small
+    // Qwen rows, two for the 4B decoder and both text rows.
+    const counts: Record<string, number> = {
+      "gemma-4-E2B-it-onnx-q4f16": 15,
+      "qwen3.5-0.8B-onnx-q4f16": 13,
+      "qwen3.5-2B-onnx-q4f16": 13,
+      "qwen3.5-4B-onnx-q4f16": 14,
+      "phi-4-mini-instruct-onnx-q4f16": 8,
+      "llama-3.2-3B-instruct-onnx-q4f16": 9,
+    };
+    for (const row of TRANSFORMERS_CATALOG) {
+      expect(row.files.length, row.id).toBe(counts[row.id]);
+      expect(row.sizeBytes, row.id).toBe(row.files.reduce((n, f) => n + f.bytes, 0));
+      for (const file of row.files) {
+        expect(file.sha256, `${row.id} ${file.file}`).toMatch(/^[0-9a-f]{64}$/);
+        expect(file.bytes, `${row.id} ${file.file}`).toBeGreaterThan(0);
+      }
+      // The probe must be one of the row's own files, or "already downloaded" is never true.
+      expect(row.files.map((f) => f.file), row.id).toContain(row.probeFile);
+      // A repo id that is also the mirror's directory, and the directory the picker joins on.
+      expect(row.repo.endsWith(`/${row.assetFile}`), row.id).toBe(true);
+      expect(row.revision, row.id).toMatch(/^[0-9a-f]{40}$/);
+      expect(row.dtype, row.id).toBe("q4f16");
+      expect(row.contextTokens, row.id).toBe(8192);
+    }
+    // The exact totals, so a byte that changes anywhere shows up here rather than in a download bar.
+    expect(TRANSFORMERS_CATALOG.map((r) => r.sizeBytes)).toEqual([3_401_448_652, 666_085_872, 1_600_200_215, 3_019_398_759, 2_564_860_424, 2_419_252_013]);
+  });
+
+  it("names each row's licence where the Hub declares it, and carries Llama's extra obligation", () => {
+    const byId = new Map(TRANSFORMERS_CATALOG.map((r) => [r.id, r]));
+    expect(byId.get("qwen3.5-0.8B-onnx-q4f16")!.license.id).toBe("apache-2.0");
+    // The two `-OPT` exports carry NO licence tag; Apache-2.0 is the base models' own
+    // (`Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B`), read on 2026-09-11 through the pointer the export gives.
+    expect(byId.get("qwen3.5-2B-onnx-q4f16")!.license.id).toBe("apache-2.0");
+    expect(byId.get("qwen3.5-4B-onnx-q4f16")!.license.id).toBe("apache-2.0");
+    // Same shape for Phi: no tag on the export, `mit` on `microsoft/Phi-4-mini-instruct`.
+    expect(byId.get("phi-4-mini-instruct-onnx-q4f16")!.license).toEqual(MIT);
+    // Llama 3.2 is the one row with more than a link: a use policy AND a line to display.
+    const llama = byId.get("llama-3.2-3B-instruct-onnx-q4f16")!.license;
+    expect(llama).toEqual(LLAMA_3_2);
+    expect(llama.useRestrictionsUrl).toContain("use-policy");
+    expect(llama.attribution).toBe("Built with Llama");
+    // Apache and MIT ask for nothing to be shown to the person downloading.
+    for (const id of ["gemma-4-E2B-it-onnx-q4f16", "qwen3.5-0.8B-onnx-q4f16", "phi-4-mini-instruct-onnx-q4f16"]) {
+      expect(byId.get(id)!.license.useRestrictionsUrl, id).toBeUndefined();
+      expect(byId.get(id)!.license.attribution, id).toBeUndefined();
+    }
+  });
+
+  it("says which family each row's own chat template speaks, for the cut and nothing else", () => {
+    expect(TRANSFORMERS_CATALOG.map((r) => r.family)).toEqual(["gemma", "chatml", "chatml", "chatml", "phi", "llama3"]);
+  });
+
+  it("tells the sighted rows from the text ones, and only Gemma 4 pays for an audio encoder", () => {
+    expect(TRANSFORMERS_CATALOG.filter((r) => r.vision).map((r) => r.id)).toEqual([
+      "gemma-4-E2B-it-onnx-q4f16",
+      "qwen3.5-0.8B-onnx-q4f16",
+      "qwen3.5-2B-onnx-q4f16",
+      "qwen3.5-4B-onnx-q4f16",
+    ]);
+    // Gemma 4's session config is `ImageAudioTextToText`, which builds an audio encoder there is no
+    // way to skip (fact 5). The Qwen rows are `ImageTextToText` and have no audio graph at all.
+    expect(TRANSFORMERS_CATALOG.filter((r) => r.audio).map((r) => r.id)).toEqual(["gemma-4-E2B-it-onnx-q4f16"]);
+    for (const row of TRANSFORMERS_CATALOG) {
+      const names = row.files.map((f) => f.file);
+      expect(names.some((n) => n.includes("audio_encoder")), row.id).toBe(row.audio === true);
+      expect(names.some((n) => n.includes("vision_encoder")), row.id).toBe(row.vision === true);
+    }
   });
 
   it("joins the LiteRT rows into one list for the picker, LiteRT first", () => {
     expect(LOCAL_MODEL_CATALOG).toHaveLength(LITERT_CATALOG.length + TRANSFORMERS_CATALOG.length);
     expect(LOCAL_MODEL_CATALOG.slice(0, LITERT_CATALOG.length)).toEqual(LITERT_CATALOG);
-    expect(LOCAL_MODEL_CATALOG.at(-1)).toBe(TRANSFORMERS_CATALOG[0]);
+    expect(LOCAL_MODEL_CATALOG.at(-1)).toBe(TRANSFORMERS_CATALOG.at(-1));
     // Every LiteRT row means `litert` by saying nothing, which is what keeps the field additive.
     for (const row of LITERT_CATALOG) expect(row.runtime).toBeUndefined();
   });
@@ -442,12 +637,12 @@ describe("readiness", () => {
 
   it("says `load` while the sessions compile, not a download stuck at 100 %", async () => {
     withWebGpu();
-    const lib = fakeLibrary(["hi"]);
+    const lib = fakeLibrary(["hi"], { hold: true });
     const { p } = provider({}, lib);
     const loading = p.load();
-    // `from_pretrained` has handed over the callback by the time the processor resolves.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Held open: the callback is in hand and the sessions are not built yet, which is the state every
+    // assertion below is about.
+    await lib.modelStarted;
     const total = TRANSFORMERS_CATALOG[0]!.sizeBytes;
     lib.emit({ status: "progress", name: "x", file: "a", progress: 50, loaded: total / 2, total: total / 2 });
     let readiness = await p.readiness();
@@ -461,6 +656,7 @@ describe("readiness", () => {
     if (readiness.ready) throw new Error("still loading");
     expect(readiness.progress?.phase).toBe("load");
     expect(readiness.detail).toContain("into the GPU");
+    lib.release();
     await loading;
     await expect(p.readiness()).resolves.toEqual({ ready: true });
   });
@@ -468,11 +664,10 @@ describe("readiness", () => {
   it("never lets the library's growing denominator walk the bar backwards", async () => {
     withWebGpu();
     const seen: number[] = [];
-    const lib = fakeLibrary(["hi"]);
+    const lib = fakeLibrary(["hi"], { hold: true });
     const { p } = provider({ onProgress: (r) => seen.push(r.progress) }, lib);
     const loading = p.load();
-    await Promise.resolve();
-    await Promise.resolve();
+    await lib.modelStarted;
     // Only the files that have STARTED are known, so the seen total climbs. The row's own sum is the
     // denominator, so the fraction only ever grows.
     lib.emit({ status: "progress", name: "x", file: "a", progress: 100, loaded: 1_000, total: 1_000 });
@@ -480,16 +675,16 @@ describe("readiness", () => {
     expect(seen).toHaveLength(2);
     expect(seen[0]).toBeLessThan(seen[1]!);
     expect(seen[1]).toBeCloseTo(2_000 / TRANSFORMERS_CATALOG[0]!.sizeBytes, 12);
+    lib.release();
     await loading;
   });
 
   it("ignores every status but the per-file byte counts", async () => {
     withWebGpu();
-    const lib = fakeLibrary(["hi"]);
+    const lib = fakeLibrary(["hi"], { hold: true });
     const { p } = provider({}, lib);
     const loading = p.load();
-    await Promise.resolve();
-    await Promise.resolve();
+    await lib.modelStarted;
     lib.emit({ status: "initiate", name: "x", file: "config.json" });
     lib.emit({ status: "download", name: "x", file: "config.json" });
     lib.emit({ status: "done", name: "x", file: "config.json" });
@@ -500,6 +695,7 @@ describe("readiness", () => {
     const readiness = await p.readiness();
     if (readiness.ready) throw new Error("unexpectedly ready");
     expect(readiness.progress).toBeUndefined();
+    lib.release();
     await loading;
   });
 
@@ -508,11 +704,10 @@ describe("readiness", () => {
     // because the processor's seven files (19.5 MB) were fetched by a call whose aggregate this
     // provider was not reading. Both calls now share one callback and one map.
     withWebGpu();
-    const lib = fakeLibrary(["hi"]);
+    const lib = fakeLibrary(["hi"], { hold: true });
     const { p } = provider({}, lib);
     const loading = p.load();
-    await Promise.resolve();
-    await Promise.resolve();
+    await lib.modelStarted;
     const total = TRANSFORMERS_CATALOG[0]!.sizeBytes;
     const small = 19_481_894;
     lib.emit({ status: "progress", name: "x", file: "tokenizer.json", progress: 100, loaded: small, total: small });
@@ -520,6 +715,7 @@ describe("readiness", () => {
     const readiness = await p.readiness();
     if (readiness.ready) throw new Error("unexpectedly ready");
     expect(readiness.progress).toEqual({ loadedBytes: total, totalBytes: total, percent: 100, phase: "load" });
+    lib.release();
     await loading;
   });
 
@@ -911,5 +1107,157 @@ describe("abortLoad, unload and clearCache", () => {
   it("lists its catalogue through the contract's own door", async () => {
     const { p } = provider();
     await expect(p.models()).resolves.toEqual(TRANSFORMERS_CATALOG);
+  });
+});
+
+// ── The text rows' door (2026-09-11) ─────────────────────────────────────────────────────────────
+
+describe("a text row loads through the tokenizer, not a processor", () => {
+  const textRow = () => provider({ modelId: "llama-3.2-3B-instruct-onnx-q4f16" });
+
+  it("asks AutoTokenizer and AutoModelForCausalLM, and gives the streamer the tokenizer itself", async () => {
+    withWebGpu();
+    const { p, lib } = textRow();
+    expect(p.seesImages).toBe(false);
+    await p.chat({ messages: [{ role: "user", content: "hi" }] });
+    // One door, and it is the causal one: `AutoProcessor` would have nothing to build here — neither
+    // Phi-4-mini nor Llama 3.2 ships a `processor_config.json`.
+    expect(lib.doors).toEqual(["causal-lm"]);
+    expect(lib.loads.map((l) => l.repo)).toEqual(["onnx-community/Llama-3.2-3B-Instruct-ONNX", "onnx-community/Llama-3.2-3B-Instruct-ONNX"]);
+    // `TextStreamer` takes the tokenizer, which on this road is the tokenizer itself rather than a
+    // processor's — the fake labels the two differently so a swap cannot pass.
+    expect((lib.streamerTokenizers[0] as { label?: string }).label).toBe("fake-tokenizer-direct");
+    // The template's own BOS is already in the prompt, so the encode must not add another.
+    expect(lib.processed[0]?.options).toEqual({ add_special_tokens: false });
+    expect(lib.processed[0]?.images).toBeNull();
+  });
+
+  it("renders the transcript through the repo's OWN template, with thinking off and the answer open", async () => {
+    withWebGpu();
+    const { p, lib } = textRow();
+    await p.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(lib.templated[0]?.options).toEqual({ enable_thinking: false, add_generation_prompt: true });
+    // No `{ type: "image" }` placeholder anywhere: a text row's messages are strings.
+    expect(lib.templated[0]?.messages.every((m) => typeof m.content === "string")).toBe(true);
+  });
+
+  it("says a picture was dropped rather than losing it, and never hands one to the tokenizer", async () => {
+    withWebGpu();
+    const { p, lib } = textRow();
+    const shot = { mime: "image/png", data: new Uint8Array([1, 2, 3]), source: "shot.png" };
+    await p.chat({ messages: [{ role: "user", content: "what is this?", images: [shot] }] });
+    expect(lib.loadedImages).toHaveLength(0);
+    const first = lib.templated[0]?.messages[0];
+    expect(typeof first?.content === "string" && first.content).toContain("shot.png");
+  });
+
+  it("cuts a Llama answer at its own end-of-turn token, streaming and not", async () => {
+    withWebGpu();
+    const lib = fakeLibrary(["the answer.", "<|eot_id|>", "<|start_header_id|>user"]);
+    const { p } = provider({ modelId: "llama-3.2-3B-instruct-onnx-q4f16" }, lib);
+    const answer = await p.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(answer.message.content).toBe("the answer.");
+    const chunks = await collect(p.stream({ messages: [{ role: "user", content: "hi" }] }));
+    const text = chunks.filter((c) => c.type === "text").map((c) => (c.type === "text" ? c.delta : "")).join("");
+    expect(text).toBe("the answer.");
+    expect(text).not.toContain("<|");
+  });
+
+  it("probes the row's OWN file in Cache Storage, since the rows no longer share a name", async () => {
+    withWebGpu();
+    const row = TRANSFORMERS_CATALOG.find((r) => r.id === "phi-4-mini-instruct-onnx-q4f16")!;
+    const url = transformersFileUrl(BASE, row.repo, row.revision, row.probeFile);
+    const { p } = provider({ modelId: row.id, caches: memoryCaches([url]) });
+    await expect(p.readiness()).resolves.toEqual({ ready: true });
+    // The Gemma row's probe is a different file in a different repo: it must not answer for this one.
+    const gemma = TRANSFORMERS_CATALOG[0]!;
+    const wrong = provider({ modelId: gemma.id, caches: memoryCaches([url]) });
+    const readiness = await wrong.p.readiness();
+    expect(readiness.ready).toBe(false);
+  });
+
+  it("has nothing to probe for a row nobody described, and says so rather than guessing a key", async () => {
+    withWebGpu();
+    const { p } = provider({ modelId: "x", repo: "o/m", revision: "abc", caches: memoryCaches(["anything"]) });
+    const readiness = await p.readiness();
+    expect(readiness.ready).toBe(false);
+    // A caller that knows the file can still say so.
+    const named = provider({
+      modelId: "x",
+      repo: "o/m",
+      revision: "abc",
+      probeFile: "onnx/model_q4f16.onnx_data",
+      caches: memoryCaches([`${BASE}/o/m/onnx/model_q4f16.onnx_data`]),
+    });
+    await expect(named.p.readiness()).resolves.toEqual({ ready: true });
+  });
+});
+
+// ── The mirror's rows, beside the package's (2026-09-11) ─────────────────────────────────────────
+
+/**
+ * A TWIN GUARD ACROSS THE REPO, not a unit test.
+ *
+ * `scripts/publish-litert-models.sh` and this package hold the same facts twice: which files a row
+ * needs, how many bytes each is, its sha256, the commit they were read at, and which harnesses the
+ * row may be offered on. They have to — the script runs with no TypeScript in reach, and the package
+ * runs with no shell — so the only thing that can keep them equal is a test that reads both. A row
+ * that drifts here is a download that 404s, a bar denominated against the wrong total, or a model
+ * offered on a phone the publisher never meant it for.
+ */
+describe("the publish script mirrors exactly what this package asks for", () => {
+  const script = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../scripts/publish-litert-models.sh"), "utf8");
+
+  /** Every `repo|commit|file|bytes|sha|licence|gated|vision|runtime|prefix|hosts` row of the table. */
+  const rows = script
+    .split("\n")
+    .filter((line) => /^[\w.-]+\/[\w.-]+\|[0-9a-f]{6,40}\|/.test(line))
+    .map((line) => {
+      const [repo, commit, file, bytes, sha256, license, gated, vision, runtime, prefix, hosts] = line.split("|");
+      return { repo, commit, file, bytes: Number(bytes), sha256, license, gated, vision, runtime, prefix, hosts: (hosts ?? "").split(",") };
+    });
+
+  it("carries the same files, bytes, hashes and commit for every Transformers.js row", () => {
+    for (const model of TRANSFORMERS_CATALOG) {
+      const mine = rows.filter((r) => r.repo === model.repo);
+      expect(mine.length, model.repo).toBe(model.files.length);
+      expect(mine.map((r) => r.file), model.repo).toEqual(model.files.map((f) => f.file));
+      expect(mine.map((r) => r.bytes), model.repo).toEqual(model.files.map((f) => f.bytes));
+      expect(mine.map((r) => r.sha256), model.repo).toEqual(model.files.map((f) => f.sha256));
+      for (const row of mine) {
+        expect(row.commit, `${model.repo} ${row.file}`).toBe(model.revision);
+        expect(row.runtime, `${model.repo} ${row.file}`).toBe("transformers");
+        // The key prefix IS the layout Transformers.js resolves `{model}/` against.
+        expect(row.prefix, `${model.repo} ${row.file}`).toBe(`onnx/${model.repo}`);
+        expect(row.vision === "yes", `${model.repo} ${row.file}`).toBe(model.vision === true);
+      }
+    }
+  });
+
+  it("publishes each row to the same harnesses the package offers it on", () => {
+    for (const model of TRANSFORMERS_CATALOG) {
+      const mine = rows.filter((r) => r.repo === model.repo);
+      for (const row of mine) expect(row.hosts, `${model.repo} ${row.file}`).toEqual(model.hosts);
+    }
+  });
+
+  it("names each row's licence with the same word the package does", () => {
+    for (const model of TRANSFORMERS_CATALOG) {
+      const mine = rows.filter((r) => r.repo === model.repo);
+      for (const row of mine) expect(row.license, `${model.repo} ${row.file}`).toBe(model.license.id);
+    }
+    // And the script knows how to write all four: a licence with no branch would silently publish as
+    // Apache-2.0, which for the Llama row would be a false statement about somebody else's terms.
+    for (const id of ["gemma", "llama3.2", "mit"]) expect(script).toContain(`    ${id}) echo '"license": "${id}"`);
+  });
+
+  it("publishes the verbatim copies the two restrictive licences require, from the tracked folder", () => {
+    // Gemma §3.1 and Llama §1.b: the terms travel with the weights. `termsCopyUrl` in the catalogue
+    // points at these two objects, so a publish that stopped uploading them would leave a dead link
+    // on a consent line — which is worse than no link at all.
+    expect(script).toContain("litert/GEMMA_TERMS.md");
+    expect(script).toContain("litert/LLAMA_3_2_LICENSE.txt");
+    expect(script).toContain("litert/LLAMA_3_2_USE_POLICY.md");
+    expect(script).toContain('"attribution": "Built with Llama"');
   });
 });

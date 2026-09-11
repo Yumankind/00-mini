@@ -31,17 +31,44 @@
 import { withoutImages } from "./image-parts.js";
 import type { ChatMessage, ImagePart } from "./types.js";
 
-/** The families this package knows how to prompt. `plain` is the honest fallback for anything else. */
-export type PromptFamily = "gemma" | "plain";
+/**
+ * The families this package knows how to prompt, and — which is the part that matters for the ONNX
+ * rows — the families whose END-OF-TURN it knows how to cut at. `plain` is the honest fallback.
+ *
+ * FOUR FAMILIES, TWO DIFFERENT JOBS (2026-09-11, with the Qwen3.5 / Phi-4 / Llama 3.2 ONNX rows).
+ * `LiteRtProvider` uses a family to BUILD a prompt, because MediaPipe takes a string and applies no
+ * template. `TransformersProvider` does not: the library's own `apply_chat_template` renders the
+ * repo's Jinja template, which is the model's real one rather than our reading of a model card. What
+ * that provider still needs a family for is the OTHER half — knowing which markers a model might
+ * type as text, so an answer that runs past its own turn is cut instead of shown. So the new families
+ * below carry markers that are used for the cut and are correct for the render as well; nothing
+ * renders a Qwen or Llama prompt in this package today, and `apply_chat_template` is why.
+ */
+export type PromptFamily = "gemma" | "chatml" | "phi" | "llama3" | "plain";
 
 export interface TurnMarkers {
-  /** Opens a turn; the role name and a newline follow it. */
+  /** Opens a turn; the role name follows it, then `roleSuffix`. */
   start: string;
+  /**
+   * What comes between the role name and the turn's text. A newline for Gemma and ChatML; Llama 3
+   * closes its header with a token of its own (`<|end_header_id|>\n\n`) and Phi closes it with
+   * `|>` — the formats differ in the shape of the header, not only in the words.
+   */
+  roleSuffix?: string;
   /** Closes a turn. */
   end: string;
   /** What the model's own turns are called (`model` for Gemma, `assistant` for most others). */
   assistantRole: string;
   userRole: string;
+  /**
+   * EVERY STRING THAT MEANS "the turn is over, and what follows is not the answer".
+   *
+   * Separate from `start`/`end` because the cut and the render are different questions: Phi's header
+   * is `<|` + role + `|>`, and scanning a stream for the two characters `<|` would cut an answer that
+   * merely mentioned them. Absent ⇒ `[end, start]`, which is exactly what the Gemma cut has always
+   * been.
+   */
+  stops?: string[];
 }
 
 /** Gemma 3 / 3n / 4 instruction-tuned format, from the model card. See the warning above. */
@@ -51,6 +78,62 @@ export const GEMMA_MARKERS: TurnMarkers = {
   assistantRole: "model",
   userRole: "user",
 };
+
+/**
+ * ChatML, which is what the Qwen3.5 ONNX rows speak — read out of their own
+ * `chat_template.jinja` on 2026-09-11 (`<|im_start|>role\n … <|im_end|>`), not from memory.
+ */
+export const CHATML_MARKERS: TurnMarkers = {
+  start: "<|im_start|>",
+  roleSuffix: "\n",
+  end: "<|im_end|>",
+  assistantRole: "assistant",
+  userRole: "user",
+};
+
+/**
+ * Phi-4-mini's, read out of `onnx-community/Phi-4-mini-instruct-ONNX`'s `chat_template.jinja`:
+ * `{{ '<|' + role + '|>' + content + '<|end|>' }}`, and `<|assistant|>` as the generation prompt.
+ * The stop list names the headers in full for the reason `stops` exists.
+ */
+export const PHI_MARKERS: TurnMarkers = {
+  start: "<|",
+  roleSuffix: "|>",
+  end: "<|end|>",
+  assistantRole: "assistant",
+  userRole: "user",
+  stops: ["<|end|>", "<|user|>", "<|assistant|>", "<|system|>", "<|endoftext|>"],
+};
+
+/**
+ * Llama 3.x's, read out of `onnx-community/Llama-3.2-3B-Instruct-ONNX`'s `chat_template.jinja`:
+ * `<|start_header_id|>role<|end_header_id|>\n\n … <|eot_id|>`. The template writes the BOS token
+ * itself, which is why every caller of it passes `add_special_tokens: false`.
+ */
+export const LLAMA3_MARKERS: TurnMarkers = {
+  start: "<|start_header_id|>",
+  roleSuffix: "<|end_header_id|>\n\n",
+  end: "<|eot_id|>",
+  assistantRole: "assistant",
+  userRole: "user",
+  stops: ["<|eot_id|>", "<|start_header_id|>", "<|end_of_text|>"],
+};
+
+/** Every family that has markers at all. `plain` is deliberately absent: it has none, and a lookup
+ *  that misses is how an unknown family gets the honest answer rather than Gemma's tokens. */
+export const FAMILY_MARKERS: Partial<Record<PromptFamily, TurnMarkers>> = {
+  gemma: GEMMA_MARKERS,
+  chatml: CHATML_MARKERS,
+  phi: PHI_MARKERS,
+  llama3: LLAMA3_MARKERS,
+};
+
+/** What a stream must watch for in this family. `[end, start]` when the family named nothing else. */
+export function turnStops(family: PromptFamily): string[] {
+  const markers = FAMILY_MARKERS[family];
+  if (!markers) return [];
+  return markers.stops ?? [markers.end, markers.start];
+}
 
 /**
  * How a tool result is written back to a model that has no `tool` role — which is all of them here.
@@ -110,13 +193,14 @@ function renderMarked(messages: ChatMessage[], markers: TurnMarkers): PromptSegm
       text = `${systemPending}\n\n${text}`;
       systemPending = "";
     }
-    out.push({ kind: "text", text: `${markers.start}${role}\n` });
+    out.push({ kind: "text", text: `${markers.start}${role}${markers.roleSuffix ?? "\n"}` });
     for (const image of message.images ?? []) out.push({ kind: "image", image });
     out.push({ kind: "text", text: `${text}${markers.end}\n` });
   }
   // A conversation that is nothing but a system prompt still has to reach the model somehow.
-  if (systemPending) out.push({ kind: "text", text: `${markers.start}${markers.userRole}\n${systemPending}${markers.end}\n` });
-  out.push({ kind: "text", text: `${markers.start}${markers.assistantRole}\n` });
+  const header = (role: string): string => `${markers.start}${role}${markers.roleSuffix ?? "\n"}`;
+  if (systemPending) out.push({ kind: "text", text: `${header(markers.userRole)}${systemPending}${markers.end}\n` });
+  out.push({ kind: "text", text: header(markers.assistantRole) });
   return mergeSegments(out);
 }
 
@@ -137,11 +221,17 @@ function renderPlain(messages: ChatMessage[]): PromptSegment[] {
 
 export const PROMPT_SEGMENT_TEMPLATES: Record<PromptFamily, (messages: ChatMessage[]) => PromptSegment[]> = {
   gemma: (messages) => renderMarked(messages, GEMMA_MARKERS),
+  chatml: (messages) => renderMarked(messages, CHATML_MARKERS),
+  phi: (messages) => renderMarked(messages, PHI_MARKERS),
+  llama3: (messages) => renderMarked(messages, LLAMA3_MARKERS),
   plain: renderPlain,
 };
 
 export const PROMPT_TEMPLATES: Record<PromptFamily, (messages: ChatMessage[]) => string> = {
   gemma: (messages) => renderPrompt(messages, "gemma"),
+  chatml: (messages) => renderPrompt(messages, "chatml"),
+  phi: (messages) => renderPrompt(messages, "phi"),
+  llama3: (messages) => renderPrompt(messages, "llama3"),
   plain: (messages) => renderPrompt(messages, "plain"),
 };
 
@@ -175,13 +265,23 @@ export function renderPrompt(messages: ChatMessage[], family: PromptFamily = "pl
  * cut on a growing buffer, and a second implementation of it would be the one that disagrees.
  */
 export function turnMarkerIndex(text: string, family: PromptFamily): number {
-  if (family !== "gemma") return -1;
-  const hits = [text.indexOf(GEMMA_MARKERS.end), text.indexOf(GEMMA_MARKERS.start)].filter((i) => i !== -1);
+  const hits = turnStops(family)
+    .map((stop) => text.indexOf(stop))
+    .filter((i) => i !== -1);
   return hits.length ? Math.min(...hits) : -1;
 }
 
-/** The longest marker, so a streamer knows how much of its tail could still be half of one. */
-export const TURN_MARKER_MAX_LENGTH = Math.max(GEMMA_MARKERS.start.length, GEMMA_MARKERS.end.length);
+/**
+ * The longest stop string in this family, so a streamer knows how much of its tail could still be
+ * half of one. Per family since 2026-09-11: `<|start_header_id|>` is five characters longer than
+ * Gemma's longest, and a hold-back sized for Gemma would stream the first half of it to a reader.
+ */
+export function turnMarkerMaxLength(family: PromptFamily): number {
+  return turnStops(family).reduce((n, stop) => Math.max(n, stop.length), 0);
+}
+
+/** Gemma's, kept as a constant because two providers already read it by that name. */
+export const TURN_MARKER_MAX_LENGTH = turnMarkerMaxLength("gemma");
 
 export function stopAtTurnEnd(text: string, family: PromptFamily): string {
   const at = turnMarkerIndex(text, family);

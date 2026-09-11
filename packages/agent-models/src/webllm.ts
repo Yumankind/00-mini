@@ -76,16 +76,23 @@ export interface WebLLMModelInfo extends ModelInfo {
  * The curated small models. 0.5B–3B, `q4f16_1` builds (half the download of `q4f32_1` and the same
  * answers on any GPU that does 16-bit), every one of them `low_resource_required` in the prebuilt
  * config so a laptop integrated GPU can hold it.
+ *
+ * `hosts` (2026-09-11) is the harness gate of `ModelInfo`, decided here by SIZE because that is the
+ * only thing these rows publish: web-llm's own `vram_required_MB`. One row is under a gigabyte — the
+ * 879 MB Llama 3.2 1B, which is also `WEBLLM_DEFAULT_MODEL_ID` and therefore the fallback brain a
+ * phone reaches when the LiteRT row is not there — so it is the one offered on `browser-phone`. The
+ * 1.4 GB Qwen3 0.6B is the next smallest and is deliberately NOT: a phone's browser gets a few
+ * hundred megabytes of GPU and is killed rather than swapped.
  */
 export const WEBLLM_CATALOG: WebLLMModelInfo[] = [
-  { id: "Qwen3-0.6B-q4f16_1-MLC", label: "Qwen3 0.6B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1403 },
-  { id: "Llama-3.2-1B-Instruct-q4f16_1-MLC", label: "Llama 3.2 1B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 879 },
-  { id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC", label: "Qwen2.5 1.5B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1630 },
-  { id: "Qwen3-1.7B-q4f16_1-MLC", label: "Qwen3 1.7B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 2037 },
-  { id: "SmolLM2-1.7B-Instruct-q4f16_1-MLC", label: "SmolLM2 1.7B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1774 },
-  { id: "gemma-2-2b-it-q4f16_1-MLC", label: "Gemma 2 2B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1895 },
-  { id: "Llama-3.2-3B-Instruct-q4f16_1-MLC", label: "Llama 3.2 3B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 2264 },
-  { id: "Hermes-3-Llama-3.2-3B-q4f16_1-MLC", label: "Hermes 3 Llama 3.2 3B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 2264 },
+  { id: "Qwen3-0.6B-q4f16_1-MLC", hosts: ["browser-desktop"], label: "Qwen3 0.6B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1403 },
+  { id: "Llama-3.2-1B-Instruct-q4f16_1-MLC", hosts: ["browser-desktop", "browser-phone"], label: "Llama 3.2 1B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 879 },
+  { id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC", hosts: ["browser-desktop"], label: "Qwen2.5 1.5B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1630 },
+  { id: "Qwen3-1.7B-q4f16_1-MLC", hosts: ["browser-desktop"], label: "Qwen3 1.7B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 2037 },
+  { id: "SmolLM2-1.7B-Instruct-q4f16_1-MLC", hosts: ["browser-desktop"], label: "SmolLM2 1.7B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1774 },
+  { id: "gemma-2-2b-it-q4f16_1-MLC", hosts: ["browser-desktop"], label: "Gemma 2 2B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 1895 },
+  { id: "Llama-3.2-3B-Instruct-q4f16_1-MLC", hosts: ["browser-desktop"], label: "Llama 3.2 3B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 2264 },
+  { id: "Hermes-3-Llama-3.2-3B-q4f16_1-MLC", hosts: ["browser-desktop"], label: "Hermes 3 Llama 3.2 3B", class: "small", local: true, supportsTools: true, vision: false, contextTokens: 4096, vramMb: 2264 },
 ];
 
 /** The one this package loads when the caller names none. Smallest that still follows instructions. */

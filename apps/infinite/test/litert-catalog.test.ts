@@ -8,6 +8,9 @@ import {
   loadLiteRtCatalog,
   phoneRow,
   rowSize,
+  rowsForHost,
+  thisHost,
+  PHONE_MAX_WIDTH_PX,
   PHONE_VRAM_CAP_MB,
 } from "../src/lib/litert-catalog.js";
 
@@ -146,33 +149,64 @@ describe("the mirror's catalogue, fetched and cached", () => {
   });
 });
 
-describe("who gets a picker, and which row a phone gets (§12.6)", () => {
-  it("believes userAgentData.mobile over the width, either way", () => {
-    expect(isPhone({ innerWidth: 1400, navigator: { userAgentData: { mobile: true } } })).toBe(true);
-    expect(isPhone({ innerWidth: 320, navigator: { userAgentData: { mobile: false } } })).toBe(false);
+describe("which harness this tab is, and which rows it may be shown (§12.6, rewritten 2026-09-11)", () => {
+  /**
+   * THE RULE: a coarse pointer AND a narrow window. Either alone is a device this gate would get
+   * wrong — a touchscreen laptop is a desktop, and a desktop browser dragged thin can still hold a
+   * three-gigabyte model and would be puzzled to be offered less.
+   */
+  const coarse = { matchMedia: () => ({ matches: true }) };
+  const fine = { matchMedia: () => ({ matches: false }) };
+
+  it("is a phone only when the pointer is coarse and the window is narrow", () => {
+    expect(thisHost({ innerWidth: 390, ...coarse })).toBe("browser-phone");
+    expect(thisHost({ innerWidth: 390, ...fine })).toBe("browser-desktop");
+    expect(thisHost({ innerWidth: 1400, ...coarse })).toBe("browser-desktop");
+    expect(thisHost({ innerWidth: PHONE_MAX_WIDTH_PX, ...coarse })).toBe("browser-desktop");
+    expect(thisHost({ innerWidth: PHONE_MAX_WIDTH_PX - 1, ...coarse })).toBe("browser-phone");
   });
 
-  it("falls back to the width, and to `no` when even that is unknown", () => {
-    expect(isPhone({ innerWidth: 767 })).toBe(true);
-    expect(isPhone({ innerWidth: 768 })).toBe(false);
+  it("asks Chromium's own answer where there is no matchMedia at all, and otherwise says desktop", () => {
+    expect(thisHost({ innerWidth: 390, navigator: { userAgentData: { mobile: true } } })).toBe("browser-phone");
+    expect(thisHost({ innerWidth: 390, navigator: { userAgentData: { mobile: false } } })).toBe("browser-desktop");
+    // No window to measure (a worker, a test): a desktop, which is the reading that offers MORE.
+    expect(thisHost({})).toBe("browser-desktop");
+    expect(isPhone({ innerWidth: 390, ...coarse })).toBe(true);
     expect(isPhone({})).toBe(false);
   });
 
-  it("hands a phone the SMALLEST row under the cap, never a guessed one", () => {
-    const rows = mergeMirrorCatalog(null);
+  it("filters the rows by `hosts` and by nothing else — the one gate, before any size rule", () => {
+    const rows = mergeMirrorCatalog(null, LOCAL_MODEL_CATALOG);
+    const phone = rowsForHost(rows, "browser-phone");
+    // Two rows on a phone today: the 270m, and the 0.67 GB Qwen3.5 that can see a picture.
+    expect(phone.map((r) => r.id)).toEqual(["gemma3-270m-it-q4_0-web", "gemma3-1b-it-int4-web", "qwen3.5-0.8B-onnx-q4f16"]);
+    expect(rowsForHost(rows, "browser-desktop")).toHaveLength(rows.length);
+    // A row that names no harness is desktop-only. Said in a test because it is the rule a mirror row
+    // this app has never heard of falls under, and the reason it cannot land on a phone.
+    const unclassified = [{ ...rows[0]!, id: "unknown", hosts: undefined }];
+    expect(rowsForHost(unclassified, "browser-phone")).toEqual([]);
+    expect(rowsForHost(unclassified, "browser-desktop")).toHaveLength(1);
+  });
+
+  it("starts a phone on the SMALLEST row offered to a phone, never a guessed one", () => {
+    const rows = mergeMirrorCatalog(null, LOCAL_MODEL_CATALOG);
     const row = phoneRow(rows);
     expect(row?.id).toBe("gemma3-270m-it-q4_0-web");
     expect(row!.vramMb).toBeLessThanOrEqual(PHONE_VRAM_CAP_MB);
 
     // A row whose numbers were derived from a file size is not the one to keep a promise with.
-    const guessed = [{ ...rows[0], id: "guess", vramMb: 100, estimated: true }];
+    const guessed = [{ ...rows[0]!, id: "guess", vramMb: 100, estimated: true, hosts: ["browser-phone" as const] }];
     expect(phoneRow(guessed)).toBeNull();
     expect(phoneRow([])).toBeNull();
   });
 
   it("says nothing fits rather than offering a phone a 2 GB download", () => {
-    const desktopOnly = mergeMirrorCatalog(null).filter((r) => r.vramMb > PHONE_VRAM_CAP_MB);
+    const desktopOnly = mergeMirrorCatalog(null, LOCAL_MODEL_CATALOG).filter((r) => r.vramMb > PHONE_VRAM_CAP_MB);
     expect(phoneRow(desktopOnly)).toBeNull();
+    // And the gate holds even when a row's numbers would have passed the old inequality: `hosts` is
+    // what is read, so a small row nobody offered to a phone is still not offered to one.
+    const smallButDesktop = [{ ...mergeMirrorCatalog(null, LOCAL_MODEL_CATALOG)[0]!, vramMb: 200, hosts: ["browser-desktop" as const] }];
+    expect(phoneRow(smallButDesktop)).toBeNull();
   });
 
   it("opens a desktop on the person's choice, and otherwise on the smallest row", () => {

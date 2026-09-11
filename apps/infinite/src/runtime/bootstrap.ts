@@ -257,7 +257,7 @@ export interface OwnedAgent {
 
   // ── The local brain picker (§12.7), fed by the mirror ──────────────────────────────────────────
   /** What is chosen now, whether this device gets a picker at all, and where the weights come from. */
-  localBrain(): { choice: LocalModelChoice | null; picker: boolean; base: string; available: boolean };
+  localBrain(): { choice: LocalModelChoice | null; base: string; available: boolean };
   /** The mirror's rows joined to the package's, cached for five minutes. Never called during boot. */
   localCatalog(force?: boolean): Promise<CatalogResult>;
   /** Is THIS row already on the device? A provider built for it, asked; nothing is downloaded. */
@@ -499,11 +499,12 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
     });
   };
 
-  // §12.6, decided WITHOUT the network: a phone that has never chosen gets the smallest row the
-  // package vouches for under the cap (the 270m), never the desktop default, which is 2 GB. The
-  // mirror's list refines the label later; it never changes which brain a first visit downloads.
+  // §12.6, decided WITHOUT the network: a phone that has never chosen starts on the smallest row the
+  // package OFFERS A PHONE (`hosts`, 2026-09-11 — the 270m), never the desktop default, which is 2 GB.
+  // The mirror's list refines the label later; it never changes which brain a first visit downloads.
   // `LOCAL_MODEL_CATALOG` rather than the LiteRT list alone so the offline picker holds every row the
-  // mirror would serve — the 3.4 GB ONNX row is far past the phone cap and can never be chosen here.
+  // mirror would serve — and the gate is the row's `hosts`, so the 3.4 GB ONNX row cannot land here
+  // while the 0.67 GB Qwen3.5 row, which a phone IS offered, can be chosen from the picker.
   const phoneDefault = (): LocalModelChoice | null => {
     const row = phoneRow(mergeMirrorCatalog(null, LOCAL_MODEL_CATALOG));
     return row ? { id: row.id, assetFile: row.assetFile, base: baseFor(row.runtime), family: row.family, label: row.label, runtime: row.runtime } : null;
@@ -830,7 +831,7 @@ export async function createOwnedAgent(opts: CreateOwnedAgentOptions): Promise<O
 
     localProgress: () => localPct,
 
-    localBrain: () => ({ choice: localChoice, picker: !onPhone, base: litertBase, available: Boolean(localLeader) }),
+    localBrain: () => ({ choice: localChoice, base: litertBase, available: Boolean(localLeader) }),
     localCatalog: (force = false) => loadLiteRtCatalog({ modelBaseUrl: litertBase, force }),
     async localRowReadiness(row) {
       // A provider is a small object until something asks it to load — building one per row is how

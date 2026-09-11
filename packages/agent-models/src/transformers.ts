@@ -66,17 +66,19 @@
 
 import { ProviderError, providerErrorFromThrow, throwIfAborted } from "./errors.js";
 import { decodeImage, withoutImages } from "./image-parts.js";
-import { APACHE_2, LITERT_CATALOG, type LiteRtModelInfo } from "./litert.js";
+import { APACHE_2, LITERT_CATALOG, LLAMA_3_2, MIT, type LiteRtModelInfo } from "./litert.js";
 import { mapFinishReason } from "./openai-compatible.js";
 import type { FetchLike, Readiness } from "./openai-compatible.js";
-import { assistantTurnText, stopAtTurnEnd, toolTurnText, TURN_MARKER_MAX_LENGTH, turnMarkerIndex } from "./templates.js";
+import { assistantTurnText, stopAtTurnEnd, toolTurnText, turnMarkerIndex, turnMarkerMaxLength } from "./templates.js";
 import type { PromptFamily } from "./templates.js";
 import { FALLBACK_SCHEMAS_MIN_CONTEXT, fallbackToolPrompt, parseFallbackToolCalls } from "./tool-fallback.js";
+import { offeredOn } from "./types.js";
 import type {
   ChatChunk,
   ChatMessage,
   ChatRequest,
   ChatResponse,
+  Host,
   ImagePart,
   ModelInfo,
   ModelProvider,
@@ -158,6 +160,35 @@ export interface TransformersModelInfo extends LiteRtModelInfo {
   audio?: boolean;
   /** Said out loud on the picker row, because both halves of it are surprising. */
   note?: string;
+  /**
+   * EXACTLY THE FILES THIS ROW'S LOAD FETCHES, with the Hub's own sizes and sha256.
+   *
+   * Per row since the five rows of 2026-09-11, because no two of them have the same set: a vision row
+   * is four graphs or three (Gemma 4 has an audio encoder, Qwen3.5 has none), a text row is one, and
+   * how many `_data` chunks a graph has is `use_external_data_format` in its own `config.json` and
+   * nothing else. `sizeBytes` is the sum of this list and a test adds it up, so a file added here
+   * without its bytes cannot silently shrink the download bar's denominator.
+   */
+  files: readonly TransformersFileRow[];
+  /**
+   * The ONE file the readiness probe asks Cache Storage about: the biggest, and the last to land.
+   * Fifteen `match` calls would be fifteen times the work for the same answer, and a partial set is
+   * not a usable model anyway.
+   */
+  probeFile: string;
+}
+
+// WHICH DOOR A ROW LOADS THROUGH is DERIVED from `vision` and never stored: `AutoProcessor` +
+// `AutoModelForImageTextToText` for a row that sees, `AutoTokenizer` + `AutoModelForCausalLM` for one
+// that does not. Two fields that must agree is one field — and the installed library draws the same
+// line, `MODEL_SESSION_CONFIG[ImageTextToText]` building embed_tokens/decoder_model_merged/
+// vision_encoder where `DecoderOnly` builds a single `model` session.
+
+/** One file of a row, as the Hub records it. `sha256` is the LFS hash, or ours for a small text file. */
+export interface TransformersFileRow {
+  file: string;
+  bytes: number;
+  sha256: string;
 }
 
 /**
@@ -193,27 +224,145 @@ export const GEMMA_4_E2B_ONNX_FILES: readonly { file: string; bytes: number; sha
   { file: "onnx/audio_encoder_q4f16.onnx_data", bytes: 171258112, sha256: "df58e61a00bafa9449ee5fd52895ce952f158bbdd1fe38df8a68f48f36842e62" },
 ];
 
+
+/**
+ * THE FIVE ROWS BRUNO PICKED ON 2026-09-11, and the files each one's q4f16 load fetches.
+ *
+ * Every list below was read from `https://huggingface.co/api/models/<repo>?blobs=true` at the commit
+ * named on the row: the sizes and the LFS sha256 come from that document, and the half-dozen small
+ * text files it records no LFS hash for (`config.json`, the tokenizer config, `chat_template.jinja`)
+ * were fetched at that same commit and hashed here. The same numbers are the publish script's rows,
+ * and the Worker re-verifies each hash on the way into the bucket.
+ *
+ * WHAT DECIDES A LIST. `transformers.js_config.use_external_data_format` in each repo's own
+ * `config.json` says how many `_data` chunks a graph has — ONE for the small Qwen rows, TWO for the
+ * 4B decoder and for both text rows, which is why `…onnx_data_1` appears there and nowhere else. The
+ * session set is the library's, not ours: the Qwen3.5 rows are `ImageTextToText`
+ * (embed_tokens + decoder_model_merged + vision_encoder — and NO audio encoder, unlike Gemma 4's
+ * `ImageAudioTextToText`), the Phi and Llama rows are `DecoderOnly` and load one `model` graph. The
+ * other dtypes in each repo (fp16, q4, quantized, unquantised) are deliberately not mirrored.
+ */
+
+/** Qwen3.5 0.8B, vision, Apache-2.0. The first phone row that SEES — 0.67 GB, three graphs. */
+export const QWEN3_5_0_8B_ONNX_FILES: readonly TransformersFileRow[] = [
+  { file: "config.json", bytes: 2849, sha256: "36fed6a902ccd06ef19a452bd5a0750bd88fe347d06ab75ef515615bac5b296d" },
+  { file: "generation_config.json", bytes: 248, sha256: "dc0cbe66543f310896469b7b1448af792f403293a1080baaf04d586c57b23e48" },
+  { file: "preprocessor_config.json", bytes: 336, sha256: "6a970fd06f30e6943b3e2c14d5d3b42d49b06cf99b99103d56689bef462d90f8" },
+  { file: "processor_config.json", bytes: 1300, sha256: "14932921ca485d458a04dafd8069fbb0a4505622a48208d19ed247115801385b" },
+  { file: "chat_template.jinja", bytes: 7755, sha256: "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80" },
+  { file: "tokenizer_config.json", bytes: 9161, sha256: "fccbff64ebe09343aa2171028657f5b038db96fb4f657609bc76743eddfa3b9d" },
+  { file: "tokenizer.json", bytes: 19226111, sha256: "89da80cc6689bef4d90cc1028249436975ffb0814618f1d93c65310e05801a9b" },
+  { file: "onnx/embed_tokens_q4f16.onnx", bytes: 1064, sha256: "8218531ac44ae9978d50647f1d907c53c308f758514b992504238c77843c254d" },
+  { file: "onnx/embed_tokens_q4f16.onnx_data", bytes: 147005440, sha256: "ec4a1f13ff942653b52000a7a0ec40504110d8be9a0ecab2da4d3063588ed563" },
+  { file: "onnx/decoder_model_merged_q4f16.onnx", bytes: 1036898, sha256: "34e17c8e2035919df86ab1f52b41999a1bd18ba96b49dba6ac8d340aae652006" },
+  { file: "onnx/decoder_model_merged_q4f16.onnx_data", bytes: 436662272, sha256: "468cf83a51e81e27ffb4210268b1b09979e68dd128ad5fe347e5d08721cecc41" },
+  { file: "onnx/vision_encoder_q4f16.onnx", bytes: 212694, sha256: "38af0f1a2ef1d1d9c80ba4fd3bb59db8481b03b5e062999b4d6d9d14e9e0fc7b" },
+  { file: "onnx/vision_encoder_q4f16.onnx_data", bytes: 61919744, sha256: "0847376fcef41cb3874a21f0eb1b75428502537e16f360bdbf854e71ef552319" },
+];
+
+/** Qwen3.5 2B, vision, Apache-2.0 (the base repo's tag — the export carries none; see the row). */
+export const QWEN3_5_2B_ONNX_FILES: readonly TransformersFileRow[] = [
+  { file: "config.json", bytes: 2993, sha256: "b028de63b0ed8b37107acaaf1475d40d6d4feb5721153674e7d1d0bdbfd0f258" },
+  { file: "generation_config.json", bytes: 248, sha256: "dc0cbe66543f310896469b7b1448af792f403293a1080baaf04d586c57b23e48" },
+  { file: "preprocessor_config.json", bytes: 336, sha256: "6a970fd06f30e6943b3e2c14d5d3b42d49b06cf99b99103d56689bef462d90f8" },
+  { file: "processor_config.json", bytes: 1300, sha256: "14932921ca485d458a04dafd8069fbb0a4505622a48208d19ed247115801385b" },
+  { file: "chat_template.jinja", bytes: 7755, sha256: "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80" },
+  { file: "tokenizer_config.json", bytes: 9161, sha256: "fccbff64ebe09343aa2171028657f5b038db96fb4f657609bc76743eddfa3b9d" },
+  { file: "tokenizer.json", bytes: 19226111, sha256: "89da80cc6689bef4d90cc1028249436975ffb0814618f1d93c65310e05801a9b" },
+  { file: "onnx/embed_tokens_q4f16.onnx", bytes: 1064, sha256: "802a072ff21f540eda7f343aa71dbb0354c8859caaf34f09b3bf8117725d7de8" },
+  { file: "onnx/embed_tokens_q4f16.onnx_data", bytes: 294010880, sha256: "650aa8eb39b7404ca2c908d78243c82b6fd88321feeb8fca175745806c6b3a81" },
+  { file: "onnx/decoder_model_merged_q4f16.onnx", bytes: 707377, sha256: "c567d4d34dc97185e85bb40c9c30d6f73133858b1f8a32b90166b7fea4b653bf" },
+  { file: "onnx/decoder_model_merged_q4f16.onnx_data", bytes: 1088892928, sha256: "06dd7841f90e5c4ecc029193a29478750ae9dcbfeaf8cfb223cf8b69cc5666d6" },
+  { file: "onnx/vision_encoder_q4f16.onnx", bytes: 394142, sha256: "2999a8fb031d394a0697c5413eb0bb624e45e4c3aacefd67524d4627679423d5" },
+  { file: "onnx/vision_encoder_q4f16.onnx_data", bytes: 196945920, sha256: "c54ed06141904a99fa05a9ffaf460ee05441d50dde54f784ec2ae71a43c58314" },
+];
+
+/** Qwen3.5 4B, vision, Apache-2.0. Its decoder is the one q4f16 graph here with TWO data chunks. */
+export const QWEN3_5_4B_ONNX_FILES: readonly TransformersFileRow[] = [
+  { file: "config.json", bytes: 3198, sha256: "c6f9834460177e3821e035900320fa24bd11ad1c9f14bfe2e78e4398e38c4937" },
+  { file: "generation_config.json", bytes: 248, sha256: "dc0cbe66543f310896469b7b1448af792f403293a1080baaf04d586c57b23e48" },
+  { file: "preprocessor_config.json", bytes: 336, sha256: "6a970fd06f30e6943b3e2c14d5d3b42d49b06cf99b99103d56689bef462d90f8" },
+  { file: "processor_config.json", bytes: 1300, sha256: "14932921ca485d458a04dafd8069fbb0a4505622a48208d19ed247115801385b" },
+  { file: "chat_template.jinja", bytes: 7756, sha256: "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715" },
+  { file: "tokenizer_config.json", bytes: 9162, sha256: "2de621ec071dd61438efdd6d0183bd3d612e98d05ac10d19ed75f1fef9299bc9" },
+  { file: "tokenizer.json", bytes: 19226111, sha256: "89da80cc6689bef4d90cc1028249436975ffb0814618f1d93c65310e05801a9b" },
+  { file: "onnx/embed_tokens_q4f16.onnx", bytes: 1064, sha256: "0e5fe965e5575b6428b7dea82661ed09bf7abadf29450c279e46e8113745110e" },
+  { file: "onnx/embed_tokens_q4f16.onnx_data", bytes: 367513600, sha256: "fc1bb145d8839272a87c71e0cb4d34832a0d7bb4de06ab4fb74fea1aa6ddf7e5" },
+  { file: "onnx/decoder_model_merged_q4f16.onnx", bytes: 933554, sha256: "8f159924389ced435ff445b9aaf1604d7de7756961299568f106990415bedcbb" },
+  { file: "onnx/decoder_model_merged_q4f16.onnx_data", bytes: 2065635328, sha256: "83a2b12931978d2a3577f1f1a19e7ec42b87a760e87567dd26313fd933dcddd3" },
+  { file: "onnx/decoder_model_merged_q4f16.onnx_data_1", bytes: 367513600, sha256: "fc1bb145d8839272a87c71e0cb4d34832a0d7bb4de06ab4fb74fea1aa6ddf7e5" },
+  { file: "onnx/vision_encoder_q4f16.onnx", bytes: 394142, sha256: "68b093637448ec24a8f364546be8ce1d7ce6712b2c6df3de033e38382138ba32" },
+  { file: "onnx/vision_encoder_q4f16.onnx_data", bytes: 198159360, sha256: "c52931db472718a0b045b03487497e01b29a63028944bcc57019c20ef4ea15ff" },
+];
+
+/** Phi-4-mini, text only, MIT (microsoft/Phi-4-mini-instruct's tag — the export carries none). */
+export const PHI_4_MINI_ONNX_FILES: readonly TransformersFileRow[] = [
+  { file: "config.json", bytes: 2735, sha256: "13f196a6d99bfe053c183adf47a8ff772b1d70802a1927206a705d3fd99b132f" },
+  { file: "generation_config.json", bytes: 168, sha256: "4d8c499900ee9a4c4b1bca1887bc5a5c5ac9b01a57a364f30c583cdd1019cc72" },
+  { file: "chat_template.jinja", bytes: 423, sha256: "febf589225c9728ab791f52e8897d7607a823d45368f0a4c92fa68997b40cce9" },
+  { file: "tokenizer_config.json", bytes: 766, sha256: "e263ca0b737a5e1ffc6bcb8ca1b0c85ae7febc90ecbf1aac968170f0f79b4feb" },
+  { file: "tokenizer.json", bytes: 13303196, sha256: "9ca5aa723a31a7a122497e059bd48dd67a5bd03ad16b3ffcf16093fd3021c1eb" },
+  { file: "onnx/model_q4f16.onnx", bytes: 26270832, sha256: "ca26127777adf1df99b5fc1a3b4d1e0c426a6bf56626889873bfc4a6a095b4fc" },
+  { file: "onnx/model_q4f16.onnx_data", bytes: 2087043072, sha256: "385526d648e4b3e361f3117564a6bd3cad7712a5c06fa23401763187674fd46c" },
+  { file: "onnx/model_q4f16.onnx_data_1", bytes: 438239232, sha256: "b9a5d6f40fde30e9155d671dc630d2ea554f903f01c4ef8bbdc64c5b38035923" },
+];
+
+/**
+ * Llama 3.2 3B Instruct, text only, and the one row in this package whose licence asks for something
+ * beyond a link: `LLAMA_3_2` carries the Acceptable Use Policy and the "Built with Llama" line the
+ * Community Licence §1.b.i requires, and the picker shows both before the download.
+ */
+export const LLAMA_3_2_3B_ONNX_FILES: readonly TransformersFileRow[] = [
+  { file: "config.json", bytes: 1162, sha256: "93104420bd10292f1db7f2a0d940f431d760096b46bfa5de64cd6efa613a9e5c" },
+  { file: "generation_config.json", bytes: 218, sha256: "8baea8f248b53e37390f42aa732068b887668357bc09fd1a3361ba91e7b67cda" },
+  { file: "chat_template.jinja", bytes: 3827, sha256: "5816fce10444e03c2e9ee1ef8a4a1ea61ae7e69e438613f3b17b69d0426223a4" },
+  { file: "special_tokens_map.json", bytes: 296, sha256: "6f38c73729248f6c127296386e3cdde96e254636cc58b4169d3fd32328d9a8ec" },
+  { file: "tokenizer_config.json", bytes: 54557, sha256: "fb8e113b6240ab997fe87464b8b58697cc769a8df40699356e8524d0dfc60c0e" },
+  { file: "tokenizer.json", bytes: 11574638, sha256: "3a223ade375cc1d13b04e897ce1d36a04f50140e1ba3d107021ea68d4b5e614c" },
+  { file: "onnx/model_q4f16.onnx", bytes: 260899, sha256: "43648be8ff45ed7bc75c75ea0d495beffa8a8632910e53d3aa824d6bfffaae46" },
+  { file: "onnx/model_q4f16.onnx_data", bytes: 2095929344, sha256: "0669c8c258ea5437b82cc17e5ca87bb91a9ede5b2f5ff80675c0b8e51f1b6043" },
+  { file: "onnx/model_q4f16.onnx_data_1", bytes: 311427072, sha256: "63b1b82298ad66f940b4f918f81c386fbe4e15a4e178efb14bc558d127185113" },
+];
+
 /** The single file a readiness probe asks Cache Storage about: the biggest, and the last to land. */
 export const GEMMA_4_E2B_ONNX_PROBE_FILE = "onnx/decoder_model_merged_q4f16.onnx_data";
 
 /**
- * The curated Transformers.js rows. One, today.
+ * The curated Transformers.js rows. SIX, since 2026-09-11.
  *
- * `contextTokens` IS A BUDGET, NOT THE WEIGHTS' LIMIT, exactly as it is for the LiteRT rows.
- * `config.json` says `text_config.max_position_embeddings: 131072`, and the ONNX decoder's KV cache
- * grows as it generates rather than being asked for at load — so nothing here caps anything. 8192 is
- * what a laptop GPU can hold of that cache beside 3.4 GB of weights, and it is also the number the
- * prompt fallback reads to decide whether to dump raw JSON schemas at the model
- * (`FALLBACK_SCHEMAS_MIN_CONTEXT` is 16384, so it does not). Claiming 131072 here would be true about
- * the weights and a lie about both of those.
+ * `contextTokens` IS A BUDGET, NOT THE WEIGHTS' LIMIT, exactly as it is for the LiteRT rows. Every
+ * one of these repos could claim six figures — `max_position_embeddings` is 131072 on the Phi and
+ * Llama rows and 262144 on the three Qwen3.5 rows, read out of their own `config.json` on 2026-09-11
+ * — and the ONNX decoder's KV cache grows as it generates rather than being asked for at load, so
+ * nothing caps anything. 8192 is what a laptop GPU holds of that cache beside two to three gigabytes
+ * of weights, and it is also the number the prompt fallback reads to decide whether to dump raw JSON
+ * schemas at the model (`FALLBACK_SCHEMAS_MIN_CONTEXT` is 16384, so it does not). Claiming the
+ * weights' number here would be true about the weights and a lie about both of those.
  *
- * `vramMb` IS AN ESTIMATE, like every number in `LITERT_CATALOG`: the 3.4 GB of q4f16 weights plus
- * the KV cache and ORT's working set. Measure it before anyone treats it as fact.
+ * `vramMb` IS AN ESTIMATE, like every number in `LITERT_CATALOG`: the q4f16 weights plus the KV cache
+ * and ORT's working set, which the measured rows put between 1.2× and 1.5× the download. Measure it
+ * before anyone treats it as fact. It no longer decides who is offered what — `hosts` does.
+ *
+ * `family` IS ONLY FOR THE CUT. This provider does not render a prompt: `apply_chat_template` on the
+ * repo's own tokenizer does, from the repo's own `chat_template.jinja`, which is the model's real
+ * template rather than our reading of a model card. What `family` is read for is `stopAtTurnEnd` and
+ * the stream's hold-back — which strings mean "the turn is over" if the model types one as text. So
+ * the Qwen rows say `chatml` (`<|im_start|>` / `<|im_end|>`), Phi says `phi` (`<|user|>` … `<|end|>`)
+ * and Llama says `llama3` (`<|start_header_id|>` … `<|eot_id|>`), each read out of that repo's
+ * template on 2026-09-11 (templates.ts).
+ *
+ * WHAT A VISION ROW COSTS IN CONTEXT DIFFERS BY FAMILY, and it is worth knowing before picking one:
+ * Gemma 4's processor spends a fixed 280 tokens per image (`image_seq_length`), while the Qwen3.5
+ * rows' `Qwen2VLImageProcessorFast` scales with the picture's own resolution — a big screenshot is
+ * thousands of tokens of an 8192 budget. `TRANSFORMERS_MAX_IMAGES` caps the count either way.
  */
 export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
   {
     id: "gemma-4-E2B-it-onnx-q4f16",
     label: "Gemma 4 E2B · vision (ONNX)",
+    // Desktop only, and measured rather than assumed: the biggest single buffer this load allocates
+    // is 1.52 GB (fact 3), and a phone's tab is killed long before that.
+    hosts: ["browser-desktop"],
     class: "small",
     local: true,
     supportsTools: true,
@@ -226,6 +375,8 @@ export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
     repo: "onnx-community/gemma-4-E2B-it-ONNX",
     revision: "9f4bef82ea6e296bc69f8a2f5939f73af81b07a6",
     dtype: "q4f16",
+    files: GEMMA_4_E2B_ONNX_FILES,
+    probeFile: GEMMA_4_E2B_ONNX_PROBE_FILE,
     sizeBytes: GEMMA_4_E2B_ONNX_FILES.reduce((n, f) => n + f.bytes, 0),
     family: "gemma",
     runtime: "transformers",
@@ -239,6 +390,150 @@ export const TRANSFORMERS_CATALOG: TransformersModelInfo[] = [
      * the next open. Nothing here can fix that; saying it is the honest thing to do.
      */
     note: "Sees pictures · ONNX runtime, slower than LiteRT · needs 3.4 GB of browser storage, and the download does not resume",
+  },
+  /**
+   * THE FIRST PHONE ROW THAT SEES — and the reason `hosts` exists rather than a size comparison.
+   *
+   * 0.67 GB of q4f16 weights, three graphs, no audio encoder, and the same ChatML template the other
+   * two Qwen rows use. It is offered beside Gemma 3 270m on a phone: 270m answers faster and is a
+   * quarter of the download, this one can be shown a photograph, and neither is the right answer for
+   * everyone — which is why the phone gets a short list rather than one row chosen for it.
+   */
+  {
+    id: "qwen3.5-0.8B-onnx-q4f16",
+    label: "Qwen3.5 0.8B · vision (ONNX)",
+    hosts: ["browser-desktop", "browser-phone"],
+    class: "small",
+    local: true,
+    supportsTools: true,
+    vision: true,
+    contextTokens: 8192,
+    vramMb: 1500,
+    assetFile: "Qwen3.5-0.8B-ONNX",
+    repo: "onnx-community/Qwen3.5-0.8B-ONNX",
+    revision: "c0d619322dad7c4441a8841a53fc59772ddddcc0",
+    dtype: "q4f16",
+    files: QWEN3_5_0_8B_ONNX_FILES,
+    probeFile: "onnx/decoder_model_merged_q4f16.onnx_data",
+    sizeBytes: QWEN3_5_0_8B_ONNX_FILES.reduce((n, f) => n + f.bytes, 0),
+    family: "chatml",
+    runtime: "transformers",
+    // Declared on the export itself: `license: apache-2.0` with a link to the base model's LICENSE
+    // (read from the Hub's model API on 2026-09-11). No use restrictions, so no consent line.
+    license: APACHE_2,
+    note: "Sees pictures · small enough for a phone · ONNX runtime, and the download does not resume",
+  },
+  {
+    id: "qwen3.5-2B-onnx-q4f16",
+    label: "Qwen3.5 2B · vision (ONNX)",
+    hosts: ["browser-desktop"],
+    class: "small",
+    local: true,
+    supportsTools: true,
+    vision: true,
+    contextTokens: 8192,
+    vramMb: 2600,
+    assetFile: "Qwen3.5-2B-ONNX-OPT",
+    repo: "onnx-community/Qwen3.5-2B-ONNX-OPT",
+    revision: "2ea7886f48b926aca97de8b0e041ffca7e3ebaa9",
+    dtype: "q4f16",
+    files: QWEN3_5_2B_ONNX_FILES,
+    probeFile: "onnx/decoder_model_merged_q4f16.onnx_data",
+    sizeBytes: QWEN3_5_2B_ONNX_FILES.reduce((n, f) => n + f.bytes, 0),
+    family: "chatml",
+    runtime: "transformers",
+    /**
+     * VERIFIED AT THE BASE MODEL, because the export declares nothing. The `-OPT` repo's README is
+     * three lines of front matter naming `base_model: Qwen/Qwen3.5-2B` and no `license:` at all; the
+     * Hub's model API for `Qwen/Qwen3.5-2B` answers `apache-2.0` with a LICENSE beside the weights
+     * (both read 2026-09-11). So the licence shown is the weights' licence, reached through the
+     * pointer the export itself gives, and it is written down here rather than assumed from the name.
+     */
+    license: APACHE_2,
+    note: "Sees pictures · 1.6 GB, desktop only · ONNX runtime, and the download does not resume",
+  },
+  {
+    id: "qwen3.5-4B-onnx-q4f16",
+    label: "Qwen3.5 4B · vision (ONNX)",
+    hosts: ["browser-desktop"],
+    class: "strong",
+    local: true,
+    supportsTools: true,
+    vision: true,
+    contextTokens: 8192,
+    vramMb: 4200,
+    assetFile: "Qwen3.5-4B-ONNX-OPT",
+    repo: "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    revision: "57b13b4dce7be073be0df3eaf1c842a6bbb2e0a7",
+    dtype: "q4f16",
+    files: QWEN3_5_4B_ONNX_FILES,
+    probeFile: "onnx/decoder_model_merged_q4f16.onnx_data",
+    sizeBytes: QWEN3_5_4B_ONNX_FILES.reduce((n, f) => n + f.bytes, 0),
+    family: "chatml",
+    runtime: "transformers",
+    // Same verification as the 2B: no tag on the export, `apache-2.0` on `Qwen/Qwen3.5-4B`.
+    license: APACHE_2,
+    note: "Sees pictures · 3.0 GB, the largest local row that fits a laptop GPU · the download does not resume",
+  },
+  /**
+   * TEXT ONLY, AND A DIFFERENT DOOR. Phi-4-mini is `Phi3ForCausalLM` — the library's `DecoderOnly`
+   * session config, one `model` graph — so this row loads through `AutoTokenizer` and
+   * `AutoModelForCausalLM`. It sees nothing, and `withoutImages` says so in words rather than losing
+   * a picture silently (image-parts.ts rule 3).
+   */
+  {
+    id: "phi-4-mini-instruct-onnx-q4f16",
+    label: "Phi-4 mini (ONNX)",
+    hosts: ["browser-desktop"],
+    class: "small",
+    local: true,
+    supportsTools: true,
+    vision: false,
+    contextTokens: 8192,
+    vramMb: 3600,
+    assetFile: "Phi-4-mini-instruct-ONNX",
+    repo: "onnx-community/Phi-4-mini-instruct-ONNX",
+    revision: "e61f45fc5fabba2aee31ff85ba4cf99219b4bf28",
+    dtype: "q4f16",
+    files: PHI_4_MINI_ONNX_FILES,
+    probeFile: "onnx/model_q4f16.onnx_data",
+    sizeBytes: PHI_4_MINI_ONNX_FILES.reduce((n, f) => n + f.bytes, 0),
+    family: "phi",
+    runtime: "transformers",
+    // The export carries no licence tag (its README is `base_model: microsoft/Phi-4-mini-instruct`
+    // and nothing else); the base model's Hub entry answers `mit`, read 2026-09-11. MIT asks for the
+    // notice to travel with the bytes and nothing of the person using it, so there is no consent line.
+    license: MIT,
+    note: "Text only · 2.6 GB · ONNX runtime, and the download does not resume",
+  },
+  /**
+   * THE ROW WITH AN OBLIGATION. Llama 3.2's Community Licence is not Apache: §1.b.i asks that
+   * "Built with Llama" be displayed, and §5 incorporates an Acceptable Use Policy. `LLAMA_3_2`
+   * carries all three (licence, policy, attribution line) and the picker shows all three before the
+   * download, the same way the Gemma-terms rows do. The mirror carries the verbatim copies too —
+   * `LLAMA_3_2_LICENSE.txt` and `LLAMA_3_2_USE_POLICY.md`, published from scripts/litert-notices/.
+   */
+  {
+    id: "llama-3.2-3B-instruct-onnx-q4f16",
+    label: "Llama 3.2 3B (ONNX)",
+    hosts: ["browser-desktop"],
+    class: "small",
+    local: true,
+    supportsTools: true,
+    vision: false,
+    contextTokens: 8192,
+    vramMb: 3400,
+    assetFile: "Llama-3.2-3B-Instruct-ONNX",
+    repo: "onnx-community/Llama-3.2-3B-Instruct-ONNX",
+    revision: "cab364e7d0e1de7aa09e3abc932be92361c5b55f",
+    dtype: "q4f16",
+    files: LLAMA_3_2_3B_ONNX_FILES,
+    probeFile: "onnx/model_q4f16.onnx_data",
+    sizeBytes: LLAMA_3_2_3B_ONNX_FILES.reduce((n, f) => n + f.bytes, 0),
+    family: "llama3",
+    runtime: "transformers",
+    license: LLAMA_3_2,
+    note: "Text only · 2.4 GB · built with Llama, under Meta's community licence · the download does not resume",
   },
 ];
 
@@ -258,10 +553,16 @@ export const TRANSFORMERS_DEFAULT_MODEL_ID = "gemma-4-E2B-it-onnx-q4f16";
  */
 export const LOCAL_MODEL_CATALOG: LiteRtModelInfo[] = [...LITERT_CATALOG, ...TRANSFORMERS_CATALOG];
 
-/** §12.6's filter, the same shape `litertCatalogFor` has. Nothing fits a phone today, and should not. */
-export function transformersCatalogFor(options: { maxVramMb?: number } = {}): TransformersModelInfo[] {
+/**
+ * The rows this harness may be offered, and — still — the ones under a memory cap.
+ *
+ * `host` is the gate (§12.6 is `browser-phone`); `maxVramMb` is kept because it answers a different
+ * question, one about a machine rather than about a class of device, and a caller that asks it is
+ * asking about memory on purpose. Both, when both are given.
+ */
+export function transformersCatalogFor(options: { maxVramMb?: number; host?: Host } = {}): TransformersModelInfo[] {
   const cap = options.maxVramMb ?? Number.POSITIVE_INFINITY;
-  return TRANSFORMERS_CATALOG.filter((m) => m.vramMb <= cap);
+  return TRANSFORMERS_CATALOG.filter((m) => m.vramMb <= cap && (!options.host || offeredOn(m, options.host)));
 }
 
 /** The URL one of a row's files lands on, given a host and its layout. Exported because the readiness
@@ -309,12 +610,40 @@ export interface TransformersChatMessage {
   content: string | TransformersContentPart[];
 }
 
-/** `Processor` is `Callable`, so the instance itself is the call. */
+/** `Processor` is `Callable`, so the instance itself is the call. The door a VISION row loads through. */
 export interface TransformersProcessorLike {
   (text: string, images?: unknown, audio?: unknown, options?: Record<string, unknown>): Promise<Record<string, unknown>>;
   apply_chat_template(messages: TransformersChatMessage[], options?: Record<string, unknown>): string;
   /** Handed straight to `TextStreamer`; this package never calls it. */
   tokenizer: unknown;
+}
+
+/**
+ * `PreTrainedTokenizer`, which is also `Callable` — the door a TEXT row loads through.
+ *
+ * TWO DOORS, NOT ONE WITH A FLAG, because the library draws the line itself: a `…ForCausalLM` class
+ * builds one `model` session and has no processor, and `AutoProcessor.from_pretrained` on a repo with
+ * no `processor_config.json` (Phi-4-mini and Llama 3.2 have none) has nothing to build. The call
+ * signature differs too — a processor takes `(text, images, audio, options)` and answers a promise, a
+ * tokenizer takes `(text, options)` and answers synchronously — which is why `PromptSide` below
+ * exists rather than a cast.
+ */
+export interface TransformersTokenizerLike {
+  (text: string, options?: Record<string, unknown>): Promise<Record<string, unknown>> | Record<string, unknown>;
+  apply_chat_template(messages: TransformersChatMessage[], options?: Record<string, unknown>): string;
+}
+
+/**
+ * The half of a load that turns a transcript into tensors, whichever door it came through.
+ *
+ * One shape so `chat()` and `stream()` are written once: `tokenizer` is what `TextStreamer` takes
+ * (the processor's own, or the tokenizer itself), `template` renders the transcript, and `encode`
+ * makes the model's inputs — taking pictures where the row can see and ignoring them where it cannot.
+ */
+export interface PromptSide {
+  tokenizer: unknown;
+  template(messages: TransformersChatMessage[], options: Record<string, unknown>): string;
+  encode(prompt: string, images: unknown[] | null): Promise<Record<string, unknown>>;
 }
 
 export interface TransformersModelLike {
@@ -339,6 +668,14 @@ export interface TransformersLibrary {
    * without this file naming a model-specific export that a future row would have to change.
    */
   AutoModelForImageTextToText: { from_pretrained(id: string, options?: Record<string, unknown>): Promise<TransformersModelLike> };
+  /**
+   * The text rows' pair (2026-09-11). `AutoModelForCausalLM` reaches `Phi3ForCausalLM` and
+   * `LlamaForCausalLM` through `MODEL_FOR_CAUSAL_LM_MAPPING_NAMES`, and `AutoTokenizer` is where
+   * `apply_chat_template` lives when there is no processor. Both are `?`-free here but a fake that
+   * only ever loads a vision row need not implement them — which is exactly what the older tests do.
+   */
+  AutoTokenizer: { from_pretrained(id: string, options?: Record<string, unknown>): Promise<TransformersTokenizerLike> };
+  AutoModelForCausalLM: { from_pretrained(id: string, options?: Record<string, unknown>): Promise<TransformersModelLike> };
   TextStreamer: new (tokenizer: unknown, options: Record<string, unknown>) => unknown;
   InterruptableStoppingCriteria: new () => TransformersStopperLike;
   load_image(input: Blob | string): Promise<unknown>;
@@ -393,6 +730,8 @@ export interface TransformersProviderOptions {
   revision?: string;
   family?: PromptFamily;
   vision?: boolean;
+  /** The file `readiness()` asks Cache Storage about, for a row that is in no catalogue. */
+  probeFile?: string;
   maxTokens?: number;
   temperature?: number;
 }
@@ -426,7 +765,7 @@ export class TransformersProvider implements ModelProvider {
   private readonly opts: TransformersProviderOptions;
   private readonly createLibrary: TransformersLibraryFactory;
   private readonly cacheName: string;
-  private loaded: { library: TransformersLibrary; processor: TransformersProcessorLike; model: TransformersModelLike } | null = null;
+  private loaded: { library: TransformersLibrary; prompt: PromptSide; model: TransformersModelLike } | null = null;
   private loading: Promise<NonNullable<TransformersProvider["loaded"]>> | null = null;
   /** Set by `abortLoad()` while a load is in flight; read when the engine arrives (fact 3's cousin). */
   private loadAbandoned = false;
@@ -494,7 +833,10 @@ export class TransformersProvider implements ModelProvider {
     if (this.cached !== null) return this.cached;
     const storage = this.cacheStorage();
     if (!storage) return (this.cached = false);
-    const probe = this.model ? GEMMA_4_E2B_ONNX_PROBE_FILE : null;
+    // The ROW's own probe since 2026-09-11: the rows no longer share a file name (a text row has one
+    // `model_q4f16.onnx_data`, a vision row has a decoder's). A row that names none — one built by
+    // hand for a repo in no catalogue — answers "not downloaded" rather than probing a wrong key.
+    const probe = this.opts.probeFile ?? this.model?.probeFile ?? null;
     if (!probe) return (this.cached = false);
     try {
       const cache = await storage.open(this.cacheName);
@@ -616,18 +958,22 @@ export class TransformersProvider implements ModelProvider {
       const progress_callback = (info: TransformersProgress): void => {
         if (info.status === "progress") this.report(info.file, info.loaded, info.total);
       };
-      // The processor first and on its own: it is the tokenizer, the chat template and two small
-      // JSON files, so a host that is wrong 404s in a second rather than three gigabytes later. It
-      // takes the SAME callback as the model — its seven files are 19.5 MB of the row's 3.40 GB, and
+      // The tokenising half first and on its own: it is the tokenizer, the chat template and two or
+      // three small JSON files, so a host that is wrong 404s in a second rather than three gigabytes
+      // later. It takes the SAME callback as the model — its files are ~19 MB of the row's total, and
       // a bar denominated against a total it never counts cannot reach the end (see `report`).
-      const processor = await library.AutoProcessor.from_pretrained(this.repo, { revision: this.revision, progress_callback });
-      const model = await library.AutoModelForImageTextToText.from_pretrained(this.repo, {
+      const prompt = await this.loadPromptSide(library, progress_callback);
+      // The model through the door this row's `vision` names. Both auto classes rather than a
+      // model-specific export: the registry maps `gemma4`/`qwen3_5` into the image-text-to-text table
+      // and `phi3`/`llama` into the causal one, and a test pins all four mappings.
+      const load = this.seesImages ? library.AutoModelForImageTextToText : library.AutoModelForCausalLM;
+      const model = await load.from_pretrained(this.repo, {
         revision: this.revision,
         dtype: this.dtype,
         device: "webgpu",
         progress_callback,
       });
-      return { library, processor, model };
+      return { library, prompt, model };
     })().then(
       (ready) => {
         this.loading = null;
@@ -750,24 +1096,52 @@ export class TransformersProvider implements ModelProvider {
     return out;
   }
 
-  /** The processor's inputs for one request: the templated prompt plus the decoded pictures. */
-  private async buildInputs(
+  /**
+   * THE PROMPT SIDE OF A LOAD — the processor for a row that sees, the tokenizer for one that does not.
+   *
+   * Both ends are the library's, and neither is this file's idea of a chat format:
+   * `apply_chat_template` renders the REPO's own `chat_template.jinja` (ChatML for the Qwen rows,
+   * `<|user|>…<|end|>` for Phi, `<|start_header_id|>` for Llama), which is why adding three model
+   * families cost no renderer here. `templates.ts` is still read for the CUT — what a model might
+   * type as text past the end of its turn — and for nothing else on this road.
+   */
+  private async loadPromptSide(
     library: TransformersLibrary,
-    processor: TransformersProcessorLike,
-    req: ChatRequest,
-  ): Promise<Record<string, unknown>> {
+    progress_callback: (info: TransformersProgress) => void,
+  ): Promise<PromptSide> {
+    const options = { revision: this.revision, progress_callback };
+    if (this.seesImages) {
+      const processor = await library.AutoProcessor.from_pretrained(this.repo, options);
+      return {
+        tokenizer: processor.tokenizer,
+        template: (messages, opts) => processor.apply_chat_template(messages, opts),
+        // `add_special_tokens: false` because `apply_chat_template` already wrote them, and the
+        // README's own example passes it for exactly that reason.
+        encode: async (prompt, images) => await processor(prompt, images, null, { add_special_tokens: false }),
+      };
+    }
+    const tokenizer = await library.AutoTokenizer.from_pretrained(this.repo, options);
+    return {
+      tokenizer,
+      template: (messages, opts) => tokenizer.apply_chat_template(messages, opts),
+      // A tokenizer's call is synchronous in the installed library; `await` on a plain object is a
+      // microtask and keeps ONE shape for both doors, which is cheaper than two generation paths.
+      encode: async (prompt) => await tokenizer(prompt, { add_special_tokens: false }),
+    };
+  }
+
+  /** The model's inputs for one request: the templated transcript plus the decoded pictures. */
+  private async buildInputs(library: TransformersLibrary, prompt: PromptSide, req: ChatRequest): Promise<Record<string, unknown>> {
     const { messages, images } = this.buildMessages(req);
-    const prompt = processor.apply_chat_template(messages, {
-      // Gemma 4's thinking mode is opt-in through a `<|think|>` token the template writes; an agent
-      // loop wants the answer, not the reasoning, and the E2B build emits no empty thought block
-      // when it is off (the model card's "Disabled Thinking Behavior").
+    const text = prompt.template(messages, {
+      // Gemma 4's and Qwen3.5's thinking modes are opt-in through a token their templates write; an
+      // agent loop wants the answer, not the reasoning. A template that has never heard of the
+      // variable (Phi's four lines, Llama's) simply ignores it, which is why it is passed to both.
       enable_thinking: false,
       add_generation_prompt: true,
     });
     const decoded = images.length ? await this.toImages(library, images) : null;
-    // `add_special_tokens: false` because `apply_chat_template` already wrote them, and the README's
-    // own example passes it for exactly that reason.
-    return await processor(prompt, decoded, null, { add_special_tokens: false });
+    return await prompt.encode(text, decoded);
   }
 
   /** What the sampler is asked for. Greedy by default: an agent's tool JSON is not a place for luck. */
@@ -799,16 +1173,16 @@ export class TransformersProvider implements ModelProvider {
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
     throwIfAborted(this.id, req);
-    const { library, processor, model } = await this.load();
+    const { library, prompt, model } = await this.load();
     // The download may have taken minutes; an abort that landed during it must not now start a
     // generation, and `addEventListener` on an already-aborted signal never fires.
     throwIfAborted(this.id, req);
-    const inputs = await this.buildInputs(library, processor, req);
+    const inputs = await this.buildInputs(library, prompt, req);
     const stopper = new library.InterruptableStoppingCriteria();
     const onAbort = (): void => stopper.interrupt();
     req.signal?.addEventListener("abort", onAbort, { once: true });
     let raw = "";
-    const streamer = new library.TextStreamer(processor.tokenizer, {
+    const streamer = new library.TextStreamer(prompt.tokenizer, {
       skip_prompt: true,
       skip_special_tokens: true,
       callback_function: (piece: string) => {
@@ -840,9 +1214,9 @@ export class TransformersProvider implements ModelProvider {
    */
   async *stream(req: ChatRequest): AsyncIterable<ChatChunk> {
     throwIfAborted(this.id, req);
-    const { library, processor, model } = await this.load();
+    const { library, prompt, model } = await this.load();
     throwIfAborted(this.id, req);
-    const inputs = await this.buildInputs(library, processor, req);
+    const inputs = await this.buildInputs(library, prompt, req);
     const fallback = Boolean(req.tools?.length);
 
     const queue: string[] = [];
@@ -855,7 +1229,7 @@ export class TransformersProvider implements ModelProvider {
     let settled = false;
     let failure: unknown;
     const stopper = new library.InterruptableStoppingCriteria();
-    const streamer = new library.TextStreamer(processor.tokenizer, {
+    const streamer = new library.TextStreamer(prompt.tokenizer, {
       skip_prompt: true,
       skip_special_tokens: true,
       callback_function: (piece: string) => {
@@ -907,7 +1281,7 @@ export class TransformersProvider implements ModelProvider {
             stopper.interrupt();
             break;
           }
-          const safe = Math.max(0, buffer.length - (TURN_MARKER_MAX_LENGTH - 1));
+          const safe = Math.max(0, buffer.length - (turnMarkerMaxLength(this.family) - 1));
           if (safe > emitted) {
             yield { type: "text", delta: buffer.slice(emitted, safe) };
             emitted = safe;

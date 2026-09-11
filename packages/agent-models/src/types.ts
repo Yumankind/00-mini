@@ -7,6 +7,39 @@
  * the other packages' owners in the loop.
  */
 
+import type { Host } from "@00/shared";
+
+/**
+ * WHICH HARNESSES A ROW MAY BE OFFERED ON — one definition, shared with the Mac side.
+ *
+ * `Host` lives in `@00/shared` (packages/shared/src/models.ts) rather than here, because the Mac
+ * engine's model catalogue carries the same field and two definitions of the same four words is how
+ * two pickers start disagreeing about what a phone is. Re-exported so a browser package that already
+ * imports from here does not need a second import for one word.
+ */
+export type { Host } from "@00/shared";
+export { HOSTS, isHost } from "@00/shared";
+
+/**
+ * A row nobody has classified is desktop-only.
+ *
+ * THE CONSERVATIVE READING, and it is deliberate: a mirror may serve a row this package has never
+ * heard of (`mergeMirrorCatalog` offers it anyway, with its numbers derived), and the one thing that
+ * must never happen is a three-gigabyte model appearing on a phone because a field was missing. So
+ * absence means `browser-desktop` and nothing else, everywhere a browser reads it.
+ */
+export const DEFAULT_HOSTS: readonly Host[] = ["browser-desktop"];
+
+/** The harnesses this row may be offered on, with the default above when it names none. */
+export function hostsOf(row: { hosts?: readonly Host[] }): readonly Host[] {
+  return row.hosts?.length ? row.hosts : DEFAULT_HOSTS;
+}
+
+/** Can this row be offered on that harness? The ONE gate a picker asks (§12.6 is `browser-phone`). */
+export function offeredOn(row: { hosts?: readonly Host[] }, host: Host): boolean {
+  return hostsOf(row).includes(host);
+}
+
 export type Role = "system" | "user" | "assistant" | "tool";
 
 export interface ToolCall {
@@ -86,6 +119,13 @@ export interface ModelInfo {
   local: boolean;
   supportsTools: boolean;
   contextTokens?: number;
+  /**
+   * The harnesses this row may be OFFERED on (additive, 2026-09-11). Readiness stays the runtime
+   * truth: a row listed for `browser-desktop` may still need a download, and a row listed for a
+   * harness whose browser has no WebGPU is still refused by `readiness()`. Absent means
+   * `DEFAULT_HOSTS` — desktop only — wherever a browser reads it; see the constant.
+   */
+  hosts?: Host[];
 }
 
 /**

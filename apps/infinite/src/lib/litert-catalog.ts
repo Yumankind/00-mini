@@ -25,7 +25,15 @@
  * row's `runtime` field is how the bootstrap knows which provider to build for the row they picked,
  * and it is the only thing that distinguishes them here.
  */
-import { LOCAL_MODEL_CATALOG, mergeMirrorCatalog, parseMirrorCatalog, type LiteRtCatalogRow, type LiteRtMirrorCatalog } from "@00/agent-models";
+import {
+  LOCAL_MODEL_CATALOG,
+  mergeMirrorCatalog,
+  offeredOn,
+  parseMirrorCatalog,
+  type Host,
+  type LiteRtCatalogRow,
+  type LiteRtMirrorCatalog,
+} from "@00/agent-models";
 import { LITERT_CATALOG_KEY, kvGet, kvSet } from "./kv.js";
 
 /** Five minutes, as §12.7's mirror is edge-cached and a publish should show up within a session. */
@@ -121,37 +129,71 @@ function result(doc: LiteRtMirrorCatalog, source: "live" | "cached", fallbackBas
   };
 }
 
-// ── §12.6: a phone gets one model, not a picker ─────────────────────────────────────────────────
+// ── THE HARNESS GATE (2026-09-11) — one question, asked once ─────────────────────────────────────
 
 /**
- * The cap a phone's row must fit under. §12.6 says "cap at 1.5B and ship one model, not a picker",
- * which in this package's units is the 270m (600 MB) and the 1B (1200 MB) and nothing above them.
+ * WHICH HARNESS THIS TAB IS, and the rule that replaced a VRAM comparison.
+ *
+ * Bruno, 2026-09-11: "gate the models to the compatible harness". Until today the phone rule was an
+ * inequality — the smallest row under `PHONE_VRAM_CAP_MB` — which meant a NUMBER decided what a
+ * device could run and every new row had to be measured against it. Now the ROW says where it may be
+ * offered (`hosts`, one vocabulary with the Mac side in `@00/shared`) and this function says which of
+ * those a tab is. Two lines of code and one gate instead of two.
+ *
+ * THE TEST IS A COARSE POINTER AND A NARROW WINDOW, both. A coarse pointer alone is a touchscreen
+ * laptop, which is a desktop; a narrow window alone is a desktop browser dragged thin, which can
+ * still run a 3 GB model and whose owner would be puzzled to be offered less. `matchMedia` is the
+ * honest test for the first (it is what "this is a touch device" means in a browser) and 768px stays
+ * the second, because it is the width §12.6's rule already used. Where there is no `matchMedia` at
+ * all — a test, a worker, some embedded webview — Chromium's `userAgentData.mobile` answers instead,
+ * and failing both the tab is a desktop, which is the reading that offers MORE rather than fewer.
+ */
+export const PHONE_MAX_WIDTH_PX = 768;
+
+export interface HostView {
+  innerWidth?: number;
+  matchMedia?: (query: string) => { matches: boolean };
+  navigator?: { userAgentData?: { mobile?: boolean } };
+}
+
+export function thisHost(view: HostView = globalThis as never): Host {
+  const width = view?.innerWidth;
+  const narrow = typeof width === "number" ? width < PHONE_MAX_WIDTH_PX : false;
+  if (!narrow) return "browser-desktop";
+  const coarse = view?.matchMedia ? view.matchMedia("(pointer: coarse)").matches : view?.navigator?.userAgentData?.mobile === true;
+  return coarse ? "browser-phone" : "browser-desktop";
+}
+
+/** The rows this harness may be shown — `hosts` and nothing else, before any size rule. */
+export function rowsForHost(rows: LiteRtCatalogRow[], host: Host = thisHost()): LiteRtCatalogRow[] {
+  return rows.filter((row) => offeredOn(row, host));
+}
+
+/** Is this tab a phone? The same question as `thisHost`, kept for the boot's one-line read. */
+export function isPhone(view: HostView = globalThis as never): boolean {
+  return thisHost(view) === "browser-phone";
+}
+
+/**
+ * The cap a phone's row must fit under — now a TIE-BREAKER, not the gate.
+ *
+ * `hosts` decides who may be offered a row; this number only orders what is left, and still keeps one
+ * promise of its own: a row the package has never heard of (`estimated`, a mirror row with derived
+ * numbers) is never handed to a phone as its default, however small the file looked.
  */
 export const PHONE_VRAM_CAP_MB = 2000;
 
 /**
- * Is this a phone? Two signals, and the width one is not a proxy for a small GPU — it is a proxy for
- * A SCREEN WITH NO ROOM FOR A PICKER, which is what §12.6 is actually about. `userAgentData.mobile`
- * is the honest answer where it exists (Chromium); everything else falls back to the width, and a
- * desktop window dragged narrow gets the phone's single row, which is the safe way to be wrong.
- */
-export function isPhone(view: { innerWidth?: number; navigator?: { userAgentData?: { mobile?: boolean } } } = globalThis as never): boolean {
-  const mobile = view?.navigator?.userAgentData?.mobile;
-  if (typeof mobile === "boolean") return mobile;
-  const width = view?.innerWidth;
-  return typeof width === "number" ? width < 768 : false;
-}
-
-/**
- * The one row a phone is given: the SMALLEST that fits the cap.
+ * The row a phone STARTS on: the smallest of the ones offered on a phone.
  *
- * Rows whose numbers were derived rather than measured (`estimated`, a mirror row this app's package
- * has never heard of) are not eligible — §12.6's promise is that a phone is handed something that
- * runs, and a guess at a model's memory is not the thing to keep that promise with. Nothing fits ⇒
- * null, and the caller says so and leaves the router's fallthrough to WebLLM alone.
+ * §12.6 said "one model, not a picker", and the picker is now a list of the phone's own rows — two of
+ * them today, Gemma 3 270m and Qwen3.5 0.8B, which are different answers to different questions (fast
+ * and tiny, or able to see a photograph) rather than a better and a worse. So this chooses the DEFAULT
+ * a phone that has never chosen gets, and the person can change it. Nothing offered ⇒ null, and the
+ * caller says so and leaves the router's fallthrough to WebLLM alone.
  */
 export function phoneRow(rows: LiteRtCatalogRow[], capMb = PHONE_VRAM_CAP_MB): LiteRtCatalogRow | null {
-  const fits = rows.filter((r) => !r.estimated && r.vramMb > 0 && r.vramMb <= capMb);
+  const fits = rowsForHost(rows, "browser-phone").filter((r) => !r.estimated && r.vramMb > 0 && r.vramMb <= capMb);
   if (!fits.length) return null;
   return fits.reduce((best, row) => (row.vramMb < best.vramMb ? row : best));
 }

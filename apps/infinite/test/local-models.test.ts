@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { shallowRef } from "vue";
 import type { LiteRtCatalogRow } from "@00/agent-models";
 import type { CatalogResult } from "../src/lib/litert-catalog.js";
@@ -8,7 +8,7 @@ import type { CatalogResult } from "../src/lib/litert-catalog.js";
  * `state/agent.js` is the only way in: the real one hands out an agent that has scaffolded OPFS.
  */
 const fake = {
-  brain: { choice: null as { id: string; label?: string } | null, picker: true, base: "https://dl.0-0.chat/litert", available: true },
+  brain: { choice: null as { id: string; label?: string } | null, base: "https://dl.0-0.chat/litert", available: true },
   catalog: null as CatalogResult | null,
   downloaded: new Set<string>(),
   chosen: [] as string[],
@@ -42,7 +42,7 @@ const {
   localAvailable,
   localCatalogSource,
   localChoice,
-  localPicker,
+  localHost,
   localRows,
   localRowsError,
   localRowsLoaded,
@@ -84,13 +84,17 @@ const twoRows: CatalogResult = {
 describe("the local model picker's store", () => {
   beforeEach(() => {
     resetLocalModels();
-    fake.brain = { choice: null, picker: true, base: "https://dl.0-0.chat/litert", available: true };
+    fake.brain = { choice: null, base: "https://dl.0-0.chat/litert", available: true };
     fake.catalog = twoRows;
     fake.downloaded = new Set();
     fake.chosen = [];
     fake.unloaded = 0;
     fake.catalogCalls = [];
   });
+
+  // A stubbed window must never outlive its test: the rows are filtered by what it says, so a leak
+  // would empty the NEXT test's list and read as a bug in the filter.
+  afterEach(() => vi.unstubAllGlobals());
 
   it("turns the catalogue into rows a card can draw, licence and all", async () => {
     await loadLocalRows();
@@ -174,17 +178,68 @@ describe("the local model picker's store", () => {
     expect(fake.catalogCalls).toEqual([false, true]);
   });
 
-  it("passes the phone rule and the no-weights case straight through", async () => {
+  it("passes the no-weights case straight through, and names this harness", async () => {
     await loadLocalRows();
-    expect(localPicker.value).toBe(true);
     expect(localAvailable.value).toBe(true);
-    fake.brain = { ...fake.brain, picker: false, available: false };
+    // Node has no window, so a test run is a desktop — and the rows above, which name no harness,
+    // are therefore all offered. `localPicker` is gone: a phone gets a picker now, of its own rows.
+    expect(localHost.value).toBe("browser-desktop");
+    fake.brain = { ...fake.brain, available: false };
     // The answer is COPIED, not read through a computed, so it takes a sync — which is exactly what
     // stops a chosen model showing as the old one on every screen.
     resetLocalModels();
     await loadLocalRows();
-    expect(localPicker.value).toBe(false);
     expect(localAvailable.value).toBe(false);
+  });
+
+  it("shows a phone the rows offered on a phone, and a desktop the rest", async () => {
+    // ONE GATE, and it is the row's own `hosts` — the size rule that used to stand here is now only a
+    // tie-breaker for which phone row is the DEFAULT (lib/litert-catalog.ts, `phoneRow`).
+    const phoneRows: CatalogResult = {
+      ...twoRows,
+      rows: [
+        row({ hosts: ["browser-desktop", "browser-phone"] }),
+        row({ id: "qwen3.5-0.8B-onnx-q4f16", label: "Qwen3.5 0.8B · vision (ONNX)", assetFile: "Qwen3.5-0.8B-ONNX", vision: true, vramMb: 1500, hosts: ["browser-desktop", "browser-phone"] }),
+        row({ id: "gemma-4-E2B-it-web", label: "Gemma 4 E2B", assetFile: "gemma-4-E2B-it-web.task", vramMb: 3600, hosts: ["browser-desktop"] }),
+      ],
+    };
+    fake.catalog = phoneRows;
+    await loadLocalRows();
+    expect(localRows.value.map((r) => r.row.id)).toEqual(["gemma3-270m-it-q4_0-web", "qwen3.5-0.8B-onnx-q4f16", "gemma-4-E2B-it-web"]);
+
+    // The same catalogue, read on a phone: the 2 GB row is not in the list at all.
+    vi.stubGlobal("innerWidth", 390);
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    resetLocalModels();
+    await loadLocalRows();
+    expect(localHost.value).toBe("browser-phone");
+    expect(localRows.value.map((r) => r.row.id)).toEqual(["gemma3-270m-it-q4_0-web", "qwen3.5-0.8B-onnx-q4f16"]);
+    vi.unstubAllGlobals();
+  });
+
+  it("carries the line a licence asks to be shown, for the rows whose licence asks", async () => {
+    fake.catalog = {
+      ...twoRows,
+      rows: [
+        row({
+          id: "llama-3.2-3B-instruct-onnx-q4f16",
+          label: "Llama 3.2 3B (ONNX)",
+          assetFile: "Llama-3.2-3B-Instruct-ONNX",
+          license: {
+            id: "llama3.2",
+            name: "Llama 3.2 Community License",
+            url: "https://www.llama.com/llama3_2/license/",
+            useRestrictionsUrl: "https://www.llama.com/llama3_2/use-policy/",
+            attribution: "Built with Llama",
+          },
+        }),
+        row(),
+      ],
+    };
+    await loadLocalRows();
+    expect(localRows.value[0]!.attribution).toBe("Built with Llama");
+    // Apache and the Gemma terms ask for no such line, and a row without one shows nothing.
+    expect(localRows.value[1]!.attribution).toBeUndefined();
   });
 
   it("has no opinion before the agent exists", () => {

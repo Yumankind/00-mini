@@ -20,7 +20,7 @@ import { cards, selectedBrain } from "../state/connections.js";
 import {
   localAvailable,
   localCatalogSource,
-  localPicker,
+  localHost,
   localRows,
   localRowsBusy,
   localRowsError,
@@ -139,11 +139,13 @@ function choose(id: string): void {
     <p v-if="!localAvailable" class="text-[11px] text-[var(--color-amber)]">
       This deployment serves no model weights, so the local brain is web-llm's Llama 3.2 only.
     </p>
-    <p v-else-if="!localPicker" class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
-      On a phone your agent uses one small model, chosen to fit the memory a phone has. Bigger models
-      are offered on a computer.
-    </p>
     <template v-else>
+      <!-- §12.6, as of 2026-09-11: a phone is not handed ONE row any more, it is handed the rows that
+           are offered on a phone — the row's own `hosts` decides, and there are two today. The line
+           says why the list is short, since a person comparing screens would otherwise wonder. -->
+      <p v-if="localHost === 'browser-phone'" class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed mb-1.5">
+        These are the models that fit a phone. Bigger ones are offered on a computer.
+      </p>
       <p v-if="localRowsError" class="text-[11px] text-[var(--color-red)]">{{ localRowsError }}</p>
       <p v-else-if="localCatalogSource === 'offline'" class="text-[11px] text-[var(--color-amber)]">
         The model list could not be reached, so these are the ones this app was built knowing.
@@ -173,7 +175,7 @@ function choose(id: string): void {
             <span v-if="entry.downloaded" class="text-[10px] text-[var(--color-phosphor)]">on this device</span>
           </div>
           <!-- The runtime's own caveat, from the package's row: why this one sees pictures and what
-               that costs. Only the ONNX row carries one; every other row shows no line at all. -->
+               that costs. Only the ONNX rows carry one; every other row shows no line at all. -->
           <div v-if="entry.runtimeNote" class="text-[11px] text-[var(--color-amber)] mt-0.5">{{ entry.runtimeNote }}</div>
           <div class="text-[11px] text-[var(--color-ink-dim)] mt-0.5">
             <!-- Gemma §3.1: the licence and its use restrictions are named BEFORE the download,
@@ -188,6 +190,9 @@ function choose(id: string): void {
               <a class="underline" :href="entry.termsCopyUrl" target="_blank" rel="noopener" @click.stop>copy</a>
             </template>
             <span v-if="entry.estimated"> · size estimated</span>
+            <!-- A line the licence asks to be DISPLAYED, not linked: the Llama 3.2 Community License
+                 §1.b.i. Shown before the download, beside the licence it comes from. -->
+            <template v-if="entry.attribution"> · {{ entry.attribution }}</template>
           </div>
         </button>
       </div>

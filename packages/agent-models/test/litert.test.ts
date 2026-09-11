@@ -37,6 +37,7 @@ import type {
   LiteRtTaskLike,
   LiteRtTaskOptions,
 } from "../src/litert.js";
+import { hostsOf, offeredOn } from "../src/types.js";
 import type { ReadinessProgress } from "../src/types.js";
 import type { ImagePart } from "../src/types.js";
 import { collect } from "./helpers.js";
@@ -268,6 +269,25 @@ describe("the curated catalogue", () => {
       expect(ids.has(model.id), `${model.id} is listed twice`).toBe(false);
       ids.add(model.id);
     }
+  });
+
+  it("gates every row to a harness, and only the two smallest reach a phone", () => {
+    // THE ONE GATE (Bruno, 2026-09-11: "gate the models to the compatible harness"). It is a list on
+    // the row, not an inequality over `vramMb`: the judgement about a device is written down once.
+    for (const model of LITERT_CATALOG) expect(model.hosts, model.id).toBeDefined();
+    expect(LITERT_CATALOG.filter((m) => offeredOn(m, "browser-phone")).map((m) => m.id)).toEqual([
+      "gemma3-270m-it-q4_0-web",
+      "gemma3-1b-it-int4-web",
+    ]);
+    expect(LITERT_CATALOG.every((m) => offeredOn(m, "browser-desktop"))).toBe(true);
+    expect(litertCatalogFor({ host: "browser-phone" }).map((m) => m.id)).toEqual(["gemma3-270m-it-q4_0-web", "gemma3-1b-it-int4-web"]);
+    // These weights run in a tab; the Mac engine and a headless install serve their own models.
+    expect(litertCatalogFor({ host: "mac" })).toEqual([]);
+    expect(litertCatalogFor({ host: "headless" })).toEqual([]);
+    // A row that named no harness would be read as desktop-only — the conservative default.
+    expect(hostsOf({})).toEqual(["browser-desktop"]);
+    expect(offeredOn({}, "browser-phone")).toBe(false);
+    expect(hostsOf({ hosts: ["mac"] })).toEqual(["mac"]);
   });
 
   it("filters to a phone's cap, so a phone is offered one model and not a wall", () => {
@@ -886,6 +906,9 @@ describe("the mirror's catalogue", () => {
     expect(phone?.license.termsCopyUrl).toBe("https://dl.0-0.chat/litert/GEMMA_TERMS.md");
     expect(phone?.license.useRestrictionsUrl).toContain("prohibited_use_policy");
     expect(rows.every((r) => r.estimated === undefined)).toBe(true);
+    // The fixture predates `hosts`, so the package's own judgement is what survives the join — which
+    // is the point of the field being additive on both sides.
+    expect(phone?.hosts).toEqual(["browser-desktop", "browser-phone"]);
   });
 
   it("still offers a row the package has never heard of, with its numbers marked estimated", () => {
@@ -922,6 +945,57 @@ describe("the mirror's catalogue", () => {
     expect(rows).toHaveLength(LITERT_CATALOG.length);
     expect(rows.every((r) => r.onMirror === false)).toBe(true);
     expect(rows.every((r) => r.bytes === undefined)).toBe(true);
+  });
+
+  it("takes the mirror's `hosts` and its attribution line when it publishes them, and drops a word it does not know", () => {
+    // Through `parseMirrorCatalog`, which is the only road this document ever takes in the app: the
+    // sanitising of a field somebody else wrote belongs to the parser, and `mergeMirrorCatalog` is
+    // then free to trust what it is handed.
+    const rows = mergeMirrorCatalog(parseMirrorCatalog({
+      version: 1,
+      base: "https://h",
+      assets: [
+        // A publisher NARROWING a row: the package offers the 270m to a phone, this mirror does not.
+        { file: "gemma3-270m-it-q4_0-web.task", bytes: 10, hosts: ["browser-desktop"] },
+        // A row of the mirror's own, with an attribution line the licence requires shown.
+        {
+          file: "llama-ish.task",
+          bytes: 2_000_000_000,
+          license: "llama3.2",
+          licenseName: "Llama 3.2 Community License",
+          licenseUrl: "https://www.llama.com/llama3_2/license/",
+          attribution: "Built with Llama",
+          hosts: ["browser-desktop", "toaster"] as never,
+        },
+      ],
+    }));
+    expect(rows[0]?.hosts).toEqual(["browser-desktop"]);
+    expect(rows[1]?.license.attribution).toBe("Built with Llama");
+    // `toaster` is not a harness this repo has a picker for, so it is dropped rather than passed on.
+    expect(rows[1]?.hosts).toEqual(["browser-desktop"]);
+  });
+
+  it("offers a row that names NO harness on the desktop only, whatever its size suggests", () => {
+    const rows = mergeMirrorCatalog(parseMirrorCatalog({
+      version: 1,
+      base: "https://h",
+      assets: [
+        {
+          file: "tiny-unknown.task",
+          bytes: 100_000_000,
+          license: "apache-2.0",
+          licenseName: "Apache License 2.0",
+          licenseUrl: "https://www.apache.org/licenses/LICENSE-2.0",
+        },
+      ],
+    }));
+    // 100 MB and `estimated` — small enough that an inequality would have put it on a phone. The list
+    // does not, because nobody has said it runs there.
+    expect(rows[0]).toMatchObject({ estimated: true, hosts: ["browser-desktop"] });
+    expect(offeredOn(rows[0]!, "browser-phone")).toBe(false);
+    // A `hosts` array with nothing usable in it is the same as none at all.
+    const empty = mergeMirrorCatalog(parseMirrorCatalog({ version: 1, base: "https://h", assets: [{ file: "gemma3-1b-it-int4-web.task", hosts: [] }] }));
+    expect(empty[0]?.hosts).toEqual(["browser-desktop", "browser-phone"]);
   });
 
   it("leaves out a package row the host does not serve — a download that would 404", () => {
@@ -1258,5 +1332,35 @@ describe("resumable downloads (2026-09-11: a closed tab or a Stop no longer star
     const bucket = caches.buckets.get(LITERT_MODEL_CACHE)!;
     const full = [...bucket.keys()].find((k) => !k.includes("?"))!;
     expect(new Uint8Array(bucket.get(full)!)).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6])); // …got the whole file, kept it whole
+  });
+});
+
+/**
+ * The same twin guard the ONNX rows have, for the LiteRT half: `scripts/publish-litert-models.sh`
+ * writes `hosts` into `catalog.json` per asset, and the app reads the mirror's word over the
+ * package's. Two places holding one judgement about which devices may be offered a model is fine
+ * only while something checks they agree.
+ */
+describe("the publish script offers each LiteRT asset to the same harnesses this package does", () => {
+  const script = readFileSync(
+    new URL("../../../scripts/publish-litert-models.sh", import.meta.url),
+    "utf8",
+  );
+  const rows = script
+    .split("\n")
+    .filter((line) => /^[\w.-]+\/[\w.-]+\|[0-9a-f]{6,40}\|/.test(line))
+    .map((line) => line.split("|"))
+    .filter((parts) => (parts[8] ?? "litert") === "litert");
+
+  it("mirrors every catalogue row, with its hosts", () => {
+    const byFile = new Map(rows.map((parts) => [parts[2] as string, parts]));
+    for (const model of LITERT_CATALOG) {
+      const row = byFile.get(model.assetFile);
+      expect(row, model.assetFile).toBeDefined();
+      expect((row![10] ?? "").split(","), model.assetFile).toEqual(model.hosts);
+    }
+    // And nothing is published that the package cannot describe: an asset with no row here would be
+    // offered with derived numbers and `estimated`, which is a worse first visit than not at all.
+    expect(rows).toHaveLength(LITERT_CATALOG.length);
   });
 });
