@@ -47,7 +47,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocPointer));
   <div ref="root" class="relative min-w-0">
     <button
       type="button"
-      class="max-w-full h-7 flex items-center gap-1.5 rounded-lg px-2 text-[11px] transition-colors hover:bg-[var(--color-panel-2)]"
+      class="max-w-full h-7 flex items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors hover:bg-[var(--color-panel-2)]"
       :class="TONE_CLASS[chip.tone]"
       :title="download?.text ?? pendingNote ?? `${chip.text} — click to choose the brain that answers next`"
       @click="toggleChip()"
@@ -68,7 +68,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocPointer));
          four brains and seven model rows do not fit above a composer on a 375px phone. -->
     <div
       v-if="chipOpen"
-      class="absolute bottom-full left-0 mb-2 z-30 w-[20rem] max-w-[calc(100vw-1.5rem)] max-h-[60vh] overflow-auto ia-scroll panel rounded-xl p-3 shadow-xl shadow-black/40"
+      class="absolute bottom-full left-0 mb-2 z-30 w-[21rem] max-w-[calc(100vw-2rem)] max-h-[60vh] overflow-auto ia-scroll ia-float p-3 ia-rise"
     >
       <ModelPicker section="all" />
     </div>

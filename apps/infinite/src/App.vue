@@ -1,50 +1,62 @@
 <script setup lang="ts">
 /**
- * The simple shell — §1's "conversation, files, approvals, connections. What the phone shows today."
+ * 00 MINI — the full app: sidebar, thread, workspace.
  *
- * ONE LAYOUT, TWO WIDTHS. The same app is the mobile browser's, so there is no phone build and no
- * desktop build: the sessions list is a left rail above `sm` and a drawer below it, and the tabs are
- * a top row above `sm` and a bottom bar below — where a thumb is. Anything that needed two components
- * to say would drift into two products.
+ * ONE LAYOUT, THREE WIDTHS. The same app is the mobile browser's, so there is no phone build and no
+ * desktop build. The sidebar is a 260 px column on a desk, an icon rail when a person wants the
+ * width back, and a drawer under 640 px; the workspace is a right-hand column on a desk and the
+ * whole screen on a phone. Anything that needed two components to say would drift into two products.
  *
  * The order of screens is the order of §4: boot, then the vault if one exists (asked EVERY entry),
- * then the shell. The approvals modal sits above all three because a run can outlive a pane change.
+ * then the shell. The approvals modal sits above all three because a run can outlive a pane change,
+ * and the palette sits above everything because ⌘K is the one key that always works.
  *
- * TWO SHELLS, ONE APP (§1, added with B7). The header carries a Power toggle; with it on, the body
- * below the header is `PowerLayout` — the IDE arrangement on a desk, the same panes as tabs on a
- * phone. Simple mode is untouched: the same tabs, the same rail, the same bottom bar. The switch is
- * one boolean and one component, so nothing about the simple shell has to know the other exists.
+ * THIS COMPONENT DOES NOT OWN THE ROUTE. It is mounted for `/app` by the root component, and the
+ * chevron in its header pushes `/` and tells the listeners (`lib/nav.ts`) — the landing page and the
+ * floating widget are another surface of the same PWA, not another page load.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import ApprovalsModal from "./components/ApprovalsModal.vue";
+import BackupPanel from "./components/BackupPanel.vue";
 import BootScreen from "./components/BootScreen.vue";
 import ClaimPane from "./components/ClaimPane.vue";
+import CommandPalette from "./components/CommandPalette.vue";
 import ConnectionsPane from "./components/ConnectionsPane.vue";
-import ConversationPane from "./components/ConversationPane.vue";
-import FilesPane from "./components/FilesPane.vue";
 import InstallNag from "./components/InstallNag.vue";
-import PowerLayout from "./components/PowerLayout.vue";
 import MovePanel from "./components/MovePanel.vue";
 import MovedReceipt from "./components/MovedReceipt.vue";
 import OfflineBanner from "./components/OfflineBanner.vue";
-import SessionsList from "./components/SessionsList.vue";
+import PixelFace from "./components/PixelFace.vue";
+import Sidebar from "./components/Sidebar.vue";
 import TablerIcon from "./components/TablerIcon.vue";
+import ThreadPane from "./components/ThreadPane.vue";
 import VaultGate from "./components/VaultGate.vue";
+import VaultPanel from "./components/VaultPanel.vue";
 import WebsitePanel from "./components/WebsitePanel.vue";
-import { agent, boot, profile, ready } from "./state/agent.js";
+import WorkspacePanel from "./components/WorkspacePanel.vue";
+import { goTo } from "./lib/nav.js";
+import { boot, profile, ready } from "./state/agent.js";
 import { refuseAll } from "./state/approvals.js";
-import { listen } from "./state/conversation.js";
+import { busy, listen } from "./state/conversation.js";
 import { refreshFiles, watchFileChanges } from "./state/files.js";
-import { nextTheme, startInstallWatch, startTheme, applyTheme, themeChoice } from "./state/install.js";
-import { mode, powerShell, startLayout, togglePower } from "./state/layout.js";
+import { startInstallWatch, startTheme } from "./state/install.js";
+import {
+  openWorkspace,
+  powerPane,
+  setPower,
+  sidebarRail,
+  startLayout,
+  toggleWorkspace,
+  viewportWidth,
+  workspaceOpen,
+} from "./state/layout.js";
 import { loadMoveReceipt, movedAway } from "./state/move.js";
 import { startOffline } from "./state/offline.js";
 import { claimRequestFromQuery, type ClaimRequest } from "./state/registry.js";
-import { lockNow, needsUnlock, refreshVault, startVaultClock, touchVault, vaultState } from "./state/vault.js";
+import { needsUnlock, refreshVault, startVaultClock, touchVault } from "./state/vault.js";
 
-// `move` is a destination, not a tab: it is reached from the header menu and from Connections, and a
-// fourth icon in a bottom bar sized for a thumb would cost more than it is worth (§7 is a rare trip).
-type Pane = "chat" | "files" | "settings" | "move" | "website";
+/** `move`, `vault` and `website` are destinations, not tabs: reached from the sidebar and returned from. */
+type Pane = "chat" | "settings" | "vault" | "move" | "website";
 
 const pane = ref<Pane>("chat");
 /**
@@ -53,18 +65,68 @@ const pane = ref<Pane>("chat");
  */
 const claimRequest = ref<ClaimRequest | null>(null);
 const drawer = ref(false);
-const menu = ref(false);
+const palette = ref(false);
 const teardown: (() => void)[] = [];
 
-const TABS: { id: Pane; label: string; icon: string }[] = [
+/** Under `sm` the sidebar is a drawer and the workspace takes the whole screen. */
+const phone = computed(() => viewportWidth.value < 640);
+/** The thread hides only when the workspace has the screen to itself — which is a phone thing. */
+const threadVisible = computed(() => !(phone.value && workspaceOpen.value));
+const headline = computed(() =>
+  pane.value === "settings"
+    ? "Connections"
+    : pane.value === "vault"
+      ? "Vault"
+      : pane.value === "move"
+        ? "Move & backup"
+        : pane.value === "website"
+          ? "Your website"
+          : "00 Mini",
+);
+
+const BOTTOM = [
   { id: "chat", label: "Chat", icon: "message-2" },
   { id: "files", label: "Files", icon: "folder" },
-  { id: "settings", label: "Connections", icon: "plug-connected" },
-];
+  { id: "workspace", label: "Workspace", icon: "layout-columns" },
+  { id: "more", label: "More", icon: "menu-2" },
+] as const;
 
-const themeIcon = computed(() =>
-  themeChoice.value === "light" ? "sun" : themeChoice.value === "dark" ? "moon" : "device-desktop",
-);
+/** Which of the four is lit. Derived rather than stored: two truths about one screen is one too many. */
+const bottomActive = computed(() => {
+  if (drawer.value) return "more";
+  if (workspaceOpen.value) return powerPane.value === "files" ? "files" : "workspace";
+  return pane.value === "chat" ? "chat" : "more";
+});
+
+function bottom(id: (typeof BOTTOM)[number]["id"]): void {
+  drawer.value = false;
+  if (id === "more") {
+    drawer.value = true;
+    return;
+  }
+  if (id === "chat") {
+    pane.value = "chat";
+    setPower(false);
+    return;
+  }
+  pane.value = "chat";
+  if (id === "files") openWorkspace("files");
+  else setPower(!workspaceOpen.value);
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    palette.value = !palette.value;
+    return;
+  }
+  if (event.key === "Escape") {
+    // One key, every overlay: the palette first, then the drawer. The approvals modal is deliberately
+    // NOT closed by Escape — a run is blocked on its answer (see ApprovalsModal.vue).
+    if (palette.value) palette.value = false;
+    else if (drawer.value) drawer.value = false;
+  }
+}
 
 onMounted(async () => {
   startTheme();
@@ -86,12 +148,14 @@ onMounted(async () => {
   // The tree must not lag behind the agent's own writes — in either shell.
   teardown.push(watchFileChanges());
   // A person's activity is what the idle lock measures, and a pane click is activity.
-  const touch = () => touchVault();
+  const touch = (): void => touchVault();
   window.addEventListener("pointerdown", touch, { passive: true });
   window.addEventListener("keydown", touch);
+  window.addEventListener("keydown", onKeydown);
   teardown.push(() => {
     window.removeEventListener("pointerdown", touch);
     window.removeEventListener("keydown", touch);
+    window.removeEventListener("keydown", onKeydown);
   });
 });
 
@@ -103,13 +167,15 @@ onBeforeUnmount(() => {
 
 watch(pane, (next) => {
   drawer.value = false;
-  menu.value = false;
-  if (next === "files") void refreshFiles();
+  if (next === "settings" || next === "vault") void refreshFiles();
+});
+watch(workspaceOpen, (open) => {
+  if (open) void refreshFiles();
 });
 </script>
 
 <template>
-  <div class="h-full flex flex-col min-h-0">
+  <div class="h-full flex flex-col min-h-0" :style="{ background: 'var(--color-void)' }">
     <BootScreen v-if="!ready" />
 
     <!-- §7: one live residence. A receipt is not an agent, so it is shown before the vault is asked
@@ -119,145 +185,128 @@ watch(pane, (next) => {
     <VaultGate v-else-if="needsUnlock" />
 
     <template v-else>
-      <header class="flex items-center gap-2 px-3 sm:px-4 h-12 border-b border-[var(--color-line)] shrink-0">
-        <button
-          type="button"
-          class="ia-btn w-8 h-8 flex items-center justify-center sm:hidden"
-          title="Sessions"
-          @click="drawer = !drawer"
+      <div class="flex-1 flex min-h-0">
+        <!-- The sidebar on a desk: 260 px, or the 56 px rail. -->
+        <aside
+          class="hidden sm:block shrink-0 transition-[width] duration-150"
+          :style="{ width: sidebarRail ? '56px' : '260px' }"
         >
-          <TablerIcon name="history" :size="15" />
-        </button>
-
-        <div class="flex items-center gap-2 min-w-0">
-          <span class="text-[15px]">{{ profile?.emoji }}</span>
-          <span class="text-[13px] font-medium truncate">{{ profile?.displayName }}</span>
-        </div>
-
-        <nav v-if="mode === 'simple'" class="hidden sm:flex items-center gap-1 ml-4">
-          <button
-            v-for="tab in TABS"
-            :key="tab.id"
-            type="button"
-            class="ia-btn h-8 px-2.5 text-[11px] flex items-center gap-1.5"
-            :class="pane === tab.id ? 'ia-btn-primary' : ''"
-            @click="pane = tab.id"
-          >
-            <TablerIcon :name="tab.icon" :size="14" />
-            {{ tab.label }}
-          </button>
-        </nav>
-
-        <div class="ml-auto flex items-center gap-1">
-          <!-- §1: the same runtime, more panes. A toggle rather than a second app. -->
-          <button
-            type="button"
-            class="ia-btn h-8 px-2.5 text-[11px] flex items-center gap-1.5"
-            :class="powerShell ? 'ia-btn-primary' : ''"
-            :title="powerShell ? 'Back to the simple shell' : 'Power shell: files, editor, terminal, git'"
-            @click="togglePower()"
-          >
-            <TablerIcon name="tools" :size="14" />
-            <span class="hidden sm:inline">Power</span>
-          </button>
-          <div class="relative">
-            <button
-              type="button"
-              class="ia-btn w-8 h-8 flex items-center justify-center"
-              title="More"
-              @click="menu = !menu"
-            >
-              <TablerIcon name="dots-vertical" :size="15" />
-            </button>
-            <template v-if="menu">
-              <button type="button" class="fixed inset-0 z-40 cursor-default" @click="menu = false" />
-              <div
-                class="absolute right-0 top-9 z-50 w-52 panel py-1 shadow-lg"
-                style="background: var(--color-panel)"
-              >
-                <button
-                  type="button"
-                  class="w-full text-left px-3 py-2 text-[12px] flex items-center gap-2 hover:bg-[var(--color-panel-2)]"
-                  @click="pane = 'move'"
-                >
-                  <TablerIcon name="device-laptop" :size="14" />
-                  Move to my Mac
-                </button>
-              </div>
-            </template>
-          </div>
-          <button
-            v-if="vaultState.unlocked"
-            type="button"
-            class="ia-btn w-8 h-8 flex items-center justify-center"
-            title="Lock now"
-            @click="lockNow()"
-          >
-            <TablerIcon name="lock-open" :size="15" class="text-[var(--color-phosphor)]" />
-          </button>
-          <button
-            type="button"
-            class="ia-btn w-8 h-8 flex items-center justify-center"
-            :title="`Theme: ${themeChoice}`"
-            @click="applyTheme(nextTheme(themeChoice))"
-          >
-            <TablerIcon :name="themeIcon" :size="15" />
-          </button>
-        </div>
-      </header>
-
-      <OfflineBanner />
-      <InstallNag />
-
-      <!-- The power shell takes the whole body; a claim link still comes first, since it is a grant. -->
-      <ClaimPane
-        v-if="claimRequest && mode !== 'simple'"
-        :request="claimRequest"
-        @done="claimRequest = null; pane = 'website'"
-        @cancel="claimRequest = null"
-      />
-      <PowerLayout v-else-if="mode !== 'simple'" />
-
-      <div v-else class="flex-1 flex min-h-0">
-        <aside class="hidden sm:flex w-56 shrink-0 border-r border-[var(--color-line)]">
-          <SessionsList class="w-full" />
+          <Sidebar :pane="pane" @go="pane = $event" @palette="palette = true" />
         </aside>
 
         <!-- The phone's drawer: the same component, over the pane instead of beside it. -->
-        <div v-if="drawer" class="fixed inset-0 z-40 sm:hidden flex">
-          <div class="w-64 h-full bg-[var(--color-void)] border-r border-[var(--color-line)]">
-            <SessionsList @picked="drawer = false" />
+        <div v-if="drawer" class="fixed inset-0 z-50 sm:hidden flex">
+          <div class="w-[17rem] h-full">
+            <Sidebar :pane="pane" drawer @go="pane = $event" @picked="drawer = false" @palette="palette = true" />
           </div>
           <button type="button" class="flex-1 h-full" style="background: rgba(0, 0, 0, 0.5)" @click="drawer = false" />
         </div>
 
-        <main class="flex-1 min-w-0 min-h-0">
-          <ClaimPane
-            v-if="claimRequest"
-            :request="claimRequest"
-            @done="claimRequest = null; pane = 'website'"
-            @cancel="claimRequest = null"
-          />
-          <ConversationPane v-else-if="pane === 'chat'" />
-          <FilesPane v-else-if="pane === 'files'" />
-          <MovePanel v-else-if="pane === 'move'" @close="pane = 'settings'" />
-          <WebsitePanel v-else-if="pane === 'website'" @close="pane = 'settings'" />
-          <ConnectionsPane v-else @move="pane = 'move'" @website="pane = 'website'" />
+        <main class="flex-1 min-w-0 min-h-0 flex flex-col">
+          <header class="flex items-center gap-2 px-2.5 sm:px-4 h-12 border-b border-[var(--color-line)] shrink-0">
+            <button
+              type="button"
+              class="ia-btn ia-btn-ghost w-8 h-8 sm:hidden"
+              title="Menu"
+              @click="drawer = !drawer"
+            >
+              <TablerIcon name="menu-2" :size="16" />
+            </button>
+            <PixelFace :size="18" :thinking="busy" class="sm:hidden" />
+
+            <div class="min-w-0 flex items-center gap-2">
+              <span class="text-[13px] font-semibold tracking-tight truncate">{{ headline }}</span>
+              <span v-if="pane === 'chat'" class="hidden sm:inline text-[12px] text-[var(--color-ink-faint)] truncate">
+                {{ profile?.displayName }}
+              </span>
+            </div>
+
+            <div class="ml-auto flex items-center gap-1">
+              <button
+                type="button"
+                class="ia-btn ia-btn-ghost h-8 px-2 text-[12px] gap-1.5 hidden sm:flex"
+                title="Commands (⌘K)"
+                @click="palette = true"
+              >
+                <TablerIcon name="command" :size="14" />
+                <span class="text-[var(--color-ink-faint)]">K</span>
+              </button>
+              <button
+                type="button"
+                class="ia-btn ia-btn-ghost w-8 h-8 hidden sm:flex"
+                :class="workspaceOpen ? 'ia-btn-on' : ''"
+                :title="workspaceOpen ? 'Hide the workspace' : 'Show the workspace: files, editor, terminal, Git'"
+                @click="toggleWorkspace()"
+              >
+                <TablerIcon name="layout-columns" :size="16" />
+              </button>
+              <!-- Back to the landing page, where 00 Mini is a widget over the scroll. -->
+              <button type="button" class="ia-btn ia-btn-ghost w-8 h-8" title="Minimise to the page" @click="goTo('/')">
+                <TablerIcon name="chevron-down" :size="16" />
+              </button>
+            </div>
+          </header>
+
+          <OfflineBanner />
+          <InstallNag />
+
+          <div class="flex-1 flex min-h-0">
+            <!-- A claim link comes before everything in the body: it is a grant, not a destination. -->
+            <ClaimPane
+              v-if="claimRequest"
+              class="flex-1 min-w-0"
+              :request="claimRequest"
+              @done="claimRequest = null; pane = 'website'"
+              @cancel="claimRequest = null"
+            />
+
+            <template v-else>
+              <div v-if="threadVisible" class="flex-1 min-w-0 min-h-0">
+                <ThreadPane v-if="pane === 'chat'" :compact="workspaceOpen && !phone" />
+                <ConnectionsPane
+                  v-else-if="pane === 'settings'"
+                  @move="pane = 'move'"
+                  @website="pane = 'website'"
+                />
+                <MovePanel v-else-if="pane === 'move'" @close="pane = 'settings'" />
+                <WebsitePanel v-else-if="pane === 'website'" @close="pane = 'settings'" />
+                <div v-else class="h-full ia-scroll">
+                  <div class="max-w-lg mx-auto px-4 py-6 space-y-6">
+                    <VaultPanel />
+                    <BackupPanel />
+                  </div>
+                </div>
+              </div>
+
+              <!-- The workspace: a column beside the thread on a desk, the whole screen on a phone. -->
+              <div
+                v-if="workspaceOpen"
+                class="min-w-0 min-h-0"
+                :class="
+                  phone
+                    ? 'flex-1'
+                    : 'w-[clamp(320px,40%,560px)] shrink-0 border-l border-[var(--color-line)]'
+                "
+              >
+                <WorkspacePanel />
+              </div>
+            </template>
+          </div>
         </main>
       </div>
 
+      <!-- The phone's four destinations, where a thumb is. -->
       <nav
-        v-if="mode === 'simple'"
         class="sm:hidden flex items-stretch border-t border-[var(--color-line)] shrink-0"
-        style="padding-bottom: env(safe-area-inset-bottom)"
+        :style="{ background: 'var(--color-panel)', paddingBottom: 'env(safe-area-inset-bottom)' }"
       >
         <button
-          v-for="tab in TABS"
+          v-for="tab in BOTTOM"
           :key="tab.id"
           type="button"
           class="flex-1 flex flex-col items-center justify-center gap-0.5 py-2 text-[10px]"
-          :class="pane === tab.id ? 'text-[var(--color-phosphor)]' : 'text-[var(--color-ink-dim)]'"
-          @click="pane = tab.id"
+          :class="bottomActive === tab.id ? 'text-[var(--color-ink)]' : 'text-[var(--color-ink-faint)]'"
+          @click="bottom(tab.id)"
         >
           <TablerIcon :name="tab.icon" :size="18" />
           {{ tab.label }}
@@ -266,5 +315,6 @@ watch(pane, (next) => {
     </template>
 
     <ApprovalsModal />
+    <CommandPalette :open="palette" @close="palette = false" @go="pane = $event" />
   </div>
 </template>

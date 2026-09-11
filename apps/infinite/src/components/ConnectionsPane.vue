@@ -28,8 +28,10 @@ defineEmits<{ (e: "move"): void; (e: "website"): void }>();
       <div class="flex items-center gap-3">
         <div class="text-2xl">{{ profile?.emoji ?? "🟢" }}</div>
         <div class="min-w-0">
-          <div class="text-[14px] font-semibold truncate">{{ profile?.displayName ?? "Your agent" }}</div>
-          <div class="text-[11px] text-[var(--color-ink-dim)] font-mono truncate">{{ profile?.id }}</div>
+          <div class="text-[15px] font-semibold tracking-tight truncate">
+            {{ profile?.displayName ?? "Your agent" }}
+          </div>
+          <div class="text-[11px] text-[var(--color-ink-faint)] font-mono truncate">{{ profile?.id }}</div>
         </div>
       </div>
 
@@ -50,7 +52,7 @@ defineEmits<{ (e: "move"): void; (e: "website"): void }>();
       <VaultPanel />
 
       <section>
-        <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">This machine</h2>
+        <h2 class="ia-label font-pixel mb-2">This machine</h2>
         <div class="panel px-3 py-3 space-y-2">
           <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
             Your agent lives in one place at a time. Move it to 00 on your Mac and this browser keeps
@@ -78,7 +80,7 @@ defineEmits<{ (e: "move"): void; (e: "website"): void }>();
       </section>
 
       <section>
-        <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Your website</h2>
+        <h2 class="ia-label font-pixel mb-2">Your website</h2>
         <div class="panel px-3 py-3 space-y-2">
           <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
             One line of HTML puts your agent on your site as a guide for visitors — no account, and
@@ -100,7 +102,7 @@ defineEmits<{ (e: "move"): void; (e: "website"): void }>();
       <BackupPanel />
 
       <section>
-        <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">What is real</h2>
+        <h2 class="ia-label font-pixel mb-2">What is real</h2>
         <div class="panel px-3 py-3">
           <div v-if="stubs.length === 0" class="flex items-center gap-2 text-[11px] text-[var(--color-phosphor)]">
             <TablerIcon name="circle-check" :size="14" />

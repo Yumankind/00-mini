@@ -107,18 +107,18 @@ async function download(): Promise<void> {
       class="flex flex-col min-h-0 border-r border-[var(--color-line)]"
       :class="[treeOnly ? 'w-full' : selectedPath ? 'hidden sm:flex w-full sm:w-72 shrink-0' : 'flex w-full sm:w-72 shrink-0']"
     >
-      <div class="flex items-center justify-between px-3 py-2 border-b border-[var(--color-line)] shrink-0">
-        <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Files</span>
+      <div class="flex items-center justify-between px-3 h-11 border-b border-[var(--color-line)] shrink-0">
+        <span class="ia-label font-pixel">Files</span>
         <div class="flex items-center gap-0.5">
-          <button type="button" class="ia-btn w-6 h-6 flex items-center justify-center" title="New file" @click="ask('file')">
+          <button type="button" class="ia-btn ia-btn-ghost w-7 h-7" title="New file" @click="ask('file')">
             <TablerIcon name="plus" :size="12" />
           </button>
-          <button type="button" class="ia-btn w-6 h-6 flex items-center justify-center" title="New folder" @click="ask('folder')">
+          <button type="button" class="ia-btn ia-btn-ghost w-7 h-7" title="New folder" @click="ask('folder')">
             <TablerIcon name="folder" :size="12" />
           </button>
           <button
             type="button"
-            class="ia-btn w-6 h-6 flex items-center justify-center"
+            class="ia-btn ia-btn-ghost w-7 h-7"
             title="Rename"
             :disabled="target === 'workspace'"
             @click="ask('rename')"
@@ -127,26 +127,26 @@ async function download(): Promise<void> {
           </button>
           <button
             type="button"
-            class="ia-btn w-6 h-6 flex items-center justify-center"
+            class="ia-btn ia-btn-ghost w-7 h-7"
             title="Delete"
             :disabled="target === 'workspace'"
             @click="ask('delete')"
           >
             <TablerIcon name="trash" :size="12" />
           </button>
-          <button type="button" class="ia-btn w-6 h-6 flex items-center justify-center" title="Upload" @click="uploader?.click()">
+          <button type="button" class="ia-btn ia-btn-ghost w-7 h-7" title="Upload" @click="uploader?.click()">
             <TablerIcon name="upload" :size="12" />
           </button>
           <button
             type="button"
-            class="ia-btn w-6 h-6 flex items-center justify-center"
+            class="ia-btn ia-btn-ghost w-7 h-7"
             title="Download"
             :disabled="!selectedPath"
             @click="download()"
           >
             <TablerIcon name="download" :size="12" />
           </button>
-          <button type="button" class="ia-btn w-6 h-6 flex items-center justify-center" title="Reload" @click="refreshFiles()">
+          <button type="button" class="ia-btn ia-btn-ghost w-7 h-7" title="Reload" @click="refreshFiles()">
             <TablerIcon name="refresh" :size="12" />
           </button>
         </div>
@@ -188,8 +188,12 @@ async function download(): Promise<void> {
         @dragleave="dropping = false"
         @drop.prevent="onDrop"
       >
-        <p v-if="filesLoading" class="text-[11px] text-[var(--color-ink-dim)] px-3 py-2 ia-pulse">Walking the folder…</p>
-        <p v-else-if="filesError" class="text-[11px] text-[var(--color-red)] px-3 py-2">{{ filesError }}</p>
+        <p v-if="filesLoading" class="text-[12px] text-[var(--color-ink-faint)] px-3 py-2 ia-pulse">Walking the folder…</p>
+        <p v-else-if="filesError" class="text-[12px] text-[var(--color-red)] px-3 py-2">{{ filesError }}</p>
+        <p v-else-if="!fileTree.length" class="text-[12px] text-[var(--color-ink-faint)] px-3 py-3 leading-relaxed">
+          Nothing here yet. Everything your agent writes lands under
+          <span class="font-mono">workspace/</span>.
+        </p>
         <FileTreeNode v-for="node in fileTree" :key="node.path" :node="node" :depth="0" />
         <p v-if="dropping" class="text-[11px] text-[var(--color-phosphor)] px-3 py-2">Drop into {{ here }}</p>
       </div>

@@ -17,7 +17,9 @@ import {
   setStatus,
   settle,
   type ConversationState,
+  type RowImage,
 } from "../lib/conversation.js";
+import { UPLOAD_DIR, attachmentPath, withAttachments, type Attachment } from "../lib/attachments.js";
 import { withSelection } from "../power/inspector-context.js";
 import { agent } from "./agent.js";
 import { selection, takeSelection } from "./preview.js";
@@ -92,14 +94,32 @@ export function openSession(id: string, history: { role: string; content: string
  * The selection is SPENT here, not read: `takeSelection()` clears it, so a pick never rides along on
  * the message after the one it was made for.
  */
-export async function send(prompt: string): Promise<void> {
+export async function send(prompt: string, attachments: Attachment[] = []): Promise<void> {
   const owned = agent.value;
   const text = prompt.trim();
   if (!owned || running.value) return;
-  if (!text && !selection.value) return;
-  const message = withSelection(text, takeSelection());
+  if (!text && !selection.value && !attachments.length) return;
+
+  // PICTURES TAKE THE ROAD THAT EXISTS (lib/attachments.ts says why): they are written into the
+  // workspace and the message names the paths, because `RunOptions` is `prompt: string` and the
+  // frozen contract has no field for them on a person's turn. A write that fails is reported and
+  // the message still goes — an agent that refuses to answer because a thumbnail would not save is
+  // worse than one that answers without the picture.
+  const written: RowImage[] = [];
+  for (const picture of attachments) {
+    const path = attachmentPath(picture.name);
+    try {
+      await owned.fs.mkdir(UPLOAD_DIR);
+      await owned.fs.writeFile(path, picture.bytes);
+      written.push({ url: picture.url, path });
+    } catch (err) {
+      lastError.value = `${picture.name} could not be saved: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  const message = withSelection(withAttachments(text, written.map((p) => p.path)), takeSelection());
   listen();
-  state.value = pushUser(state.value, message);
+  state.value = pushUser(state.value, message, written);
 
   // A6's second half: a run that CANNOT start says which brain refused and why, with a button to the
   // chip, instead of a bare failure a minute later. Readiness is asked for first, because a composer

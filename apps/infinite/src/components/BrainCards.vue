@@ -151,7 +151,7 @@ const keyProblem = computed(() =>
 <template>
   <section>
     <div class="flex items-center justify-between mb-2">
-      <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Brain</h2>
+      <h2 class="ia-label font-pixel">Brain</h2>
       <button
         type="button"
         class="text-[10px]"

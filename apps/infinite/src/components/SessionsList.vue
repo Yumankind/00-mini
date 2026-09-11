@@ -1,16 +1,32 @@
 <script setup lang="ts">
 /**
- * The sessions list — `listSessions()` and `loadSession()`, nothing more.
+ * THE THREADS — `listSessions()` / `loadSession()` from the contract, grouped by day and searchable.
  *
- * It doubles as the phone's drawer, which is why it carries its own "New" button rather than leaving
- * it to a toolbar: on a narrow screen this pane IS the navigation between conversations.
+ * The grouping and the filtering are `state/sessions.ts`, pure and tested; this draws them. Three
+ * headings (Today / Yesterday / Earlier) rather than one per date, because a list of a dozen threads
+ * under a dozen headings is a list of headings.
+ *
+ * The search field appears once there is enough to search. A filter over four rows is furniture.
  */
-import { onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import TablerIcon from "./TablerIcon.vue";
-import { dayLabel, open, refreshSessions, sessions, sessionsError, sessionsLoading } from "../state/sessions.js";
-import { currentSession, startNewSession } from "../state/conversation.js";
+import {
+  dayLabel,
+  groupSessions,
+  matchSessions,
+  open,
+  refreshSessions,
+  sessions,
+  sessionsError,
+  sessionsLoading,
+} from "../state/sessions.js";
+import { currentSession } from "../state/conversation.js";
 
 const emit = defineEmits<{ (e: "picked"): void }>();
+
+const query = ref("");
+const groups = computed(() => groupSessions(matchSessions(sessions.value, query.value)));
+const searchable = computed(() => sessions.value.length > 4);
 
 onMounted(() => void refreshSessions());
 
@@ -18,50 +34,60 @@ async function pick(id: string): Promise<void> {
   await open(id);
   emit("picked");
 }
-
-function fresh(): void {
-  startNewSession();
-  emit("picked");
-}
 </script>
 
 <template>
   <div class="h-full flex flex-col min-h-0">
-    <div class="flex items-center justify-between px-3 py-2.5 border-b border-[var(--color-line)]">
-      <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Sessions</span>
-      <div class="flex items-center gap-1">
-        <button type="button" class="ia-btn w-7 h-7 flex items-center justify-center" title="Reload" @click="refreshSessions()">
-          <TablerIcon name="refresh" :size="14" />
-        </button>
-        <button type="button" class="ia-btn w-7 h-7 flex items-center justify-center" title="New session" @click="fresh()">
-          <TablerIcon name="plus" :size="14" />
-        </button>
+    <div v-if="searchable" class="px-2.5 pb-2 shrink-0">
+      <div class="relative">
+        <TablerIcon
+          name="search"
+          :size="13"
+          class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-ink-faint)] pointer-events-none"
+        />
+        <input
+          v-model="query"
+          type="search"
+          class="ia-input h-8 py-0 pl-8 pr-2 text-[12px]"
+          placeholder="Search threads"
+          aria-label="Search threads"
+        />
       </div>
     </div>
 
-    <div class="flex-1 ia-scroll p-2">
-      <p v-if="sessionsError" class="text-[11px] text-[var(--color-red)] px-1 py-2">{{ sessionsError }}</p>
-      <p v-else-if="sessionsLoading" class="text-[11px] text-[var(--color-ink-dim)] px-1 py-2 ia-pulse">Reading…</p>
-      <p v-else-if="sessions.length === 0" class="text-[11px] text-[var(--color-ink-dim)] px-1 py-2 leading-relaxed">
-        No sessions yet. Every conversation is written to the agent's own <code>sessions/</code> folder, so
-        it travels with it.
+    <div class="flex-1 ia-scroll px-2 pb-2">
+      <p v-if="sessionsError" class="text-[12px] text-[var(--color-red)] px-1.5 py-2">{{ sessionsError }}</p>
+      <p v-else-if="sessionsLoading && !sessions.length" class="text-[12px] text-[var(--color-ink-faint)] px-1.5 py-2 ia-pulse">
+        Reading…
+      </p>
+      <p v-else-if="!sessions.length" class="text-[12px] text-[var(--color-ink-faint)] px-1.5 py-2 leading-relaxed">
+        No threads yet. Every conversation is written into the agent's own <code class="font-mono">sessions/</code>
+        folder, so it travels with it.
+      </p>
+      <p v-else-if="!groups.length" class="text-[12px] text-[var(--color-ink-faint)] px-1.5 py-2">
+        Nothing matches “{{ query }}”.
       </p>
 
-      <button
-        v-for="session in sessions"
-        :key="session.id"
-        type="button"
-        class="w-full text-left rounded-lg px-2.5 py-2 mb-1 transition-colors"
-        :class="
-          currentSession === session.id
-            ? 'bg-[color-mix(in_srgb,var(--color-phosphor)_12%,transparent)] text-[var(--color-ink)]'
-            : 'hover:bg-[color-mix(in_srgb,var(--color-panel-2)_70%,transparent)]'
-        "
-        @click="pick(session.id)"
-      >
-        <div class="text-[12px] truncate">{{ session.title || "Untitled" }}</div>
-        <div class="text-[10px] text-[var(--color-ink-dim)]">{{ dayLabel(session.updatedAt) }}</div>
-      </button>
+      <div v-for="group in groups" :key="group.label" class="mb-3">
+        <div class="ia-label px-1.5 py-1.5">{{ group.label }}</div>
+        <button
+          v-for="session in group.rows"
+          :key="session.id"
+          type="button"
+          class="w-full text-left rounded-lg px-2 py-1.5 transition-colors"
+          :class="
+            currentSession === session.id
+              ? 'bg-[var(--color-panel-2)] text-[var(--color-ink)]'
+              : 'text-[var(--color-ink-dim)] hover:bg-[var(--color-panel-2)] hover:text-[var(--color-ink)]'
+          "
+          @click="pick(session.id)"
+        >
+          <div class="text-[13px] truncate">{{ session.title || "Untitled" }}</div>
+          <div v-if="group.label === 'Earlier'" class="text-[11px] text-[var(--color-ink-faint)]">
+            {{ dayLabel(session.updatedAt) }}
+          </div>
+        </button>
+      </div>
     </div>
   </div>
 </template>

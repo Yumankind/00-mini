@@ -30,7 +30,7 @@ const showCreate = ref(false);
 
 <template>
   <section>
-    <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Vault</h2>
+    <h2 class="ia-label font-pixel mb-2">Vault</h2>
     <div class="panel px-3 py-3 space-y-2.5">
       <div class="flex items-center gap-2">
         <TablerIcon

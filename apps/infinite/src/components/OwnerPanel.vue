@@ -94,7 +94,7 @@ const originIcon = (status: string) =>
 
     <!-- ── §5.3 Addresses ────────────────────────────────────────────────────────────────────── -->
     <section v-if="isClaimed">
-      <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Addresses</h2>
+      <h2 class="ia-label font-pixel mb-2">Addresses</h2>
       <div class="panel px-3 py-3 space-y-3">
         <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
           Only these addresses may run your agent. Someone pasting your snippet on their own site
@@ -140,7 +140,7 @@ const originIcon = (status: string) =>
 
     <!-- ── §5.5 Knowledge ────────────────────────────────────────────────────────────────────── -->
     <section v-if="isClaimed">
-      <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Published knowledge</h2>
+      <h2 class="ia-label font-pixel mb-2">Published knowledge</h2>
       <div class="panel px-3 py-3 space-y-2">
         <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
           Everything in <code class="font-mono">workspace/public/</code> — your persona and whatever
@@ -186,7 +186,7 @@ const originIcon = (status: string) =>
 
     <!-- ── §5.6 Messages ─────────────────────────────────────────────────────────────────────── -->
     <section v-if="isClaimed">
-      <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Messages</h2>
+      <h2 class="ia-label font-pixel mb-2">Messages</h2>
       <div class="panel px-3 py-3 space-y-3">
         <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
           What visitors sent your agent. Each one is filed in your agent's
@@ -237,7 +237,7 @@ const originIcon = (status: string) =>
 
     <!-- ── §5.7 Notifications ────────────────────────────────────────────────────────────────── -->
     <section v-if="isClaimed">
-      <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Notifications</h2>
+      <h2 class="ia-label font-pixel mb-2">Notifications</h2>
       <div class="panel px-3 py-3 space-y-2">
         <p v-if="pushSentence" class="text-[11px] text-[var(--color-amber)] leading-relaxed">{{ pushSentence }}</p>
         <!-- The key exists, so subscribing is real: a permission prompt and a subscription minted
@@ -266,7 +266,7 @@ const originIcon = (status: string) =>
 
     <!-- ── §9.4 The purse link ───────────────────────────────────────────────────────────────── -->
     <section v-if="isClaimed">
-      <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Purse</h2>
+      <h2 class="ia-label font-pixel mb-2">Purse</h2>
       <div class="panel px-3 py-3 space-y-2">
         <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
           A stronger brain and a bigger mailbox are paid for somewhere else. These two fields are the

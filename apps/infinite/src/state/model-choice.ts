@@ -28,9 +28,10 @@ import {
   type ChipBrain,
 } from "../lib/model-chip.js";
 import { downloadPercent } from "../lib/readiness.js";
+import { visionNote } from "../lib/attachments.js";
 import { agent } from "./agent.js";
 import { brains, chooseBrain, refreshBrains, selectedBrain, settings } from "./connections.js";
-import { chooseLocalModel, loadLocalRows, localRowsLoaded, syncLocalBrain } from "./local-models.js";
+import { chooseLocalModel, loadLocalRows, localRows, localRowsLoaded, syncLocalBrain } from "./local-models.js";
 import { chosenMacLabel } from "../mac/transport.js";
 
 /**
@@ -125,6 +126,28 @@ export const runStatus = computed<{ text: string; percent: number | null } | nul
   const line = runStatusLine(chipNameOf(brain), brain.readiness);
   if (!line) return null;
   return { text: line, percent: downloadPercent(brain.readiness) };
+});
+
+/**
+ * DOES THE BRAIN ANSWERING NEXT SEE PICTURES — `null` when nobody here can honestly say.
+ *
+ * Only the local catalogue states it per row (`vision` in the mirror's rows, §12.7). A cloud brain's
+ * answer lives in the vendor's own catalogue one layer down (`rowVision`, agent-models), which this
+ * app does not hold, so it is UNKNOWN rather than assumed — and an unknown says nothing at all,
+ * because a warning about a limit a brain may not have is worse than silence.
+ */
+export const brainSeesPictures = computed<boolean | null>(() => {
+  const brain = chip.value.brain;
+  if (!brain || brain.peer !== "local") return null;
+  const row = localRows.value.find((entry) => entry.selected);
+  return row ? row.vision : null;
+});
+
+/** The composer's quiet line when the brain cannot see what was attached. */
+export const visionNoteLine = computed(() => {
+  const brain = chip.value.brain;
+  if (!brain) return null;
+  return visionNote(chipNameOf(brain), brainSeesPictures.value);
 });
 
 function chipNameOf(brain: ChipBrain): string {

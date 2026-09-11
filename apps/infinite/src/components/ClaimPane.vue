@@ -66,7 +66,7 @@ async function confirm(): Promise<void> {
             send it, and reply.
           </p>
           <div class="panel px-3 py-3" style="background: var(--color-panel-2)">
-            <div class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-1">
+            <div class="ia-label font-pixel mb-1">
               The site
             </div>
             <div class="text-[15px] font-semibold break-all">{{ host }}</div>

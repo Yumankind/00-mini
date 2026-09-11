@@ -72,9 +72,9 @@ function onKey(event: KeyboardEvent): void {
 
 <template>
   <div class="h-full flex flex-col min-h-0" @click="field?.focus()">
-    <div class="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] shrink-0">
-      <TablerIcon name="chevron-right" :size="13" class="text-[var(--color-phosphor)]" />
-      <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">browser shell</span>
+    <div class="flex items-center gap-2 px-3 h-11 border-b border-[var(--color-line)] shrink-0">
+      <TablerIcon name="terminal-2" :size="14" class="text-[var(--color-phosphor)]" />
+      <span class="ia-label font-pixel">browser shell</span>
       <span class="text-[10px] font-mono text-[var(--color-ink-dim)] truncate">{{ terminalCwd }}</span>
       <div class="ml-auto flex items-center gap-1">
         <button
@@ -87,7 +87,7 @@ function onKey(event: KeyboardEvent): void {
           <TablerIcon name="player-stop" :size="12" />
           Stop
         </button>
-        <button type="button" class="ia-btn w-6 h-6 flex items-center justify-center" title="Clear" @click.stop="clearTerminal()">
+        <button type="button" class="ia-btn ia-btn-ghost w-7 h-7" title="Clear" @click.stop="clearTerminal()">
           <TablerIcon name="x" :size="12" />
         </button>
       </div>
