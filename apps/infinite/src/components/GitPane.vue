@@ -55,9 +55,9 @@ async function createBranch(): Promise<void> {
 
 <template>
   <div class="h-full flex flex-col min-h-0">
-    <div class="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] shrink-0">
-      <TablerIcon name="history" :size="13" class="text-[var(--color-ink-dim)] shrink-0" />
-      <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Git</span>
+    <div class="flex items-center gap-2 px-3 h-11 border-b border-[var(--color-line)] shrink-0">
+      <TablerIcon name="history" :size="14" class="text-[var(--color-ink-faint)] shrink-0" />
+      <span class="ia-label font-pixel">Git</span>
       <select
         class="ia-input h-7 py-0 text-[11px] max-w-[180px]"
         :value="gitState.repo ?? ''"
@@ -68,7 +68,7 @@ async function createBranch(): Promise<void> {
       </select>
       <button
         type="button"
-        class="ia-btn w-7 h-7 flex items-center justify-center ml-auto"
+        class="ia-btn ia-btn-ghost w-7 h-7 ml-auto"
         title="Reload"
         :disabled="!gitState.repo"
         @click="refreshGit()"
@@ -102,13 +102,13 @@ async function createBranch(): Promise<void> {
         <template v-else>
           <!-- Branches. -->
           <div class="px-3 py-2 border-b border-[var(--color-line)] flex items-center gap-1.5 flex-wrap">
-            <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Branch</span>
+            <span class="ia-label font-pixel">Branch</span>
             <button
               v-for="branch in gitState.status?.branches ?? []"
               :key="branch"
               type="button"
               class="ia-btn h-6 px-2 text-[10px] font-mono"
-              :class="branch === gitState.status?.branch ? 'ia-btn-primary' : ''"
+              :class="branch === gitState.status?.branch ? 'ia-btn-on' : ''"
               :disabled="gitState.busy"
               @click="switchBranch(branch)"
             >
@@ -126,7 +126,7 @@ async function createBranch(): Promise<void> {
           <!-- Changes. -->
           <div class="px-3 py-2 border-b border-[var(--color-line)]">
             <div class="flex items-center gap-2 mb-1.5">
-              <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Changes</span>
+              <span class="ia-label font-pixel">Changes</span>
               <button
                 v-if="gitSplit.unstaged.length"
                 type="button"
@@ -162,7 +162,7 @@ async function createBranch(): Promise<void> {
             </button>
 
             <div v-if="gitSplit.staged.length" class="mt-2">
-              <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Staged</span>
+              <span class="ia-label font-pixel">Staged</span>
               <button
                 v-for="entry in gitSplit.staged"
                 :key="`s-${entry.path}`"
@@ -223,7 +223,7 @@ async function createBranch(): Promise<void> {
 
           <!-- Log. -->
           <div class="px-3 py-2">
-            <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">Log</span>
+            <span class="ia-label font-pixel">Log</span>
             <p v-if="!gitState.log.length" class="text-[11px] text-[var(--color-ink-dim)] py-1">No commits yet.</p>
             <div v-for="commit in gitState.log" :key="commit.oid" class="flex items-baseline gap-2 py-0.5">
               <span class="font-mono text-[10px] text-[var(--color-phosphor-dim)] shrink-0">{{ commit.oid.slice(0, 7) }}</span>

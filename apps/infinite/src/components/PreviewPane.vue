@@ -330,9 +330,9 @@ async function sendSelection(): Promise<void> {
 
 <template>
   <div class="h-full flex flex-col min-h-0">
-    <div class="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] shrink-0">
-      <TablerIcon name="world" :size="13" class="text-[var(--color-ink-dim)] shrink-0" />
-      <span class="text-[12px] font-mono truncate" :title="previewAddress ?? ''">
+    <div class="flex items-center gap-2 px-3 h-11 border-b border-[var(--color-line)] shrink-0">
+      <TablerIcon name="world" :size="14" class="text-[var(--color-ink-faint)] shrink-0" />
+      <span class="text-[11.5px] font-mono truncate text-[var(--color-ink-dim)]" :title="previewAddress ?? ''">
         {{ previewAddress ?? (openPort === null ? path ?? "no page selected" : `/~/${openPort}/`) }}
       </span>
       <div class="ml-auto flex items-center gap-1 shrink-0">
@@ -340,7 +340,7 @@ async function sendSelection(): Promise<void> {
           v-for="entry in livePorts"
           :key="entry.port"
           type="button"
-          class="ia-btn h-7 px-2 text-[11px] font-mono flex items-center gap-1"
+          class="ia-btn ia-btn-ghost h-7 px-2 text-[11px] font-mono gap-1"
           :class="openPort === entry.port ? 'text-[var(--color-phosphor)]' : ''"
           :title="`${entry.kind === 'folder' ? 'Serving' : 'Listening'}: ${entry.label}`"
           @click="show(entry.port)"
@@ -350,8 +350,8 @@ async function sendSelection(): Promise<void> {
         </button>
         <button
           type="button"
-          class="ia-btn h-7 px-2 text-[11px] flex items-center gap-1"
-          :class="inspecting ? 'text-[var(--color-cyan)]' : ''"
+          class="ia-btn ia-btn-ghost h-7 px-2 text-[11px] gap-1"
+          :class="inspecting ? 'ia-btn-on text-[var(--color-cyan)]' : ''"
           title="Inspect — click an element in the page to send it to your agent (Alt+click works either way)"
           @click="onInspectClick()"
         >
@@ -361,7 +361,7 @@ async function sendSelection(): Promise<void> {
         <button
           v-if="openPort !== null"
           type="button"
-          class="ia-btn w-7 h-7 flex items-center justify-center"
+          class="ia-btn ia-btn-ghost w-7 h-7"
           title="Stop this port"
           @click="stopPort(openPort)"
         >
@@ -369,7 +369,7 @@ async function sendSelection(): Promise<void> {
         </button>
         <button
           type="button"
-          class="ia-btn w-7 h-7 flex items-center justify-center"
+          class="ia-btn ia-btn-ghost w-7 h-7"
           title="Reload"
           :disabled="openPort === null && !path"
           @click="render()"
@@ -378,7 +378,7 @@ async function sendSelection(): Promise<void> {
         </button>
         <button
           type="button"
-          class="ia-btn w-7 h-7 flex items-center justify-center"
+          class="ia-btn ia-btn-ghost w-7 h-7"
           :title="
             live
               ? 'Open in a new tab — on the preview origin, which holds nothing but this folder'

@@ -64,7 +64,7 @@ async function doRestore(): Promise<void> {
 <template>
   <section class="space-y-4">
     <div>
-      <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Storage</h2>
+      <h2 class="ia-label font-pixel mb-2">Storage</h2>
       <div class="panel px-3 py-3 space-y-2">
         <div class="flex items-start gap-2">
           <TablerIcon
@@ -87,7 +87,7 @@ async function doRestore(): Promise<void> {
     </div>
 
     <div>
-      <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Backup</h2>
+      <h2 class="ia-label font-pixel mb-2">Backup</h2>
       <div class="panel px-3 py-3 space-y-2">
         <p class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
           One encrypted file with your whole agent in it: files, memory, sessions, standing answers.
@@ -121,7 +121,7 @@ async function doRestore(): Promise<void> {
     </div>
 
     <div>
-      <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">Restore</h2>
+      <h2 class="ia-label font-pixel mb-2">Restore</h2>
       <div class="panel px-3 py-3 space-y-2">
         <input type="file" accept=".00agent" class="ia-input text-[11px]" @change="pickFile" />
         <input v-model="restorePass" type="password" class="ia-input text-[12px]" placeholder="Its passphrase" />

@@ -113,8 +113,12 @@ describe("markdown-lite", () => {
   });
 
   it("keeps a fenced block verbatim, emphasis and all", () => {
+    // The source is coloured now (lib/highlight.ts), so the keyword sits in its own span and the
+    // text is no longer one contiguous run. What must still hold is that NOTHING in a fence is read
+    // as markdown: the asterisks survive as asterisks.
     const html = renderMarkdown("```js\nconst a = **not bold**;\n```");
-    expect(html).toContain("const a = **not bold**;");
+    expect(html).toContain('<span class="tok-k">const</span>');
+    expect(html).toContain("a = **not bold**;");
     expect(html).not.toContain("<strong>");
   });
 

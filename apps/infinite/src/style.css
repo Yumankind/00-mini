@@ -1,75 +1,91 @@
 @import "tailwindcss";
 
-/* ── The 00 design tokens, made theme-aware ────────────────────────────────────────────────────────
-   The names, the values and the intent are packages/web-vue/src/style.css — this app must read as a
-   sibling of the 00 web UI, not as a second look. What is new here is the LIGHT side: the Mac client
-   is dark-only because it lives in one window we control, and this one is a web page on somebody
-   else's phone, where fighting the system theme is the wrong answer.
+/* ── 00 Mini's tokens ──────────────────────────────────────────────────────────────────────────────
+   apps/infinite/DESIGN.md is the source of these values. The NAMES are the ones web-vue uses and the
+   ones every component in this app already reads (`bg-[var(--color-panel)]`), so the palette moved
+   underneath them and nothing had to be renamed to follow. What changed is the temperature: the old
+   values were the Mac client's blue-black, and 00 Mini is a neutral Codex grey with one accent.
 
-   Written as plain custom properties rather than Tailwind `@theme` colours, and used from markup as
-   `bg-[var(--color-panel)]`, exactly as web-vue's components do. A `@theme` colour is baked at build
-   time and cannot follow `prefers-color-scheme`; a custom property can, and the utility syntax is the
-   same length either way. */
+   Written as plain custom properties rather than Tailwind `@theme` colours, because a `@theme`
+   colour is baked at build time and cannot follow `prefers-color-scheme`, and this app is a web page
+   on somebody else's phone where fighting the system theme is the wrong answer.
+
+   BOTH THEMES ARE FIRST CLASS. Dark is declared on `:root`; light is declared twice — once for a
+   system that asks for it and has not been overruled, once for the explicit `data-theme="light"`
+   the toggle writes (state/install.ts). Never give a colour its only definition inside one of those
+   blocks. */
 :root {
-  --color-void: #0a0b0d; /* app background */
-  --color-card: #0f1114; /* section cards — a hair lighter than the app bg */
-  --color-panel: #141619; /* cards / surfaces */
-  --color-panel-2: #1b1e22; /* raised / hover */
-  --color-line: #262a30; /* hairline borders */
-  --color-edge: rgba(230, 233, 236, 0.3);
-  --color-phosphor: #4ade9b; /* accent green (calmer than neon) */
+  --color-void: #0f0f10; /* page */
+  --color-card: #131315; /* grouped background */
+  --color-panel: #18181b; /* surfaces — sidebar, cards */
+  --color-panel-2: #212124; /* raised / hover */
+  --color-line: #2a2a2e; /* hairlines */
+  --color-edge: rgba(237, 237, 239, 0.26);
+  --color-ink: #ededef; /* text */
+  --color-ink-dim: #9a9aa3; /* secondary text */
+  --color-ink-faint: #64646c; /* tertiary text */
+  --color-phosphor: #4ade9b; /* the one accent: dots, the face, progress, links */
   --color-phosphor-dim: #2b9268;
   --color-cyan: #5cc8e8;
-  --color-magenta: #e879c9;
-  --color-red: #f0555f;
   --color-amber: #ecc36b;
-  --color-ink: #e6e9ec;
-  --color-ink-dim: #8b95a1;
-  --color-glow: rgba(74, 222, 155, 0.04);
+  --color-red: #f0555f;
+  --color-magenta: #e879c9;
+  /* The primary button is INK ON VOID — white on black here, black on white in light — never mint. */
+  --color-on-ink: var(--color-void);
+  --color-glow: rgba(74, 222, 155, 0.05);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-float: 0 12px 40px rgba(0, 0, 0, 0.45);
+
+  --radius-control: 10px;
+  --radius-card: 14px;
+  --radius-composer: 18px;
 
   --font-sans:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 
-/* One block of overrides, applied twice: once for a system that asks for light and has not been
-   overruled, once for the explicit toggle. Anything not listed keeps its dark value on purpose —
-   the accents are chosen to carry across, the surfaces are not. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --color-void: #f7f8f9;
-    --color-card: #ffffff;
-    --color-panel: #ffffff;
-    --color-panel-2: #eef0f2;
-    --color-line: #dfe3e7;
-    --color-edge: rgba(20, 24, 28, 0.18);
-    --color-phosphor: #14875a;
+    --color-void: #ffffff;
+    --color-card: #fafafa;
+    --color-panel: #f4f4f5;
+    --color-panel-2: #ececee;
+    --color-line: #e4e4e7;
+    --color-edge: rgba(17, 17, 19, 0.18);
+    --color-ink: #111113;
+    --color-ink-dim: #6b6b74;
+    --color-ink-faint: #9b9ba3;
+    --color-phosphor: #16a37a;
     --color-phosphor-dim: #4ade9b;
-    --color-cyan: #1b7fa3;
+    --color-cyan: #2f8fd6;
+    --color-amber: #c98a12;
+    --color-red: #d64545;
     --color-magenta: #a8368b;
-    --color-red: #c9333c;
-    --color-amber: #9a7413;
-    --color-ink: #14181c;
-    --color-ink-dim: #5d6771;
-    --color-glow: rgba(20, 135, 90, 0.05);
+    --color-glow: rgba(22, 163, 122, 0.05);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow-float: 0 12px 40px rgba(0, 0, 0, 0.18);
   }
 }
 :root[data-theme="light"] {
-  --color-void: #f7f8f9;
-  --color-card: #ffffff;
-  --color-panel: #ffffff;
-  --color-panel-2: #eef0f2;
-  --color-line: #dfe3e7;
-  --color-edge: rgba(20, 24, 28, 0.18);
-  --color-phosphor: #14875a;
+  --color-void: #ffffff;
+  --color-card: #fafafa;
+  --color-panel: #f4f4f5;
+  --color-panel-2: #ececee;
+  --color-line: #e4e4e7;
+  --color-edge: rgba(17, 17, 19, 0.18);
+  --color-ink: #111113;
+  --color-ink-dim: #6b6b74;
+  --color-ink-faint: #9b9ba3;
+  --color-phosphor: #16a37a;
   --color-phosphor-dim: #4ade9b;
-  --color-cyan: #1b7fa3;
+  --color-cyan: #2f8fd6;
+  --color-amber: #c98a12;
+  --color-red: #d64545;
   --color-magenta: #a8368b;
-  --color-red: #c9333c;
-  --color-amber: #9a7413;
-  --color-ink: #14181c;
-  --color-ink-dim: #5d6771;
-  --color-glow: rgba(20, 135, 90, 0.05);
+  --color-glow: rgba(22, 163, 122, 0.05);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-float: 0 12px 40px rgba(0, 0, 0, 0.18);
 }
 
 html,
@@ -82,15 +98,30 @@ body,
   overscroll-behavior: none;
 }
 
+/* THE FIRST-PAINT COLOURS HAND OVER TO THE TOKENS.
+   `index.html` paints the frame before this file exists, and it does it with `html[data-theme=…]`
+   selectors this app does not own. Those are MORE specific than a bare `body`, so without this block
+   the page keeps the pre-redesign grey for the whole session (seen in the browser on 2026-09-11:
+   #f7f8f9 under a palette whose page colour is white). Same specificity, later file, and deliberately
+   OUTSIDE the component layer — a layered rule would lose to unlayered markup styles whatever it
+   said. */
+html,
+html body,
+html:not([data-theme="dark"]),
+html:not([data-theme="dark"]) body,
+html[data-theme="light"],
+html[data-theme="light"] body,
+html[data-theme="dark"],
+html[data-theme="dark"] body {
+  background: var(--color-void);
+}
+
 body {
   margin: 0;
-  background:
-    radial-gradient(1100px 700px at 75% -15%, var(--color-glow), transparent 60%),
-    var(--color-void);
   color: var(--color-ink);
   font-family: var(--font-sans);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -98,68 +129,138 @@ body {
 /* Small uppercase section labels; the alias web-vue kept for the same purpose. */
 .font-pixel {
   font-family: var(--font-sans);
-  letter-spacing: 0.01em;
+  letter-spacing: 0.04em;
 }
 
+/* ── Focus, once, for everything ───────────────────────────────────────────────────────────────────
+   A 2px mint ring at 40%, offset 1px, on the keyboard only: a mouse user who clicks a button has
+   already been told what they clicked, and a ring on every click reads as an error state. */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-phosphor) 40%, transparent);
+  outline-offset: 1px;
+  border-radius: inherit;
+}
+:where(button, a, input, textarea, select, [tabindex]):focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ── Everything below is a COMPONENT LAYER ────────────────────────────────────────────────────────
+   Tailwind v4 puts its utilities in a cascade layer, and unlayered CSS beats a layered rule whatever
+   its specificity: a bare `.ia-btn { display: inline-flex }` in this file made `hidden sm:flex` in
+   the markup do nothing, and every responsive control was visible at every width (found on
+   2026-09-11, in the browser, where it was obvious and in no test). Declaring these as
+   `@layer components` puts them BELOW the utilities, which is where a house style belongs: the class
+   sets the shape, and a utility in the markup can always overrule it. */
+@layer components {
 .panel {
   background: var(--color-panel);
   border: 1px solid var(--color-line);
-  border-radius: 12px;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
 }
 
-/* The interactive surface of the 00 right rail: faint fill, hairline shape, ink-dim until touched. */
-.ia-btn {
-  background: color-mix(in srgb, var(--color-panel-2) 45%, transparent);
+/* A floating surface: a menu, a picker, the palette. Over the void rather than in it. */
+.ia-float {
+  background: var(--color-card);
   border: 1px solid var(--color-line);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-float);
+}
+
+/* The quiet control: no fill until it is touched, a hairline shape, ink-dim until it matters.
+
+   THE LAYOUT BITS ARE IN `:where()` ON PURPOSE. This file is imported after Tailwind's utilities, so
+   a bare `.ia-btn { display: inline-flex }` would beat `.hidden` and `sm:flex` — a responsive button
+   would then be visible at every width, which is exactly the bug it caused on 2026-09-11. `:where()`
+   has zero specificity, so a utility in the markup always wins. */
+:where(.ia-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+}
+.ia-btn {
+  background: transparent;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
   color: var(--color-ink-dim);
   transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease,
-    transform 0.15s ease;
+    background-color 0.16s ease-out,
+    border-color 0.16s ease-out,
+    color 0.16s ease-out,
+    opacity 0.16s ease-out;
 }
 .ia-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-panel-2) 85%, transparent);
+  background: var(--color-panel-2);
   color: var(--color-ink);
 }
 .ia-btn:active:not(:disabled) {
-  transform: scale(0.98);
+  background: var(--color-panel-2);
 }
 .ia-btn:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: default;
 }
+
+/* No border at all: the toolbar glyph, the sidebar row, anything in a dense row of its own kind. */
+.ia-btn-ghost {
+  border-color: transparent;
+}
+.ia-btn-ghost:hover:not(:disabled) {
+  background: var(--color-panel-2);
+}
+
+/* THE PRIMARY IS INK ON VOID (DESIGN.md): black on white, white on black. Mint stays a status. */
 .ia-btn-primary {
-  background: color-mix(in srgb, var(--color-phosphor) 16%, transparent);
-  border-color: color-mix(in srgb, var(--color-phosphor) 45%, transparent);
-  color: var(--color-phosphor);
+  background: var(--color-ink);
+  border-color: var(--color-ink);
+  color: var(--color-void);
 }
 .ia-btn-primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-phosphor) 26%, transparent);
-  color: var(--color-phosphor);
+  background: color-mix(in srgb, var(--color-ink) 86%, var(--color-void));
+  border-color: color-mix(in srgb, var(--color-ink) 86%, var(--color-void));
+  color: var(--color-void);
 }
+.ia-btn-primary:disabled {
+  opacity: 0.3;
+}
+
+/* Selected, not primary: a tab or a pane that is the current one. */
+.ia-btn-on {
+  background: var(--color-panel-2);
+  border-color: var(--color-line);
+  color: var(--color-ink);
+}
+
 .ia-btn-danger {
   background: color-mix(in srgb, var(--color-red) 12%, transparent);
-  border-color: color-mix(in srgb, var(--color-red) 45%, transparent);
+  border-color: color-mix(in srgb, var(--color-red) 40%, transparent);
+  color: var(--color-red);
+}
+.ia-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-red) 20%, transparent);
   color: var(--color-red);
 }
 
 /* Text inputs, one shape everywhere. */
 .ia-input {
-  background: color-mix(in srgb, var(--color-panel-2) 45%, transparent);
+  background: var(--color-void);
   border: 1px solid var(--color-line);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   color: var(--color-ink);
   padding: 8px 10px;
   width: 100%;
   outline: none;
+  transition:
+    border-color 0.16s ease-out,
+    box-shadow 0.16s ease-out;
 }
 .ia-input::placeholder {
-  color: var(--color-ink-dim);
+  color: var(--color-ink-faint);
 }
 .ia-input:focus {
-  border-color: color-mix(in srgb, var(--color-phosphor) 55%, transparent);
+  border-color: color-mix(in srgb, var(--color-phosphor) 50%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-phosphor) 18%, transparent);
 }
 
 /* A remote card that offline has taken away. Greyed, not hidden — §4.4 wants the reason visible. */
@@ -172,14 +273,33 @@ body {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
 }
 .ia-scroll::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
+}
+.ia-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 .ia-scroll::-webkit-scrollbar-thumb {
   background: var(--color-line);
-  border-radius: 4px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.ia-scroll:hover::-webkit-scrollbar-thumb {
+  background: var(--color-ink-faint);
+  background-clip: content-box;
+}
+
+/* The section label above a group of cards, written once. */
+.ia-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
 }
 
 @keyframes ia-pulse {
@@ -195,8 +315,245 @@ body {
   animation: ia-pulse 1.4s ease-in-out infinite;
 }
 
+@keyframes ia-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.ia-rise {
+  animation: ia-rise 0.16s ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .ia-pulse {
+  .ia-pulse,
+  .ia-rise {
     animation: none;
   }
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Rendered markdown ─────────────────────────────────────────────────────────────────────────────
+   One body style for every place markdown is shown: the thread, the editor's preview toggle, a
+   viewer. It is global rather than scoped because `MarkdownBlock.vue` puts the HTML in with `v-html`
+   and Vue stamps no scope id on nodes it did not compile — a scoped rule would simply miss them.
+   Everything here is under `.md-body`, so nothing leaks into the shell's own type. */
+.md-body {
+  color: var(--color-ink);
+  font-size: 14px;
+  line-height: 1.65;
+  word-break: break-word;
+}
+.md-body > :first-child {
+  margin-top: 0;
+}
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  font-weight: 600;
+  margin: 1.4em 0 0.5em;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+.md-body h1 {
+  font-size: 1.45em;
+}
+.md-body h2 {
+  font-size: 1.22em;
+}
+.md-body h3 {
+  font-size: 1.06em;
+}
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  font-size: 1em;
+  color: var(--color-ink-dim);
+}
+.md-body p,
+.md-body ul,
+.md-body ol,
+.md-body blockquote,
+.md-body table,
+.md-body pre.md-code {
+  margin: 0.7em 0;
+}
+.md-body ul,
+.md-body ol {
+  padding-left: 1.4em;
+}
+.md-body ul {
+  list-style: disc;
+}
+.md-body ol {
+  list-style: decimal;
+}
+.md-body li {
+  margin: 0.2em 0;
+}
+.md-body li > ul,
+.md-body li > ol {
+  margin: 0.2em 0;
+}
+/* A task list is a list with its bullets taken away — the box is the bullet. */
+.md-body ul.md-tasks {
+  list-style: none;
+  padding-left: 0.2em;
+}
+.md-body li.md-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+}
+.md-body li.md-task input[type="checkbox"] {
+  margin-top: 0.35em;
+  accent-color: var(--color-phosphor);
+}
+.md-body li.md-task.is-done {
+  color: var(--color-ink-dim);
+}
+.md-body a {
+  color: var(--color-phosphor);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-phosphor) 40%, transparent);
+}
+.md-body a:hover {
+  border-bottom-color: var(--color-phosphor);
+}
+.md-body strong {
+  font-weight: 600;
+}
+.md-body code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--color-panel-2);
+  border-radius: 5px;
+  padding: 0.12em 0.36em;
+}
+.md-body blockquote {
+  border-left: 2px solid var(--color-line);
+  padding-left: 0.9em;
+  color: var(--color-ink-dim);
+}
+.md-body hr {
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  margin: 1.5em 0;
+}
+.md-body img {
+  max-width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--color-line);
+}
+.md-body table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  font-size: 0.94em;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid var(--color-line);
+  padding: 0.4em 0.75em;
+  text-align: left;
+}
+.md-body th {
+  background: var(--color-panel);
+  font-weight: 600;
+}
+
+/* Fenced code: the language label and the copy button live in the header the renderer emits. */
+.md-body .md-code {
+  position: relative;
+  background: var(--color-card);
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.md-body .md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px 5px 12px;
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-panel);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+.md-body .md-copy {
+  font: inherit;
+  font-size: 11px;
+  color: var(--color-ink-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease-out,
+    color 0.16s ease-out;
+}
+.md-body .md-copy:hover {
+  background: var(--color-panel-2);
+  color: var(--color-ink);
+}
+.md-body .md-code pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.md-body .md-code code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* The four token classes the highlighter emits (lib/highlight.ts). Nothing else is coloured. */
+.md-body .tok-k {
+  color: var(--color-magenta);
+}
+.md-body .tok-s {
+  color: var(--color-phosphor);
+}
+.md-body .tok-c {
+  color: var(--color-ink-faint);
+  font-style: italic;
+}
+.md-body .tok-n {
+  color: var(--color-cyan);
+}
+
+/* A picture whose workspace path is not there: said where the picture would have been. */
+.md-body .md-missing {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  border: 1px dashed var(--color-line);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+/* Smaller type where markdown sits inside a dense pane (the workspace's viewer). */
+.md-body.md-sm {
+  font-size: 13px;
+}
 }

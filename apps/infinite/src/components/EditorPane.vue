@@ -10,11 +10,12 @@
  * meant to RUN goes to PreviewPane instead, inside a sandboxed iframe — never here.
  */
 import { computed, ref, watch } from "vue";
+import MarkdownBlock from "./MarkdownBlock.vue";
 import TablerIcon from "./TablerIcon.vue";
-import { renderMarkdown } from "../lib/markdown-lite.js";
 import { indent } from "../power/editor.js";
 import { gutter } from "../power/editor.js";
 import {
+  closeFile,
   editorDirty,
   editorEditable,
   editorMarkdown,
@@ -25,22 +26,49 @@ import {
   fileText,
   filesError,
   reloadFromDisk,
+  openFile,
   saveOpenFile,
   selectedPath,
   setEditorText,
   toggleMarkdownPreview,
 } from "../state/files.js";
-import { isPreviewablePath } from "../lib/files-tree.js";
+import { baseName, isPreviewablePath } from "../lib/files-tree.js";
 import { showCentre } from "../state/layout.js";
 
 const area = ref<HTMLTextAreaElement | null>(null);
 const numbers = computed(() => gutter(editorText.value));
-const rendered = computed(() => renderMarkdown(editorText.value));
 const savedFlash = ref(false);
 
-watch(selectedPath, () => {
-  savedFlash.value = false;
-});
+/**
+ * THE TAB STRIP. `state/files.ts` owns ONE open file, which is the right model for the store — a
+ * second open file is not a second edit, it is a second thing to look at. So the strip is the
+ * editor's own memory of what has been looked at in this session: six paths, newest last, and
+ * clicking one re-opens it through the same `openFile` the tree calls. Nothing new is persisted.
+ */
+const MAX_TABS = 6;
+const tabs = ref<string[]>([]);
+
+watch(
+  selectedPath,
+  (path) => {
+    savedFlash.value = false;
+    if (!path) return;
+    tabs.value = [...tabs.value.filter((p) => p !== path), path].slice(-MAX_TABS);
+  },
+  // IMMEDIATE, because this pane is mounted BY a file being opened: the workspace panel switches to
+  // the Editor tab when the tree opens something, so the first path is already set by the time the
+  // watcher exists and a lazy watch would show a strip with nothing in it.
+  { immediate: true },
+);
+
+function closeTab(path: string): void {
+  const rest = tabs.value.filter((p) => p !== path);
+  tabs.value = rest;
+  if (selectedPath.value !== path) return;
+  const next = rest[rest.length - 1];
+  if (next) void openFile(next);
+  else closeFile();
+}
 
 async function save(force = false): Promise<void> {
   const done = await saveOpenFile(force);
@@ -82,24 +110,58 @@ function onScroll(): void {
 
 <template>
   <div class="h-full flex flex-col min-h-0">
-    <div v-if="!selectedPath" class="flex-1 flex items-center justify-center">
-      <p class="text-[12px] text-[var(--color-ink-dim)]">Pick a file in the tree.</p>
+    <div v-if="!selectedPath" class="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
+      <TablerIcon name="file-text" :size="22" class="text-[var(--color-ink-faint)]" />
+      <p class="text-[13px] text-[var(--color-ink-dim)]">No file open</p>
+      <p class="text-[12px] text-[var(--color-ink-faint)] max-w-[16rem] leading-relaxed">
+        Pick one in Files, or ask 00 Mini to write one.
+      </p>
     </div>
 
     <template v-else>
-      <div class="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] shrink-0">
-        <TablerIcon name="file-text" :size="13" class="text-[var(--color-ink-dim)] shrink-0" />
-        <span class="text-[12px] font-mono truncate">{{ selectedPath }}</span>
-        <span v-if="editorDirty" class="text-[10px] text-[var(--color-amber)] shrink-0">● unsaved</span>
-        <span v-else-if="savedFlash" class="text-[10px] text-[var(--color-phosphor)] shrink-0">saved</span>
-        <span v-else-if="!editorEditable" class="text-[10px] text-[var(--color-ink-dim)] shrink-0">read-only</span>
+      <!-- The tab strip: what has been opened in this session, current one lit. -->
+      <div class="flex items-stretch border-b border-[var(--color-line)] shrink-0 overflow-x-auto" :style="{ background: 'var(--color-panel)' }">
+        <div
+          v-for="path in tabs"
+          :key="path"
+          class="group flex items-center gap-1.5 pl-3 pr-2 h-9 border-r border-[var(--color-line)] shrink-0 cursor-pointer transition-colors"
+          :class="
+            path === selectedPath
+              ? 'text-[var(--color-ink)]'
+              : 'text-[var(--color-ink-faint)] hover:text-[var(--color-ink-dim)]'
+          "
+          :style="path === selectedPath ? { background: 'var(--color-void)' } : undefined"
+          :title="path"
+          @click="openFile(path)"
+        >
+          <span class="text-[12px] font-mono max-w-[12rem] truncate">{{ baseName(path) }}</span>
+          <span
+            v-if="path === selectedPath && editorDirty"
+            class="w-1.5 h-1.5 rounded-full bg-[var(--color-amber)] shrink-0"
+            title="Unsaved"
+          />
+          <button
+            type="button"
+            class="w-4 h-4 rounded flex items-center justify-center opacity-0 group-hover:opacity-70 hover:!opacity-100 shrink-0"
+            title="Close"
+            @click.stop="closeTab(path)"
+          >
+            <TablerIcon name="x" :size="11" />
+          </button>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 px-3 h-9 border-b border-[var(--color-line)] shrink-0">
+        <span class="text-[11px] font-mono text-[var(--color-ink-faint)] truncate">{{ selectedPath }}</span>
+        <span v-if="savedFlash" class="text-[11px] text-[var(--color-phosphor)] shrink-0">saved</span>
+        <span v-else-if="!editorEditable" class="text-[11px] text-[var(--color-ink-faint)] shrink-0">read-only</span>
 
         <div class="ml-auto flex items-center gap-1 shrink-0">
           <button
             v-if="editorMarkdown"
             type="button"
-            class="ia-btn h-7 px-2 text-[10px] flex items-center gap-1"
-            :class="editorPreviewing ? 'ia-btn-primary' : ''"
+            class="ia-btn ia-btn-ghost h-7 px-2 text-[11px] gap-1"
+            :class="editorPreviewing ? 'ia-btn-on' : ''"
             title="Rendered markdown"
             @click="toggleMarkdownPreview()"
           >
@@ -109,7 +171,7 @@ function onScroll(): void {
           <button
             v-if="selectedPath && isPreviewablePath(selectedPath)"
             type="button"
-            class="ia-btn h-7 px-2 text-[10px] flex items-center gap-1"
+            class="ia-btn ia-btn-ghost h-7 px-2 text-[11px] gap-1"
             title="Open in the preview pane"
             @click="showCentre('preview')"
           >
@@ -119,13 +181,13 @@ function onScroll(): void {
           <button
             v-if="editorEditable"
             type="button"
-            class="ia-btn h-7 px-2 text-[10px] flex items-center gap-1"
+            class="ia-btn h-7 px-2.5 text-[11px] gap-1"
             :class="editorDirty ? 'ia-btn-primary' : ''"
             :disabled="!editorDirty || editorSaving"
             title="Save (⌘S)"
             @click="save(editorStale)"
           >
-            <TablerIcon name="check" :size="12" />
+            <TablerIcon name="device-floppy" :size="12" />
             Save
           </button>
         </div>
@@ -147,8 +209,11 @@ function onScroll(): void {
         {{ filesError }}
       </p>
 
-      <!-- Rendered markdown. -->
-      <div v-if="editorPreviewing" class="flex-1 ia-scroll p-4 md-body text-[13px]" v-html="rendered" />
+      <!-- Rendered markdown, through the same component the thread uses: one look, one escaping
+           rule, one copy button. -->
+      <div v-if="editorPreviewing" class="flex-1 ia-scroll p-5">
+        <MarkdownBlock class="max-w-[44rem] mx-auto" :text="editorText" small />
+      </div>
 
       <!-- The editor proper: gutter and textarea share one scroll position. -->
       <div v-else-if="editorEditable" class="flex-1 flex min-h-0">
@@ -178,88 +243,3 @@ function onScroll(): void {
     </template>
   </div>
 </template>
-
-<style scoped>
-/* The rendered-markdown body. Scoped so nothing here leaks into the shell's own type. */
-.md-body :deep(h1),
-.md-body :deep(h2),
-.md-body :deep(h3) {
-  font-weight: 600;
-  margin: 1.2em 0 0.5em;
-  line-height: 1.25;
-}
-.md-body :deep(h1) {
-  font-size: 1.5em;
-}
-.md-body :deep(h2) {
-  font-size: 1.25em;
-}
-.md-body :deep(h3) {
-  font-size: 1.08em;
-}
-.md-body :deep(p),
-.md-body :deep(ul),
-.md-body :deep(ol),
-.md-body :deep(blockquote),
-.md-body :deep(table) {
-  margin: 0.7em 0;
-}
-.md-body :deep(ul),
-.md-body :deep(ol) {
-  padding-left: 1.4em;
-}
-.md-body :deep(ul) {
-  list-style: disc;
-}
-.md-body :deep(ol) {
-  list-style: decimal;
-}
-.md-body :deep(a) {
-  color: var(--color-cyan);
-  text-decoration: underline;
-}
-.md-body :deep(code) {
-  font-family: var(--font-mono);
-  font-size: 0.92em;
-  background: color-mix(in srgb, var(--color-panel-2) 70%, transparent);
-  border-radius: 4px;
-  padding: 0.1em 0.35em;
-}
-.md-body :deep(pre.md-code) {
-  font-family: var(--font-mono);
-  font-size: 0.92em;
-  background: color-mix(in srgb, var(--color-panel-2) 60%, transparent);
-  border: 1px solid var(--color-line);
-  border-radius: 10px;
-  padding: 0.8em 1em;
-  overflow-x: auto;
-}
-.md-body :deep(pre.md-code code) {
-  background: none;
-  padding: 0;
-}
-.md-body :deep(blockquote) {
-  border-left: 2px solid var(--color-line);
-  padding-left: 0.9em;
-  color: var(--color-ink-dim);
-}
-.md-body :deep(hr) {
-  border: 0;
-  border-top: 1px solid var(--color-line);
-  margin: 1.4em 0;
-}
-.md-body :deep(table) {
-  border-collapse: collapse;
-  display: block;
-  overflow-x: auto;
-}
-.md-body :deep(th),
-.md-body :deep(td) {
-  border: 1px solid var(--color-line);
-  padding: 0.35em 0.7em;
-  text-align: left;
-}
-.md-body :deep(img) {
-  max-width: 100%;
-}
-</style>

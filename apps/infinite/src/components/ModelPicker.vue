@@ -62,7 +62,7 @@ function choose(id: string): void {
          ready, and the line under the answer says which class actually did. -->
     <template v-if="showAll">
       <div class="flex items-center justify-between mb-1.5">
-        <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">next turns</span>
+        <span class="ia-label font-pixel">next turns</span>
       </div>
       <div class="flex rounded-lg border border-[var(--color-line)] overflow-hidden mb-2">
         <button
@@ -82,7 +82,7 @@ function choose(id: string): void {
         </button>
       </div>
 
-      <div class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-1.5">brain</div>
+      <div class="ia-label font-pixel mb-1.5">brain</div>
 
       <button
         type="button"
@@ -125,7 +125,7 @@ function choose(id: string): void {
     <!-- LOCAL: the mirror's rows. The same list, the same licence lines and the same choice as the
          Local AI card — §12.7's picker, mounted twice. -->
     <div class="flex items-center justify-between mt-2 mb-1.5">
-      <span class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel">local models</span>
+      <span class="ia-label font-pixel">local models</span>
       <button
         type="button"
         class="text-[10px] text-[var(--color-ink-dim)] hover:text-[var(--color-ink)]"

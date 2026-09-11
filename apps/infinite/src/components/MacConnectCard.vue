@@ -99,7 +99,7 @@ async function send(): Promise<void> {
 
 <template>
   <section>
-    <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">00 on your Mac and phone</h2>
+    <h2 class="ia-label font-pixel mb-2">00 on your Mac and phone</h2>
 
     <div v-if="!supported" class="panel px-3 py-3 flex items-start gap-2">
       <TablerIcon name="alert-triangle" :size="15" class="mt-0.5 shrink-0 text-[var(--color-amber)]" />

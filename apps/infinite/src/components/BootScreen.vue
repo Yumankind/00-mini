@@ -6,6 +6,7 @@
  * one screen where it can be checked: nothing here talks to a server except the app shell.
  */
 import { computed } from "vue";
+import PixelFace from "./PixelFace.vue";
 import TablerIcon from "./TablerIcon.vue";
 import { stepLine } from "../lib/boot-steps.js";
 import { bootError, bootSteps, progress } from "../state/agent.js";
@@ -17,15 +18,10 @@ const pct = computed(() => Math.round(progress.value * 100));
   <div class="h-full flex items-center justify-center px-6">
     <div class="w-full max-w-sm">
       <div class="flex items-center gap-3 mb-8">
-        <div
-          class="w-11 h-11 rounded-2xl flex items-center justify-center"
-          :style="{ background: 'color-mix(in srgb, var(--color-phosphor) 14%, transparent)' }"
-        >
-          <TablerIcon name="infinity" :size="26" class="text-[var(--color-phosphor)]" />
-        </div>
+        <PixelFace :size="44" self-animate glow />
         <div>
-          <div class="text-[15px] font-semibold">Infinite Agent</div>
-          <div class="text-[11px] text-[var(--color-ink-dim)]">An AI agent that runs in your browser.</div>
+          <div class="text-[16px] font-semibold tracking-tight">00 Mini</div>
+          <div class="text-[12px] text-[var(--color-ink-dim)]">An AI agent you do not install.</div>
         </div>
       </div>
 

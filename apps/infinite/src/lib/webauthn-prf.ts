@@ -62,8 +62,9 @@ export async function createPrfCredential(displayName: string): Promise<PrfCrede
   const cred = (await navigator.credentials.create({
     publicKey: {
       challenge,
-      // No server, so the relying party IS this origin and the name is the product's.
-      rp: { name: "Infinite Agent", id: location.hostname },
+      // No server, so the relying party IS this origin. The NAME is what the OS passkey sheet shows;
+      // `id` is the origin and is untouched, so passkeys created before the rename still open.
+      rp: { name: "00 Mini", id: location.hostname },
       user: { id: userId, name: displayName || "owner", displayName: displayName || "owner" },
       pubKeyCredParams: [
         { type: "public-key", alg: -7 },

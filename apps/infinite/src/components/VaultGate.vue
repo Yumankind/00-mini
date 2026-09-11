@@ -63,7 +63,7 @@ async function submit(): Promise<void> {
         <button
           type="button"
           class="ia-btn flex-1 h-8 text-[11px] flex items-center justify-center gap-1.5"
-          :class="mode === 'password' ? 'ia-btn-primary' : ''"
+          :class="mode === 'password' ? 'ia-btn-on' : ''"
           @click="mode = 'password'"
         >
           <TablerIcon name="key" :size="13" /> Password
@@ -71,7 +71,7 @@ async function submit(): Promise<void> {
         <button
           type="button"
           class="ia-btn flex-1 h-8 text-[11px] flex items-center justify-center gap-1.5"
-          :class="mode === 'passkey' ? 'ia-btn-primary' : ''"
+          :class="mode === 'passkey' ? 'ia-btn-on' : ''"
           @click="mode = 'passkey'"
         >
           <TablerIcon name="fingerprint" :size="13" /> Passkey

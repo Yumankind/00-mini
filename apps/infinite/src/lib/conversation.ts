@@ -14,8 +14,14 @@
 import type { AgentEvent, PermissionTier } from "@00/agent-runtime";
 import type { BrainStamp } from "./model-chip.js";
 
+/** A picture attached to a sent message, as the row draws it: a thumbnail and the path it was written to. */
+export interface RowImage {
+  url: string;
+  path: string;
+}
+
 export type Row =
-  | { kind: "user"; id: string; text: string }
+  | { kind: "user"; id: string; text: string; images?: RowImage[] }
   /** `by` is B20's line under the answer: which brain wrote it, from `model_started`. */
   | { kind: "agent"; id: string; text: string; streaming: boolean; by?: BrainStamp }
   /**
@@ -71,8 +77,8 @@ function replaceRow(state: ConversationState, id: string, next: Row): Conversati
   return { ...state, rows: state.rows.map((r) => (r.id === id ? next : r)) };
 }
 
-export function pushUser(state: ConversationState, text: string): ConversationState {
-  return withRow(state, { kind: "user", text });
+export function pushUser(state: ConversationState, text: string, images: RowImage[] = []): ConversationState {
+  return withRow(state, images.length ? { kind: "user", text, images } : { kind: "user", text });
 }
 
 export function pushError(state: ConversationState, text: string, openChip = false): ConversationState {

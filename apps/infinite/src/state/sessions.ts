@@ -56,6 +56,42 @@ export function dayLabel(updatedAt: number, now = Date.now()): string {
   return new Date(updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/**
+ * The three headings the sidebar groups under. `dayLabel` above stays what a ROW says (it names the
+ * actual day once a thread is older than yesterday); this names the GROUP, and three headings is as
+ * many as a list of a dozen threads can carry before the headings outnumber the threads.
+ */
+export function groupLabel(updatedAt: number, now = Date.now()): "Today" | "Yesterday" | "Earlier" {
+  const label = dayLabel(updatedAt, now);
+  return label === "Today" || label === "Yesterday" ? label : "Earlier";
+}
+
+/** Newest first, grouped, empty groups dropped — what the sidebar draws, in one pure pass. */
+export function groupSessions(
+  rows: SessionRow[],
+  now = Date.now(),
+): { label: string; rows: SessionRow[] }[] {
+  const order: string[] = ["Today", "Yesterday", "Earlier"];
+  const buckets = new Map<string, SessionRow[]>();
+  for (const row of [...rows].sort((a, b) => b.updatedAt - a.updatedAt)) {
+    const key = groupLabel(row.updatedAt, now);
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(row);
+    else buckets.set(key, [row]);
+  }
+  return order.filter((label) => buckets.has(label)).map((label) => ({ label, rows: buckets.get(label)! }));
+}
+
+/** The search field over the list: every word has to appear somewhere in the title. */
+export function matchSessions(rows: SessionRow[], query: string): SessionRow[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return rows;
+  return rows.filter((row) => {
+    const hay = (row.title || "Untitled").toLowerCase();
+    return words.every((word) => hay.includes(word));
+  });
+}
+
 export function resetSessions(): void {
   items.value = [];
   loading.value = false;

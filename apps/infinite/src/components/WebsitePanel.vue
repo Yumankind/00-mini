@@ -137,7 +137,7 @@ async function copySnippet(): Promise<void> {
       <!-- What this ref has become out there. Only the worker knows, and only once a claim exists —
            before that this browser has never spoken to it, which is the point of §5.3. -->
       <section>
-        <h2 class="text-[10px] uppercase tracking-wide text-[var(--color-ink-dim)] font-pixel mb-2">
+        <h2 class="ia-label font-pixel mb-2">
           Websites running this agent
         </h2>
         <div class="panel px-3 py-3 space-y-2">

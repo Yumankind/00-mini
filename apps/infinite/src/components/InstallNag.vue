@@ -18,8 +18,8 @@ import { canInstall, dismissNag, installReason, promptInstall, showInstallNag } 
   >
     <TablerIcon name="device-desktop" :size="15" class="mt-0.5 shrink-0 text-[var(--color-phosphor)]" />
     <div class="min-w-0 flex-1">
-      <div class="text-[12px] font-medium">Keep this agent</div>
-      <div class="text-[11px] text-[var(--color-ink-dim)] leading-relaxed">
+      <div class="text-[12.5px] font-medium">Keep this agent</div>
+      <div class="text-[11.5px] text-[var(--color-ink-dim)] leading-relaxed">
         {{ installReason || "Installed, your agent survives a browser clean-up. Either way, keep a backup file." }}
       </div>
     </div>
@@ -27,7 +27,7 @@ import { canInstall, dismissNag, installReason, promptInstall, showInstallNag } 
       <button v-if="canInstall" type="button" class="ia-btn ia-btn-primary h-7 px-2.5 text-[11px]" @click="promptInstall()">
         Install
       </button>
-      <button type="button" class="ia-btn w-7 h-7 flex items-center justify-center" title="Not now" @click="dismissNag()">
+      <button type="button" class="ia-btn ia-btn-ghost w-7 h-7" title="Not now" @click="dismissNag()">
         <TablerIcon name="x" :size="13" />
       </button>
     </div>
