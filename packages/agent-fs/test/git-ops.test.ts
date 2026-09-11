@@ -220,11 +220,17 @@ describe("createGitOps", () => {
     await expect(ops.gitStatus({ dir: "workspace-other/app" })).rejects.toBeInstanceOf(AgentFsError);
   });
 
-  it("still refuses clone, push and pull by name, with the CORS-proxy reason", async () => {
+  it("refuses clone, fetch, push and pull by name when the host wired no remote", async () => {
     const ops = createGitOps(new MemoryFs());
-    for (const call of [ops.gitClone(), ops.gitPush(), ops.gitPull()]) {
+    const calls = [
+      ops.gitClone({ url: "https://github.com/o/r.git", dir: "workspace/projects/r" }),
+      ops.gitFetch({ dir: REPO }),
+      ops.gitPush({ dir: REPO }),
+      ops.gitPull({ dir: REPO }),
+    ];
+    for (const call of calls) {
       await expect(call).rejects.toMatchObject({ code: "git_remote_not_available" });
     }
-    await expect(ops.gitPush()).rejects.toThrow(/CORS proxy/);
+    await expect(ops.gitPush({ dir: REPO })).rejects.toThrow(/companion \(Connections → This computer\)/);
   });
 });

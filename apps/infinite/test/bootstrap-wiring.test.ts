@@ -12,7 +12,14 @@
 // design), so it is also the only test that proves the whole construction still runs at all.
 
 import { describe, expect, it } from "vitest";
-import { createOwnedAgent, proxyUrlFor } from "../src/runtime/bootstrap.js";
+import { companionOrSiteProxy, createOwnedAgent, proxyUrlFor } from "../src/runtime/bootstrap.js";
+import {
+  configureCompanion,
+  connect,
+  probeCompanionNow,
+  resetCompanion,
+} from "../src/state/companion.js";
+import { MemoryDeviceKeyStore } from "@00/agent-models";
 
 async function boot(): Promise<Awaited<ReturnType<typeof createOwnedAgent>>> {
   return createOwnedAgent({
@@ -84,5 +91,48 @@ describe("the read-only proxy the network policy hands the tools", () => {
     expect(proxyUrlFor(new URL("https://example.com/"))).toBeNull();
     Reflect.deleteProperty(globalThis, "location");
     expect(proxyUrlFor(new URL("https://example.com/"))).toBeNull();
+  });
+});
+
+describe("the two roads a blocked fetch can take (§14.3's `fetch` scope)", () => {
+  function page(origin: string): void {
+    Object.defineProperty(globalThis, "location", { configurable: true, value: { origin } });
+  }
+
+  it("is the site's own proxy while no computer is connected", async () => {
+    resetCompanion();
+    page("https://0-0.chat");
+    expect(await companionOrSiteProxy(new URL("https://example.com/a"))).toBe(
+      "https://0-0.chat/~fetch?url=https%3A%2F%2Fexample.com%2Fa",
+    );
+  });
+
+  it("becomes the companion, with its signature, the moment one is paired", async () => {
+    // The companion is strictly the better road: the site's Worker can reach public hosts, and the
+    // person's own computer can reach the box on their desk.
+    resetCompanion();
+    page("https://0-0.chat");
+    configureCompanion({
+      store: new MemoryDeviceKeyStore(),
+      matchMedia: () => ({ matches: false }),
+      innerWidth: 1440,
+      fetch: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/health")) return new Response(JSON.stringify({ name: "Mac", engineFp: "ff11" }), { status: 200 });
+        return new Response(JSON.stringify({ fingerprint: "d", engineName: "Mac", scopes: ["git", "fetch"] }), {
+          status: 200,
+        });
+      }) as typeof globalThis.fetch,
+    });
+    await probeCompanionNow();
+    await connect("amber lantern quiet");
+
+    const target = await companionOrSiteProxy(new URL("http://192.168.1.9/status"));
+    expect(typeof target).toBe("object");
+    expect((target as { url: string }).url).toBe(
+      "http://127.0.0.1:4600/api/companion/fetch?url=http%3A%2F%2F192.168.1.9%2Fstatus",
+    );
+    expect((target as { headers: Record<string, string> }).headers["x-00-sig"]).toBeTruthy();
+    resetCompanion();
   });
 });

@@ -9,6 +9,7 @@
  */
 import BackupPanel from "./BackupPanel.vue";
 import BrainCards from "./BrainCards.vue";
+import CompanionCard from "./CompanionCard.vue";
 import MacConnectCard from "./MacConnectCard.vue";
 import TablerIcon from "./TablerIcon.vue";
 import VaultPanel from "./VaultPanel.vue";
@@ -96,6 +97,10 @@ defineEmits<{ (e: "move"): void; (e: "website"): void }>();
           </button>
         </div>
       </section>
+
+      <!-- §14, above the Mac card: this is the machine the person is sitting at, and the one door
+           that needs nothing but a terminal they already have open. -->
+      <CompanionCard />
 
       <MacConnectCard />
 

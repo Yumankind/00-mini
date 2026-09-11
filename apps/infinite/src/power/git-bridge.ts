@@ -12,7 +12,7 @@
  * `dir` is always agent-root-relative (`workspace/projects/site`) because that is what every
  * `@00/agent-fs` git call takes; the shell converts its own `/`-rooted display path before calling.
  */
-import type { AgentFs } from "@00/agent-fs";
+import type { AgentFs, GitRemote } from "@00/agent-fs";
 import {
   createGitOps,
   gitAdd,
@@ -75,8 +75,22 @@ export function gitUsable(): boolean {
   return typeof (globalThis as { Buffer?: unknown }).Buffer !== "undefined";
 }
 
-export function createPowerGit(fs: AgentFs, root = "workspace"): PowerGit {
+export interface PowerGitOptions {
+  /**
+   * §14's road out of the tab, asked FRESH on every remote call — the companion is a process someone
+   * starts and stops in a terminal, and the panel and the shell hold this object for the life of the
+   * tab. `null` (or no option at all) leaves clone/push/pull/fetch refusing by name.
+   */
+  remote?: () => GitRemote | null;
+}
+
+export function createPowerGit(fs: AgentFs, root = "workspace", options: PowerGitOptions = {}): PowerGit {
   const ops = createGitOps(fs, root);
+  /** The ops for a call that leaves this computer: the road that exists now, or the refusing one. */
+  const remoteOps = (): ReturnType<typeof createGitOps> => {
+    const road = options.remote?.() ?? null;
+    return road ? createGitOps(fs, root, { remote: road }) : ops;
+  };
   const ready = (): void => {
     if (!gitUsable()) throw new Error(GIT_UNAVAILABLE);
   };
@@ -141,6 +155,26 @@ export function createPowerGit(fs: AgentFs, root = "workspace"): PowerGit {
         return;
       }
       await gitCheckout(fs, dir, ref);
+    },
+
+    async clone(url, dir) {
+      ready();
+      return remoteOps().gitClone({ url, dir });
+    },
+
+    async push(dir, remote, branch) {
+      ready();
+      return remoteOps().gitPush({ dir, remote, branch });
+    },
+
+    async pull(dir, remote, branch) {
+      ready();
+      return remoteOps().gitPull({ dir, remote, branch });
+    },
+
+    async fetch(dir, remote, branch) {
+      ready();
+      return remoteOps().gitFetch({ dir, remote, branch });
     },
 
     async unstage() {

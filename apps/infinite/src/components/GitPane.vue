@@ -12,8 +12,13 @@ import TablerIcon from "./TablerIcon.vue";
 import { GIT_UNAVAILABLE, gitUsable } from "../power/git-bridge.js";
 import { statusLetter } from "../state/git.js";
 import {
-  REMOTE_LINE,
   chooseRepo,
+  cloneRepo,
+  gitRemoteBlocked,
+  gitRemoteReady,
+  gitRemoteSaid,
+  pullRepo,
+  pushRepo,
   commitStaged,
   gitCommitProblem,
   gitInitialised,
@@ -31,6 +36,15 @@ import {
 import { refreshFiles } from "../state/files.js";
 
 const newBranch = ref("");
+const cloneUrl = ref("");
+
+/** A clone is the one remote action that needs no repository, so it has its own little form. */
+async function clone(): Promise<void> {
+  const url = cloneUrl.value.trim();
+  if (!url) return;
+  cloneUrl.value = "";
+  await cloneRepo(url);
+}
 
 onMounted(async () => {
   await refreshFiles();
@@ -232,10 +246,49 @@ async function createBranch(): Promise<void> {
           </div>
         </template>
 
-        <p class="px-3 py-2 text-[10px] text-[var(--color-ink-dim)] border-t border-[var(--color-line)]">
-          {{ REMOTE_LINE }}
-        </p>
       </template>
+
+      <!-- §14: the three that leave this computer. OUTSIDE the "pick a project" branch, because
+           `clone` is exactly what a person does when there is no project yet — and enabled only when
+           the companion is paired, with the line saying WHICH of the reasons it is not. -->
+      <div v-if="gitUsable()" class="px-3 py-2 border-t border-[var(--color-line)] space-y-1.5">
+        <div class="flex items-center gap-1.5">
+          <span class="ia-label font-pixel">Remote</span>
+          <button
+            type="button"
+            class="ia-btn h-6 px-2 text-[10px] ml-auto"
+            :disabled="!gitRemoteReady || gitState.busy || !gitInitialised"
+            @click="pullRepo()"
+          >
+            Pull
+          </button>
+          <button
+            type="button"
+            class="ia-btn h-6 px-2 text-[10px]"
+            :disabled="!gitRemoteReady || gitState.busy || !gitInitialised"
+            @click="pushRepo()"
+          >
+            Push
+          </button>
+        </div>
+        <form class="flex items-center gap-1.5" @submit.prevent="clone()">
+          <input
+            v-model="cloneUrl"
+            class="ia-input h-6 py-0 text-[10px] font-mono flex-1"
+            placeholder="https://github.com/you/project.git"
+            :disabled="!gitRemoteReady"
+          />
+          <button type="submit" class="ia-btn h-6 px-2 text-[10px]" :disabled="!gitRemoteReady || !cloneUrl.trim()">
+            Clone
+          </button>
+        </form>
+        <p v-if="gitRemoteSaid" class="text-[10px] text-[var(--color-ink-dim)] leading-relaxed">
+          {{ gitRemoteSaid }}
+        </p>
+        <p class="text-[10px] text-[var(--color-ink-dim)] leading-relaxed">
+          {{ gitRemoteBlocked ?? "Going through 00 on this computer." }}
+        </p>
+      </div>
     </div>
   </div>
 </template>

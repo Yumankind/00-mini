@@ -30,12 +30,15 @@ import {
   gitClone,
   gitCommit,
   gitCreateBranch,
+  gitFetch,
   gitLog,
   gitPull,
   gitPush,
   gitReadHeadFile,
   gitReadStagedFile,
+  gitRemotes,
   gitStatus,
+  type GitRemote,
   type GitStatusEntry,
 } from "./git.js";
 import { fail } from "./errors.js";
@@ -207,14 +210,54 @@ export function unifiedDiff(path: string, before: string, after: string, opts: U
   );
 }
 
+// ── What a remote operation SAYS ────────────────────────────────────────────────────────────────
+//
+// Pure, exported and tested on their own, because the interesting cases are the ones a fake http
+// client cannot reach: a push the far side REFUSED (isomorphic-git resolves that promise, with the
+// reason on the ref, so a caller who only checked for a throw would print "Pushed" over a rejection),
+// and a fetch that moved nothing. Building the sentence away from the call is what makes those
+// testable at all.
+
+/** Git's own per-ref verdict, structurally — `{ ok, error? }` per ref, plus a call-level error. */
+export interface PushLikeResult {
+  ok?: boolean;
+  error?: string | null;
+  refs?: Record<string, { ok: boolean; error?: string | null }>;
+}
+
+export function pushSummary(result: PushLikeResult, remoteName: string, branch?: string): string {
+  const rejected = Object.entries(result.refs ?? {})
+    .filter(([, status]) => !status.ok)
+    .map(([ref, status]) => `${ref}: ${status.error ?? "refused"}`);
+  const why = result.error ? [result.error, ...rejected] : rejected;
+  if (why.length) return `${remoteName} refused the push — ${why.join("; ")}`;
+  return `Pushed ${branch ?? "the current branch"} to ${remoteName}.`;
+}
+
+export function fetchSummary(fetchHead: string | null | undefined, remoteName: string, branch?: string): string {
+  const where = branch ? `${remoteName}/${branch}` : remoteName;
+  return fetchHead ? `Fetched ${where} — ${shortOid(fetchHead)}.` : `Fetched ${where}; nothing new.`;
+}
+
+export function cloneSummary(url: string, dir: string, branch: string | null): string {
+  return `Cloned ${url} into ${dir}${branch ? ` on branch ${branch}` : ""}.`;
+}
+
+export function pullSummary(remoteName: string, branch: string | undefined, onto: string | null, url?: string): string {
+  const where = branch ? `${remoteName}/${branch}` : remoteName;
+  return `Pulled ${where} into ${onto ?? "HEAD"}${url ? ` (${url})` : ""}.`;
+}
+
 // ── The ops object the runtime's git tools are wired to ─────────────────────────────────────────
 
 /**
  * The runtime's `GitOps`, structurally. Every method answers in prose, because a model reads it.
  *
- * `gitClone`, `gitPush` and `gitPull` are here as REFUSALS rather than as absences: an agent that
- * asks to push must be told why it cannot, in the one sentence that is true (a browser needs a CORS
- * proxy to reach github.com, and nobody has chosen one), not discover that the method is missing.
+ * `gitClone`, `gitFetch`, `gitPush` and `gitPull` are the four that leave this computer. They RUN
+ * when the host handed `createGitOps` a `remote` (§14: the 00 engine on this same machine, in
+ * companion mode, as the smart-HTTP proxy) and REFUSE BY NAME when it did not — an agent that asks
+ * to push must be told why it cannot, in the one sentence that is true, not discover that the method
+ * is missing. Their prose is git's own: what moved, to where, and on which branch.
  */
 export interface AgentGitOps {
   gitStatus(opts: { dir: string }): Promise<string>;
@@ -224,15 +267,25 @@ export interface AgentGitOps {
   gitCommit(opts: { dir: string; message: string }): Promise<string>;
   gitBranch(opts: { dir: string; create?: string; checkout?: boolean }): Promise<string>;
   gitCheckout(opts: { dir: string; ref: string; force?: boolean }): Promise<string>;
-  gitClone(): Promise<never>;
-  gitPush(): Promise<never>;
-  gitPull(): Promise<never>;
+  /** `dir` is where the working tree lands, inside the workspace like every other repository. */
+  gitClone(opts: { url: string; dir: string; ref?: string; depth?: number }): Promise<string>;
+  gitPush(opts: { dir: string; remote?: string; branch?: string }): Promise<string>;
+  gitPull(opts: { dir: string; remote?: string; branch?: string }): Promise<string>;
+  gitFetch(opts: { dir: string; remote?: string; branch?: string }): Promise<string>;
 }
 
 export interface GitOpsOptions {
   /** Author for commits this agent makes. Defaults to `git.ts`'s local one. */
   author?: { name: string; email: string };
   now?: () => Date;
+  /**
+   * The road out of this computer, or nothing (additive, 2026-09-11).
+   *
+   * Absent is the state this package shipped in and still ships in for a host that has no proxy: the
+   * four remote methods reject with `git_remote_not_available`. Present, it is used verbatim — this
+   * package neither builds an http client nor decides who signs.
+   */
+  remote?: GitRemote;
 }
 
 const decoder = new TextDecoder();
@@ -359,8 +412,41 @@ export function createGitOps(fs: AgentFs, root = "workspace", opts: GitOpsOption
       return `Switched to ${ref}.${force ? " Uncommitted changes in the working tree were overwritten." : ""}`;
     },
 
-    gitClone,
-    gitPush,
-    gitPull,
+    // ── The four that leave this computer ───────────────────────────────────────────────────────
+    //
+    // `opts.remote` is read at CALL TIME rather than captured, so a host that swaps the object it
+    // passed (the companion appearing or going away mid-session) does not have to rebuild these ops
+    // — and a host that never had one gets the same refusal it always got.
+
+    async gitClone({ url, dir, ref, depth }) {
+      const repo = contain(dir);
+      await gitClone(fs, repo, { url, remote: opts.remote, ref, depth });
+      return cloneSummary(url, repo, (await gitBranches(fs, repo)).current);
+    },
+
+    // `name` is worked out BEFORE the call in all three: the remote's name is what the REFUSAL
+    // wants to say as much as the success does, and a default read after a throw is a default that
+    // is never read at all.
+    async gitFetch({ dir, remote, branch }) {
+      const repo = contain(dir);
+      const name = remote ?? "origin";
+      const result = await gitFetch(fs, repo, { remote: opts.remote, remoteName: remote, branch });
+      return fetchSummary(result.fetchHead, name, branch);
+    },
+
+    async gitPush({ dir, remote, branch }) {
+      const repo = contain(dir);
+      const name = remote ?? "origin";
+      const result = await gitPush(fs, repo, { remote: opts.remote, remoteName: remote, branch });
+      return pushSummary(result, name, branch);
+    },
+
+    async gitPull({ dir, remote, branch }) {
+      const repo = contain(dir);
+      const name = remote ?? "origin";
+      await gitPull(fs, repo, { remote: opts.remote, remoteName: remote, branch, author: opts.author });
+      const url = (await gitRemotes(fs, repo)).find((r) => r.remote === name)?.url;
+      return pullSummary(name, branch, (await gitBranches(fs, repo)).current, url);
+    },
   };
 }

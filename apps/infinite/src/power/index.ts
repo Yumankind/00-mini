@@ -11,14 +11,14 @@
  * returns 127. The git tools come with it (`fullTools({ git: … })`) and are gap B8's, not this
  * module's, so they are exported rather than assumed.
  */
-import type { AgentFs } from "@00/agent-fs";
+import type { AgentFs, GitRemote } from "@00/agent-fs";
 import { BuiltinShell, type BuiltinShellOptions } from "./shell.js";
 import { createPowerGit } from "./git-bridge.js";
 
 export { BuiltinShell, GIT_REMOTE_LINE, NO_NODE_LINE, expandSet, lsLong, parse, rangeToNumbers, strftime, tokenize } from "./shell.js";
 export type { ExecResult, ShellGit, BuiltinShellOptions, OutputSink, ParsedCommand, ParsedStage, Token } from "./shell.js";
 export { GIT_UNAVAILABLE, UNSTAGE_UNAVAILABLE, createPowerGit, gitUsable } from "./git-bridge.js";
-export type { PowerGit, RepoCommit, RepoStatus } from "./git-bridge.js";
+export type { PowerGit, PowerGitOptions, RepoCommit, RepoStatus } from "./git-bridge.js";
 export { MAX_INLINE_BYTES, buildPortPreview, buildPreview, toBase64 } from "./preview.js";
 export type { PreviewBuild } from "./preview.js";
 /** `node`, `npm` and the ports they open — the terminal row of §4.2, in a browser tab. */
@@ -56,6 +56,13 @@ export type { EditState } from "./editor.js";
  * does too, `fetch` inside a script the agent wrote refuses by host name. That direction is the safe
  * one: the agent's `http_get` already asks before it dials, and a script is not a place to lose that.
  */
-export function createBrowserShell(fs: AgentFs, opts: Pick<BuiltinShellOptions, "network" | "npm"> = {}): BuiltinShell {
-  return new BuiltinShell(fs, { git: createPowerGit(fs), ...opts });
+export function createBrowserShell(
+  fs: AgentFs,
+  opts: Pick<BuiltinShellOptions, "network" | "npm"> & {
+    /** §14's road out, asked per call, so `git push` in the terminal follows the companion. */
+    gitRemote?: () => GitRemote | null;
+  } = {},
+): BuiltinShell {
+  const { gitRemote, ...rest } = opts;
+  return new BuiltinShell(fs, { git: createPowerGit(fs, "workspace", gitRemote ? { remote: gitRemote } : {}), ...rest });
 }

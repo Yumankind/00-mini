@@ -1427,6 +1427,31 @@ so `git clone/push/pull/fetch` in the shell and the Git pane work; `NetworkPolic
 proxy". Readiness is polled like a brain's: the card shows found / paired / unreachable with the
 reason, and every companion feature greys out when it is gone.
 
+### 14.5 The browser half, as built (2026-09-11)
+
+`apps/infinite/src/companion/` + `src/state/companion.ts`, built to §14.1–14.4 while the engine half
+was built beside it. What the engine must answer, in the exact shapes this code sends and reads:
+
+| Call | Sent | Read |
+|---|---|---|
+| `GET /api/companion/health` | nothing, unsigned, 1.5 s timeout | `{ name, engineFp, version?, scopes? }` — `engineName`/`fingerprint` are accepted as aliases. **A 200 with no fingerprint is treated as "too old"**, so the route must carry one. 404 → "update 00d". |
+| `POST /api/companion/pair` | `{ code, publicKeyJwk, alg: "p256", name, agentId }`, unsigned | `{ fingerprint, engineName, scopes }`; `403 { code: "code_refused" }` gets §14.1's sentence |
+| `GET /api/companion/me` | signed, no body | `{ fingerprint, engineName, scopes }`. **This is the readiness poll** (every 20 s while the tab is visible): a grant revoked on the Mac must make it answer non-2xx, which is what flips the card back to "found". |
+| `DELETE /api/companion/pair` | signed, no body | any 2xx. The browser forgets its key either way. |
+| `GET /api/companion/fetch?url=` | signed | the body, as `http_get`'s second road |
+| `ANY /api/companion/git/<host>/<path…>` | signed per request, body buffered to hash it, capped at 200 MB in the browser | git smart-HTTP verbatim |
+
+Signing is §14.2 exactly: `x-00-dev` = first 16 hex of sha256 over the **raw 65-byte uncompressed
+P-256 point** (`0x04‖x‖y`, what `exportKey("raw")` gives and what the browser rebuilds from the JWK),
+`x-00-ts` in **milliseconds**, `x-00-sig` = base64url of the raw 64-byte `r‖s`, over
+`METHOD\npathWithQuery\nts\nsha256hex(body)` — `canonicalHttp` in `apps/00d/src/device-auth.ts`,
+with the empty body hashing to `e3b0c442…`. Vectors: `apps/infinite/test/companion-key.test.ts`.
+
+Two notes for the engine half: **the `git` and `fetch` scopes are read separately** (the card shows
+them as chips and the Git pane greys out on `git` alone, so a grant may carry one without the other),
+and **pairing is per engine fingerprint** — the browser keys its device record on `companion:<engineFp>`,
+so two computers from one browser are two keys and revoking one leaves the other alone.
+
 ## 13. What is deliberately not in this plan
 
 A second public-agent implementation (Overblast's exists); any owner key or secret in a visitor's

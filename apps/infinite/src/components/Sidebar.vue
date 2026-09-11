@@ -15,6 +15,7 @@ import PixelFace from "./PixelFace.vue";
 import SessionsList from "./SessionsList.vue";
 import TablerIcon from "./TablerIcon.vue";
 import { profile } from "../state/agent.js";
+import { companionPaired } from "../state/companion.js";
 import { busy, startNewSession } from "../state/conversation.js";
 import { canInstall, nextTheme, promptInstall, applyTheme, themeChoice } from "../state/install.js";
 import { openWorkspace, powerPane, sidebarRail, toggleSidebarRail, workspaceOpen } from "../state/layout.js";
@@ -142,6 +143,14 @@ function workspace(id: (typeof WORKSPACE)[number]["id"]): void {
       >
         <TablerIcon :name="item.icon" :size="15" />
         <span v-if="!rail">{{ item.label }}</span>
+        <!-- §14: one dot when this computer's 00 is connected. It is on Connections because that is
+             where it is turned on and off, and it is a dot because the state is binary. -->
+        <span
+          v-if="item.id === 'settings' && companionPaired"
+          class="w-1.5 h-1.5 rounded-full bg-[var(--color-phosphor)] shrink-0"
+          :class="rail ? '' : 'ml-auto'"
+          title="00 on this computer is connected"
+        />
       </button>
 
       <div class="flex items-center gap-1 pt-1" :class="rail ? 'flex-col' : ''">

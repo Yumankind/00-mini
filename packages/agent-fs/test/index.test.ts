@@ -45,6 +45,8 @@ describe("@00/agent-fs public surface", () => {
       "gitClone",
       "gitPush",
       "gitPull",
+      "gitFetch",
+      "gitRemotes",
       "GitRemoteUnavailableError",
       // The live transfer of §7.1 — imported by the PWA and by the 00 web UI, so the barrel is its
       // contract too.

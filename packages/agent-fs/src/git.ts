@@ -7,13 +7,21 @@
 // time, and the fact that every call wants `fs` and `dir` repeated — into the vocabulary the tools
 // use.
 //
-// CLONE, PUSH AND PULL ARE ABSENT, and absent LOUDLY. Reaching a git host from a browser needs a
-// CORS proxy (github.com sends no `Access-Control-Allow-Origin`), which is a server, an origin and
-// a trust decision that HANDOFF-infinite-agent.md has not taken. A stub that returned an empty
-// result, or one that quietly used somebody's public proxy, would both be worse than the named
-// refusal below: a caller can catch `git_remote_not_available` and say the true sentence.
+// CLONE, PUSH AND PULL NEED A ROAD OUT OF THE TAB, and when there is none they are absent LOUDLY.
+// Reaching a git host from a browser needs a proxy (github.com sends no `Access-Control-Allow-Origin`),
+// which is a server, an origin and a trust decision. §14 of docs/HANDOFF-infinite-agent.md took it:
+// the proxy is the person's OWN 00 engine in companion mode, on this same computer, and the browser
+// hands it to this package as a `GitRemote` — isomorphic-git's web http client behind whatever
+// signing wrapper the host wants, plus the `corsProxy` base to send every smart-HTTP call through.
+// WITHOUT one the four remote operations still refuse BY NAME (`git_remote_not_available`), because a
+// stub that returned an empty result, or one that quietly used somebody's public proxy, is worse than
+// a sentence a caller can repeat.
+//
+// The remote is INJECTED and never constructed here: this package must run in node (where the http
+// client is a different module), in a Worker and in a tab, and it must not decide who signs.
 
 import * as isogit from "isomorphic-git";
+import type { AuthCallback, HttpClient } from "isomorphic-git";
 import { AgentFsError } from "./errors.js";
 import { gitFs, repoDir } from "./git-fs.js";
 import type { AgentFs } from "./types.js";
@@ -157,28 +165,148 @@ export async function gitDiffNames(fs: AgentFs, root: string, opts: { from?: str
   return (changed as string[]).sort();
 }
 
-// ── Remotes: named, typed, and not available here ────────────────────────────────────────────────
+// ── Remotes: injected, or named and refused ─────────────────────────────────────────────────────
+
+/**
+ * The road out of the tab, handed in by the host.
+ *
+ * `http` is isomorphic-git's own `HttpClient` shape (`request({url, method, headers, body})`), so the
+ * web client, the node client and a signing wrapper around either all fit. `corsProxy` is the base
+ * every smart-HTTP call is rewritten onto — isomorphic-git spells that `<corsProxy>/<host>/<path>` —
+ * and for §14 it is `<engine base>/api/companion/git`.
+ *
+ * `headers` ride on every request (a static credential, a device id); `onAuth` is git's own
+ * username/password callback, for a host that asks the person. Neither is filled in this package.
+ */
+export interface GitRemote {
+  http: HttpClient;
+  corsProxy: string;
+  headers?: Record<string, string>;
+  onAuth?: AuthCallback;
+}
 
 export class GitRemoteUnavailableError extends AgentFsError {
   constructor(operation: string) {
     super(
       "git_remote_not_available",
-      `git ${operation} needs a CORS proxy to reach a remote from a browser, and this runtime has none configured`,
+      `git ${operation} needs this computer's companion (Connections → This computer) — nothing was sent`,
     );
     this.name = "GitRemoteUnavailableError";
   }
 }
 
-export function gitClone(): Promise<never> {
-  return Promise.reject(new GitRemoteUnavailableError("clone"));
+/** What every remote call carries: the road, and git's own two names for "where". */
+export interface GitRemoteOptions {
+  /** Absent = the refusal above. It is never defaulted, and never guessed from the repository. */
+  remote?: GitRemote;
+  /** The REMOTE'S NAME (`origin`), not the road. */
+  remoteName?: string;
+  /** The branch to push or pull. Absent = whatever HEAD is on. */
+  branch?: string;
+  /** A URL, when the repository has no remote configured yet. */
+  url?: string;
 }
 
-export function gitPush(): Promise<never> {
-  return Promise.reject(new GitRemoteUnavailableError("push"));
+export interface GitCloneOptions extends GitRemoteOptions {
+  url: string;
+  /** The branch to clone. Absent = the remote's default. */
+  ref?: string;
+  /** A shallow clone's depth. Absent = the whole history of that one branch. */
+  depth?: number;
 }
 
-export function gitPull(): Promise<never> {
-  return Promise.reject(new GitRemoteUnavailableError("pull"));
+/**
+ * A `GitRemote` as isomorphic-git's four transport fields.
+ *
+ * `undefined` is passed THROUGH rather than conditionally omitted: every one of these is a
+ * destructuring default in isomorphic-git (`headers = {}`, `remote = 'origin'`), so an absent field
+ * and an absent key mean the same thing to it — and a spread per optional argument would be a branch
+ * per argument in a file whose interesting behaviour is none of them.
+ */
+function wire(remote: GitRemote) {
+  return { http: remote.http, corsProxy: remote.corsProxy, headers: remote.headers, onAuth: remote.onAuth };
+}
+
+function road(remote: GitRemote | undefined, operation: string): GitRemote {
+  if (!remote) throw new GitRemoteUnavailableError(operation);
+  return remote;
+}
+
+/**
+ * `git clone <url> <root>`. `root` is the agent-root-relative folder the working tree lands in.
+ *
+ * SINGLE BRANCH, ALWAYS. A browser tab pays for every object it downloads in OPFS quota and in wall
+ * clock on someone's home connection, and an agent that was asked to work on a repository wants the
+ * branch it was pointed at, not eleven years of release branches. `ref` chooses which one.
+ */
+export async function gitClone(fs: AgentFs, root: string, opts: GitCloneOptions): Promise<void> {
+  const remote = road(opts.remote, "clone");
+  await isogit.clone({
+    ...ctx(fs, root),
+    ...wire(remote),
+    url: opts.url,
+    ref: opts.ref,
+    depth: opts.depth,
+    remote: opts.remoteName,
+    singleBranch: true,
+  });
+}
+
+/** `git fetch`. Returns what isomorphic-git reports, which names the fetched head. */
+export async function gitFetch(fs: AgentFs, root: string, opts: GitRemoteOptions = {}): Promise<isogit.FetchResult> {
+  const remote = road(opts.remote, "fetch");
+  return isogit.fetch({
+    ...ctx(fs, root),
+    ...wire(remote),
+    url: opts.url,
+    remote: opts.remoteName,
+    ref: opts.branch,
+    singleBranch: true,
+  });
+}
+
+/** `git push`. The result carries `ok`/`error` per ref, which the caller turns into a sentence. */
+export async function gitPush(fs: AgentFs, root: string, opts: GitRemoteOptions = {}): Promise<isogit.PushResult> {
+  const remote = road(opts.remote, "push");
+  return isogit.push({
+    ...ctx(fs, root),
+    ...wire(remote),
+    url: opts.url,
+    remote: opts.remoteName,
+    ref: opts.branch,
+  });
+}
+
+export interface GitPullOptions extends GitRemoteOptions {
+  /** A merge writes a commit, and a commit needs a name. Defaults to `DEFAULT_AUTHOR`. */
+  author?: GitAuthor;
+}
+
+/**
+ * `git pull --ff-only`.
+ *
+ * FAST-FORWARD ONLY, ALWAYS, for the same reason `git checkout --force` is the one high-risk tier in
+ * this package: a merge that conflicts leaves a working tree full of markers, and the surface that
+ * would have to resolve them is a chat box. A pull that cannot fast-forward fails with git's own
+ * words, and the person is told to do it on a machine with a git in it.
+ */
+export async function gitPull(fs: AgentFs, root: string, opts: GitPullOptions = {}): Promise<void> {
+  const remote = road(opts.remote, "pull");
+  await isogit.pull({
+    ...ctx(fs, root),
+    ...wire(remote),
+    url: opts.url,
+    remote: opts.remoteName,
+    ref: opts.branch,
+    author: opts.author ?? DEFAULT_AUTHOR,
+    fastForward: true,
+    singleBranch: true,
+  });
+}
+
+/** The remotes a repository knows, as `git remote -v` would list them. */
+export async function gitRemotes(fs: AgentFs, root: string): Promise<{ remote: string; url: string }[]> {
+  return isogit.listRemotes(ctx(fs, root));
 }
 
 // ── Branches ────────────────────────────────────────────────────────────────────────────────────

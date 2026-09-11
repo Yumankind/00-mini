@@ -146,11 +146,27 @@ export function httpGetTool(opts: HttpGetOptions = {}): Tool {
       const url = parseUrl(args.url);
       if (!url) return { output: "url must be an absolute http:// or https:// URL.", isError: true };
 
-      const get = (target: string): Promise<Response> =>
-        doFetch(target, { method: "GET", redirect: "follow", credentials: "omit", signal: ctx.signal });
+      const get = (target: string, headers?: Record<string, string>): Promise<Response> =>
+        doFetch(target, {
+          method: "GET",
+          redirect: "follow",
+          credentials: "omit",
+          signal: ctx.signal,
+          ...(headers ? { headers } : {}),
+        });
 
-      /** The host's read-only proxy for this URL, when it has one and will take this URL. */
-      const proxied = (): string | null => opts.policy?.proxy?.(url) ?? null;
+      /**
+       * The host's read-only proxy for this URL, when it has one and will take this URL.
+       *
+       * A host may answer with a bare URL or with `{ url, headers }`, and may answer asynchronously
+       * — §14's companion signs each call with a key the page cannot read, which is a WebCrypto
+       * promise. Both are normalised here so the two call sites below stay one shape.
+       */
+      const proxied = async (): Promise<{ url: string; headers?: Record<string, string> } | null> => {
+        const target = await opts.policy?.proxy?.(url);
+        if (!target) return null;
+        return typeof target === "string" ? { url: target } : target;
+      };
 
       let response: Response;
       let viaProxy = false;
@@ -159,21 +175,21 @@ export function httpGetTool(opts: HttpGetOptions = {}): Tool {
         // An opaque answer is what a no-cors response looks like from the inside: status 0, no
         // headers, no body. It is a CORS refusal wearing a different hat, so it takes the same road.
         if (blockedByCors(response)) {
-          const proxy = proxied();
+          const proxy = await proxied();
           if (!proxy) {
             return { output: `${url.host} refused to be read from this page (CORS).`, isError: true };
           }
-          response = await get(proxy);
+          response = await get(proxy.url, proxy.headers);
           viaProxy = true;
         }
       } catch (err) {
         // A TypeError from `fetch` is the browser's word for "blocked or unreachable" — it never
         // says which, and a page cannot find out. So the proxy is tried once, and if THAT fails the
         // error the person reads is still the one about the host they asked for.
-        const proxy = err instanceof TypeError ? proxied() : null;
+        const proxy = err instanceof TypeError ? await proxied() : null;
         if (!proxy) return { output: `Could not reach ${url.host}: ${(err as Error).message}`, isError: true };
         try {
-          response = await get(proxy);
+          response = await get(proxy.url, proxy.headers);
           viaProxy = true;
         } catch (proxyErr) {
           return { output: `Could not reach ${url.host}: ${(proxyErr as Error).message}`, isError: true };

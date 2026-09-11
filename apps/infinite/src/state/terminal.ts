@@ -23,6 +23,7 @@ import type { AgentEvent } from "@00/agent-runtime";
 import { BuiltinShell } from "../power/shell.js";
 import { createPowerGit } from "../power/git-bridge.js";
 import { agent } from "./agent.js";
+import { companionGitRemote } from "./companion.js";
 import { refreshFiles } from "./files.js";
 import { ensurePortRuntime } from "./ports.js";
 
@@ -97,7 +98,12 @@ export function terminal(): BuiltinShell | null {
   if (!shell) {
     // The network policy travels: a script `node` runs reaches exactly the hosts the person put on
     // the agent's own list, and nothing else (src/power/node-runtime-worker.ts, `hostAllowed`).
-    shell = new BuiltinShell(owned.fs, { git: createPowerGit(owned.fs), network: owned.settings().network ?? null });
+    shell = new BuiltinShell(owned.fs, {
+      // The person's own terminal gets the same road out as the agent's `bash` (§14): `git push`
+      // works here exactly when the companion is paired, and says why when it is not.
+      git: createPowerGit(owned.fs, "workspace", { remote: companionGitRemote }),
+      network: owned.settings().network ?? null,
+    });
     cwdRef.value = shell.cwd;
     // `serve` and `node`'s `listen` register virtual ports the moment they are typed, and the service
     // worker must already have somebody to ask. One idempotent call, here, is the whole wiring.

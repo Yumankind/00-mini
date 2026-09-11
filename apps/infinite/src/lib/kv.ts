@@ -79,3 +79,6 @@ export const LITERT_CATALOG_KEY = "litertCatalog";
 export const REGISTRY_REF_KEY = "agentRef";
 /** What a site's registration turned that ref into: the app id, its status, its origin (§5.3–5.4). */
 export const REGISTRY_APP_KEY = "registryApp";
+/** §14's companion grant: which engine on this computer, at which base, and who this browser is to
+ *  it. Three strings and no secret — the key itself is a non-extractable CryptoKey in another store. */
+export const COMPANION_KEY = "companion";

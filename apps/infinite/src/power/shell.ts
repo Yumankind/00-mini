@@ -68,6 +68,15 @@ export interface ShellGit {
   diff?(dir: string, path?: string, opts?: { staged?: boolean }): Promise<string>;
   branches?(dir: string): Promise<{ current: string | null; branches: string[] }>;
   checkout?(dir: string, ref: string, opts?: { create?: boolean }): Promise<void>;
+  /**
+   * The four that leave this computer (§14). Optional for the same reason the three above are: a
+   * build whose backend has no road out still has a `git`, and every one of them answers with the
+   * package's own sentence rather than being missing. They return the line to print.
+   */
+  clone?(url: string, dir: string): Promise<string>;
+  push?(dir: string, remote?: string, branch?: string): Promise<string>;
+  pull?(dir: string, remote?: string, branch?: string): Promise<string>;
+  fetch?(dir: string, remote?: string, branch?: string): Promise<string>;
 }
 
 export interface BuiltinShellOptions {
@@ -122,10 +131,29 @@ class Out {
   }
 }
 
+/**
+ * Where `git clone <url>` puts the working tree when the command names no folder.
+ *
+ * git's own rule: the last path segment of the URL, minus `.git`. Written here rather than taken
+ * from the package because the shell is the only place a MISSING argument has to be invented — the
+ * ops object always receives a folder.
+ */
+export function defaultCloneDir(url: string): string {
+  const trimmed = url.replace(/\/+$/, "");
+  const last = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  return last.replace(/\.git$/, "") || "repo";
+}
+
 /** The line every "not in a browser" refusal ends with, so the model repeats one sentence, not five. */
 export const NO_NODE_LINE = "this browser has no Node; run it on your Mac";
-/** Reaching a git host from a page needs a proxy nobody has chosen (agent-fs's GitRemoteUnavailableError). */
-export const GIT_REMOTE_LINE = "git clone, push and pull need your Mac or a CORS proxy — nothing was sent";
+/**
+ * Reaching a git host from a page needs a proxy, and §14 chose one: the 00 engine on this same
+ * computer, in companion mode. This is what `git clone/push/pull/fetch` says while it is not there —
+ * the same sentence @00/agent-fs's `GitRemoteUnavailableError` carries, so the shell, the tool and
+ * the panel all say one thing.
+ */
+export const GIT_REMOTE_LINE =
+  "connect this computer (Connections → This computer) — nothing was sent";
 
 /**
  * The ones that stay refused. `node`, `npm` and `npx` LEFT this set when the runner arrived
@@ -1137,9 +1165,7 @@ export class BuiltinShell implements Shell {
    */
   private async gitCommand({ argv }: CommandContext): Promise<ExecResult> {
     const sub = argv[1] ?? "";
-    if (sub === "clone" || sub === "push" || sub === "pull" || sub === "fetch" || sub === "remote") {
-      return bad(`git ${sub}: ${GIT_REMOTE_LINE}`, EXIT_NOT_FOUND);
-    }
+    if (sub === "remote") return bad(`git ${sub}: ${GIT_REMOTE_LINE}`, EXIT_NOT_FOUND);
     const git = this.git;
     if (!git) return bad("git: no git backend is wired into this shell", EXIT_NOT_FOUND);
     const dir = this.rel ? `${this.root}/${this.rel}` : this.root;
@@ -1149,7 +1175,28 @@ export class BuiltinShell implements Shell {
       switch (sub) {
         case "":
         case "--help":
-          return ok("usage: git <init|status|log|diff|add|commit|branch|checkout>\n");
+          return ok("usage: git <init|status|log|diff|add|commit|branch|checkout|clone|fetch|pull|push>\n");
+        // ── The four that leave this computer (§14) ────────────────────────────────────────────
+        //
+        // They RUN when the companion is paired and refuse with the same sentence when it is not.
+        // The refusal is the backend's, not the shell's: @00/agent-fs throws
+        // `git_remote_not_available` with the road in it, and repeating that here in different words
+        // is how two surfaces end up telling a person two different things.
+        case "clone": {
+          const url = args.find((a) => !a.startsWith("-"));
+          if (!url) return bad("git clone: which repository?");
+          if (!git.clone) return bad(`git clone: ${GIT_REMOTE_LINE}`, EXIT_NOT_FOUND);
+          const into = args.filter((a) => !a.startsWith("-"))[1] ?? defaultCloneDir(url);
+          return ok(`${await git.clone(url, this.resolve(into))}\n`);
+        }
+        case "fetch":
+        case "pull":
+        case "push": {
+          const call = git[sub];
+          if (!call) return bad(`git ${sub}: ${GIT_REMOTE_LINE}`, EXIT_NOT_FOUND);
+          const rest = args.filter((a) => !a.startsWith("-"));
+          return ok(`${await call(dir, rest[0], rest[1])}\n`);
+        }
         case "init":
           await git.init(dir);
           return ok(`Initialised a git repository in ${this.cwd}\n`);

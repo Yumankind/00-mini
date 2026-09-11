@@ -197,6 +197,58 @@ describe("the read-only proxy fallback", () => {
     expect(declined.output).toBe("Could not reach example.com: Failed to fetch");
   });
 
+  it("takes an ASYNC proxy that answers `{ url, headers }`, and sends those headers", async () => {
+    // §14's companion: the proxy is on the person's own computer and every call to it is signed,
+    // which is a per-request WebCrypto promise. Contract revision 2026-09-11 (f).
+    const seen: { url: string; headers: Record<string, string> }[] = [];
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(input), headers: (init?.headers as Record<string, string>) ?? {} });
+      if (seen.length === 1) throw new TypeError("Failed to fetch");
+      return new Response("through the companion", { status: 200, headers: { "content-type": "text/plain" } });
+    }) as typeof globalThis.fetch;
+
+    const signing = async (u: URL) => ({
+      url: `http://127.0.0.1:4600/api/companion/fetch?url=${encodeURIComponent(u.href)}`,
+      headers: { "x-00-dev": "abc123", "x-00-sig": "sig" },
+    });
+
+    const result = await httpGetTool({ policy: { allow: ["*"], proxy: signing }, fetch: fetchFn }).run(
+      { url: "http://192.168.1.9/status" },
+      ctxFor(),
+    );
+    expect(seen[0].headers).toEqual({});
+    expect(seen[1].url).toBe("http://127.0.0.1:4600/api/companion/fetch?url=http%3A%2F%2F192.168.1.9%2Fstatus");
+    expect(seen[1].headers).toEqual({ "x-00-dev": "abc123", "x-00-sig": "sig" });
+    expect(result.output).toContain("through the companion");
+  });
+
+  it("an async proxy that declines this URL leaves the original failure as the answer", async () => {
+    const fetchFn = (async () => {
+      throw new TypeError("Failed to fetch");
+    }) as typeof globalThis.fetch;
+    const result = await httpGetTool({
+      policy: { allow: ["*"], proxy: async () => null },
+      fetch: fetchFn,
+    }).run({ url: "https://example.com/x" }, ctxFor());
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain("Could not reach example.com");
+  });
+
+  it("sends the proxy's headers on the opaque-answer road too, never on the direct call", async () => {
+    const seen: { url: string; headers: Record<string, string> }[] = [];
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(input), headers: (init?.headers as Record<string, string>) ?? {} });
+      if (seen.length === 1) return Response.error();
+      return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
+    }) as typeof globalThis.fetch;
+    await httpGetTool({
+      policy: { allow: ["*"], proxy: () => ({ url: "https://site.test/~fetch", headers: { "x-00-dev": "d" } }) },
+      fetch: fetchFn,
+    }).run({ url: "https://example.com/x" }, ctxFor());
+    expect(seen[0].headers).toEqual({});
+    expect(seen[1]).toEqual({ url: "https://site.test/~fetch", headers: { "x-00-dev": "d" } });
+  });
+
   it("does not retry an ordinary Error — only the browser's blocked-read TypeError", async () => {
     const calls: string[] = [];
     const fetchFn = (async (input: RequestInfo | URL) => {

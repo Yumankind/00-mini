@@ -17,10 +17,16 @@ import type { GitStatusEntry } from "@00/agent-fs";
 import { createPowerGit, type PowerGit, type RepoCommit, type RepoStatus } from "../power/git-bridge.js";
 import type { TreeNode } from "../lib/files-tree.js";
 import { agent } from "./agent.js";
+import { companionGitBlocked, companionGitRemote } from "./companion.js";
 import { fileTree, refreshFiles } from "./files.js";
 
-/** The plan's §4.2 line, said in the UI rather than only in a package's error. */
-export const REMOTE_LINE = "Clone, push and pull need your Mac or a CORS proxy — nothing leaves this browser.";
+/**
+ * The plan's §4.2 line, said in the UI rather than only in a package's error — and, since §14, the
+ * line for the case where the road EXISTS and has not been connected. `companionGitBlocked()` says
+ * which of the three reasons applies right now; this is the one for "nothing has been set up".
+ */
+export const REMOTE_LINE =
+  "Clone, push and pull go through 00 on this computer — connect it in Connections → This computer.";
 
 /** Where a repository is expected to live. */
 export const PROJECTS_DIR = "workspace/projects";
@@ -103,9 +109,20 @@ export const gitCommitProblem = computed(() => commitProblem(state.value.message
 function ops(): PowerGit | null {
   const owned = agent.value;
   if (!owned) return null;
-  if (!opsRef.value) opsRef.value = createPowerGit(owned.fs);
+  // The road out is a GETTER, not a value: this object outlives any one state of the companion.
+  if (!opsRef.value) opsRef.value = createPowerGit(owned.fs, "workspace", { remote: companionGitRemote });
   return opsRef.value;
 }
+
+/**
+ * Why the remote buttons are off, or `null` when they are on.
+ *
+ * A computed over the companion's status rather than a check inside each handler: a greyed button
+ * teaches nothing, and this is the sentence printed under them (§14.4 — "every companion feature
+ * greys out when it is gone", with the reason).
+ */
+export const gitRemoteBlocked = computed(() => companionGitBlocked());
+export const gitRemoteReady = computed(() => gitRemoteBlocked.value === null);
 
 async function guard(fn: (git: PowerGit, repo: string) => Promise<void>): Promise<void> {
   const git = ops();
@@ -212,7 +229,61 @@ export async function switchBranch(ref: string, create = false): Promise<void> {
   await refreshFiles();
 }
 
+// ── The three that leave this computer ───────────────────────────────────────────────────────────
+//
+// Each one goes through `guard`, so a refusal from the package (the companion went away between the
+// button being drawn and being pressed) lands in `error` and is read on screen rather than thrown
+// into the console. The result line is kept too: "origin refused the push — non-fast-forward" is the
+// whole of what a person needs, and it is git's own sentence.
+
+const remoteSaid = ref<string | null>(null);
+export const gitRemoteSaid = computed(() => remoteSaid.value);
+
+export async function pushRepo(): Promise<void> {
+  await guard(async (git, repo) => {
+    if (!git.push) throw new Error(REMOTE_LINE);
+    remoteSaid.value = await git.push(repo);
+  });
+  await refreshGit();
+}
+
+export async function pullRepo(): Promise<void> {
+  await guard(async (git, repo) => {
+    if (!git.pull) throw new Error(REMOTE_LINE);
+    remoteSaid.value = await git.pull(repo);
+  });
+  await refreshGit();
+  await refreshFiles();
+}
+
+/** `git clone <url>` into `workspace/projects/<name>` — the one folder a project may live in. */
+export async function cloneRepo(url: string): Promise<void> {
+  const git = ops();
+  const trimmed = url.trim();
+  if (!git || !trimmed) return;
+  state.value = { ...state.value, busy: true, error: null };
+  try {
+    if (!git.clone) throw new Error(REMOTE_LINE);
+    const dir = `${PROJECTS_DIR}/${cloneFolder(trimmed)}`;
+    remoteSaid.value = await git.clone(trimmed, dir);
+    await refreshFiles();
+    await chooseRepo(dir);
+  } catch (err) {
+    state.value = { ...state.value, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    state.value = { ...state.value, busy: false };
+  }
+}
+
+/** git's own rule for the folder a clone lands in: the last segment, minus `.git`. */
+export function cloneFolder(url: string): string {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  const last = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  return last.replace(/\.git$/, "") || "repo";
+}
+
 export function resetGit(): void {
+  remoteSaid.value = null;
   state.value = emptyGitState();
   opsRef.value = null;
 }

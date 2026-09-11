@@ -12,6 +12,7 @@ import {
   gitClone,
   gitCommit,
   gitDiffNames,
+  gitFetch,
   gitInit,
   gitLog,
   gitPull,
@@ -109,15 +110,21 @@ describe("git over an AgentFs", () => {
     expect(await gitLog(fs, "workspace/projects/two")).toEqual([]);
   });
 
-  it("refuses clone, push and pull by name", async () => {
+  it("refuses clone, fetch, push and pull by name when no remote was handed in", async () => {
+    const fs = new MemoryFs();
     for (const [op, call] of [
-      ["clone", gitClone],
-      ["push", gitPush],
-      ["pull", gitPull],
+      ["clone", () => gitClone(fs, REPO, { url: "https://github.com/o/r.git" })],
+      ["fetch", () => gitFetch(fs, REPO)],
+      ["push", () => gitPush(fs, REPO)],
+      ["pull", () => gitPull(fs, REPO)],
     ] as const) {
       await expect(call()).rejects.toBeInstanceOf(GitRemoteUnavailableError);
       await expect(call()).rejects.toMatchObject({ code: "git_remote_not_available" });
-      await expect(call()).rejects.toThrow(new RegExp(`git ${op} needs a CORS proxy`));
+      // The sentence names the road that WOULD work and says nothing left this browser — §14's
+      // companion, not the CORS proxy nobody ever chose.
+      await expect(call()).rejects.toThrow(
+        new RegExp(`git ${op} needs this computer's companion \\(Connections → This computer\\) — nothing was sent`),
+      );
     }
   });
 });

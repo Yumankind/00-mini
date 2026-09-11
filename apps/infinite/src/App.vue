@@ -52,6 +52,7 @@ import {
   workspaceOpen,
 } from "./state/layout.js";
 import { loadMoveReceipt, movedAway, receiveRequested } from "./state/move.js";
+import { startCompanionWatch } from "./state/companion.js";
 import { startOffline } from "./state/offline.js";
 import { claimRequestFromQuery, type ClaimRequest } from "./state/registry.js";
 import { needsUnlock, refreshVault, startVaultClock, touchVault } from "./state/vault.js";
@@ -143,7 +144,10 @@ onMounted(async () => {
     for (const key of ["claim", "nonce", "origin"]) clean.searchParams.delete(key);
     window.history.replaceState(window.history.state, "", clean);
   }
-  teardown.push(startOffline(), startInstallWatch(), startVaultClock(), startLayout());
+  // §14's companion is watched for the life of the app, not for the life of the card: the Git pane's
+  // remote buttons, the terminal's `git push` and the sidebar dot all read the same status, and a
+  // watch that only ran while Connections was open would leave every one of them on a stale answer.
+  teardown.push(startOffline(), startInstallWatch(), startVaultClock(), startLayout(), startCompanionWatch());
   // Before the agent, because a moved-away agent must never flash its shell on the way to its receipt.
   await loadMoveReceipt();
   // A scanned QR (`/?receive#code=…`, state/move.ts) lands on the receive screen with the code in the

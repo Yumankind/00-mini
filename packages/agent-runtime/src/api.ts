@@ -190,9 +190,19 @@ export interface NetworkPolicy {
    * asked about, the call is still a GET with no credentials, and the proxy is dialled only AFTER a
    * direct fetch has failed — it is a second road to the same URL, never a road to a URL the person
    * did not approve.
+   *
+   * IT MAY ANSWER WITH HEADERS, AND IT MAY BE ASYNC (additive, contract revision 2026-09-11 (f)).
+   * §14's companion is a proxy on the person's own computer that authenticates every call with a
+   * per-device signature, and a signature is minted per request (it binds the method, the path and
+   * the body) and minted with WebCrypto, which is asynchronous. A host that returns a bare string
+   * behaves exactly as before; the headers are sent on the proxy request ONLY, never on the direct
+   * one, because they are a credential for the proxy and not for the site.
    */
-  proxy?: (url: URL) => string | null;
+  proxy?: (url: URL) => ProxyTarget | null | Promise<ProxyTarget | null>;
 }
+
+/** Where a blocked fetch is retried, and what it must carry to be let in there. */
+export type ProxyTarget = string | { url: string; headers?: Record<string, string> };
 
 export interface AgentRuntimeOptions {
   fs: AgentFs;
