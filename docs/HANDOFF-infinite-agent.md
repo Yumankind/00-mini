@@ -138,6 +138,13 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
     load for the desktop rows; a fresh agent's prompt plus tool block went from 4060 to 1718 tokens;
     verified live on the dev link, which now streams a truthful answer from Gemma 4 E2B under the
     isolation headers), and the browser pane blocks service-worker registration (the app's own too).
+19. **The shell runs Node programs with their npm packages** (2026-09-11): the runner is a vite
+    module Worker serving `@00/agent-node`'s process model; `npm install`, `npm ls`, `npm run` with
+    `.bin` tools on the shell's PATH, `npx <local bin>`, live stdout, and `http.createServer` on a
+    virtual port. Proven live under isolation: `npm install is-number@7` from the real registry,
+    `require` through the shared-memory channel, a `.bin` shim running, a server answering `hi`
+    through the page bridge. Refuses by name: other package clients, bundlers and compilers,
+    `npx` of a package not installed, hosts off the allow-list, nested processes, sockets.
 18. **`@00/agent-node`** (2026-09-11): the "own WebContainers" layers as a package — 45 Node builtins
     over the agent's filesystem, a CommonJS/ESM loader with node_modules resolution, an npm client
     proven live against the public registry (CORS on metadata and tarballs), a Worker-per-process

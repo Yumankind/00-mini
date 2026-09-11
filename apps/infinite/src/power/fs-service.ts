@@ -12,9 +12,14 @@
  * WHY IT TOUCHES OPFS DIRECTLY AND NOT THROUGH `AgentFs`. `AgentFs` lives on the page and cannot
  * cross a thread; a handle can. What is here is the same translation `packages/agent-fs/src/opfs-fs.ts`
  * makes — a path becomes a chain of `getDirectoryHandle` calls — and it obeys that file's rule:
- * HOLD NO LOGIC WORTH TESTING. The operations are named and shaped exactly like the page's async RPC
- * (`answerFs` in js-runner.ts) so a script cannot tell which road its call took, and the error
- * strings are the same sentences.
+ * HOLD NO LOGIC WORTH TESTING. The operations are named and shaped exactly like `NodeFsBackend`'s
+ * (`packages/agent-node/src/fs/backend.ts`, the far end of the async road in js-runner.ts) — dirents
+ * from `readdir`, `{ size, mtimeMs, kind }` from `stat` — so a script cannot tell which road its call
+ * took, and the error strings are the same sentences.
+ *
+ * THE PATHS ARRIVE ABSOLUTE. `NodeFsBackend.opSync` passes a script's own spelling straight through,
+ * so the runtime Worker resolves it against the process cwd before it reaches this thread
+ * (`ResolvingSyncClient` in src/power/node-runtime-worker.ts). Everything here is workspace-absolute.
  *
  * THE SANDBOX IS THE HANDLE. This Worker is opened at `agents/<id>/workspace` and every path is
  * resolved by popping `..` with a floor at that folder, so there is no path a script can name that
@@ -317,28 +322,68 @@ export function fsServiceMain(scope: {
         const dir = await dirAt(segments, true);
         return dir ? { ok: true, value: null } : { ok: false, error: `EACCES: cannot create '${shown}'` };
       }
+      // The DIRENT shape, not a list of names: `@00/agent-node`'s `fs.readdir` answers
+      // `{ name, kind }` in all three of its faces (packages/agent-node/src/modules/fs.ts), and this
+      // service is the far end of the synchronous one — two spellings of a directory entry in one
+      // product is one spelling and one bug.
       case "readdir": {
         const dir = await dirAt(segments, false);
         if (!dir) return enoent("scandir", shown);
-        const names: string[] = [];
-        for await (const child of dir.values()) names.push(child.name);
-        names.sort();
-        return { ok: true, value: names };
+        const entries: { name: string; kind: "file" | "dir" }[] = [];
+        for await (const child of dir.values()) {
+          entries.push({ name: child.name, kind: child.kind === "directory" ? "dir" : "file" });
+        }
+        entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        return { ok: true, value: entries };
       }
       case "stat":
+      case "lstat":
       case "exists": {
         const handle = await fileAt(segments, false);
         if (handle) {
           const file = await handle.getFile();
           if (request.op === "exists") return { ok: true, value: true };
-          return { ok: true, value: { size: file.size, mtimeMs: file.lastModified, file: true, directory: false } };
+          return { ok: true, value: { size: file.size, mtimeMs: file.lastModified, kind: "file" } };
         }
         const dir = await dirAt(segments, false);
         if (request.op === "exists") return { ok: true, value: Boolean(dir) };
         if (!dir) return enoent("stat", shown);
-        return { ok: true, value: { size: 0, mtimeMs: 0, file: false, directory: true } };
+        return { ok: true, value: { size: 0, mtimeMs: 0, kind: "dir" } };
+      }
+      case "access": {
+        const handle = (await fileAt(segments, false)) ?? (await dirAt(segments, false));
+        return handle ? { ok: true, value: null } : enoent("access", shown);
+      }
+      case "realpath":
+        return { ok: true, value: shown };
+      // Permissions and timestamps: accepted and ignored, exactly as `NodeFsBackend` accepts them —
+      // a tarball extraction sets a mode on every file it writes and a refusal here would fail an
+      // install over something this store cannot hold.
+      case "chmod":
+      case "chown":
+      case "utimes":
+      case "lutimes":
+        return { ok: true, value: null };
+      case "copyFile": {
+        const source = await fileAt(segments, false);
+        if (!source) return enoent("copyfile", shown);
+        const target = await fileAt(parts(String(request.args.to ?? "")), true);
+        if (!target) return { ok: false, error: `EACCES: cannot write '${String(request.args.to ?? "")}'` };
+        await writeBytes(target, await readBytes(source), false);
+        return { ok: true, value: null };
+      }
+      case "truncate": {
+        const handle = await fileAt(segments, false);
+        if (!handle) return enoent("truncate", shown);
+        const want = Number(request.args.len ?? 0);
+        const current = await readBytes(handle);
+        const out = new Uint8Array(want);
+        out.set(current.subarray(0, Math.min(want, current.byteLength)));
+        await writeBytes(handle, out, false);
+        return { ok: true, value: null };
       }
       case "unlink":
+      case "rmdir":
       case "rm": {
         if (!last) return { ok: false, error: `EPERM: the workspace itself cannot be removed` };
         const parent = await dirAt(segments.slice(0, -1), false);

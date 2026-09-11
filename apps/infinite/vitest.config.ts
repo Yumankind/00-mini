@@ -14,10 +14,9 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts", "embed/src/**/*.ts"],
       reporter: ["text-summary"],
-      // The ratchet of docs/testing.md: measured 2026-09-10 late (72.2 / 81.9 / 76.3 / 72.2) minus
-      // slack. Low on statements because the DOM-bound modules (panel, bridges, OPFS glue) are counted
+      // The ratchet of docs/testing.md: measured 2026-09-11 (75.3 / 82.0 / 79.1 / 75.3) minus slack. Low on statements because the DOM-bound modules (panel, bridges, OPFS glue) are counted
       // and cannot run in node; raise as pure modules split out of them.
-      thresholds: { statements: 68, branches: 79, functions: 72, lines: 68 },
+      thresholds: { statements: 72, branches: 79, functions: 75, lines: 72 },
     },
   },
 });

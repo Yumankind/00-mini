@@ -331,15 +331,23 @@ describe("the small ones", () => {
 });
 
 describe("refusals, by name", () => {
-  it("the toolchains say where they can run — and the package half says it twice", async () => {
-    // `node`, `npm run` and `npx serve` LEFT this list when the runner arrived
-    // (src/power/js-runner.ts, test/shell-scripts.test.ts); installing never will.
-    for (const command of ["npm install", "npm ci", "pnpm build", "npx vite", "tsc", "bun run x"]) {
+  it("the toolchains say where they can run, and npm says which client this tab has", async () => {
+    // `node`, `npm run` and `npx serve` LEFT this list when the runner arrived, and `npm install`
+    // left it when @00/agent-node's npm client did (test/shell-scripts.test.ts). A bundler never will.
+    for (const command of ["npx vite", "tsc", "vite build"]) {
       const r = await run(command);
       expect(r.code, command).toBe(127);
       expect(r.err, command).toContain(NO_NODE_LINE);
     }
-    expect((await run("npm install")).err).toContain("packages need your Mac");
+    for (const command of ["pnpm build", "bun run x", "yarn"]) {
+      const r = await run(command);
+      expect(r.code, command).toBe(127);
+      expect(r.err, command).toContain("npm is the one package client in this tab");
+    }
+    // `npm install` now RUNS — and in a folder with no package.json it says exactly that.
+    const installed = await run("npm install is-number");
+    expect(installed.code).toBe(1);
+    expect(installed.err).toContain("no package.json");
   });
 
   it("python, curl and ssh get their own sentence, not `command not found`", async () => {

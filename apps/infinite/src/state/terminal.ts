@@ -7,6 +7,12 @@
  * cursor under the person's hands. Same files, same guard, two cwds: which is exactly what two
  * terminals on a Mac are.
  *
+ * OUTPUT ARRIVES WHILE IT RUNS. `node` and `npm install` have a real process behind them now
+ * (src/power/js-runner.ts over `@00/agent-node`), so the shell streams their chunks to an
+ * `OutputSink` and this store turns them into rows line by line — a long install prints as it
+ * fetches instead of appearing all at once at the end. The agent's `bash` passes no sink and still
+ * gets the two strings a tool result is.
+ *
  * THE AGENT'S OWN COMMANDS APPEAR HERE. `command_started` / `command_completed` are on the contract's
  * event bus, so when the agent runs something the person sees the line in the same scrollback, marked
  * as the agent's. A terminal that showed only what YOU typed would be a worse answer to "what did it
@@ -89,7 +95,9 @@ export function terminal(): BuiltinShell | null {
   const owned = agent.value;
   if (!owned) return null;
   if (!shell) {
-    shell = new BuiltinShell(owned.fs, { git: createPowerGit(owned.fs) });
+    // The network policy travels: a script `node` runs reaches exactly the hosts the person put on
+    // the agent's own list, and nothing else (src/power/node-runtime-worker.ts, `hostAllowed`).
+    shell = new BuiltinShell(owned.fs, { git: createPowerGit(owned.fs), network: owned.settings().network ?? null });
     cwdRef.value = shell.cwd;
     // `serve` and `node`'s `listen` register virtual ports the moment they are typed, and the service
     // worker must already have somebody to ask. One idempotent call, here, is the whole wiring.
@@ -141,8 +149,31 @@ export async function runCommand(command: string): Promise<void> {
 
   busyRef.value = true;
   controller = new AbortController();
+  // LIVE OUTPUT, BY LINE. `node` and `npm install` hand over chunks as they are written
+  // (src/power/shell.ts, `OutputSink`), and a chunk is not a line — a script can write half of one
+  // and finish it a second later. So the partial tail is held per stream and only whole lines become
+  // rows; whatever is left when the command ends is flushed as the last one. Text that arrives this
+  // way is NOT in the result, so nothing is printed twice.
+  const partial: Record<"stdout" | "stderr", string> = { stdout: "", stderr: "" };
+  const stream = (kind: "stdout" | "stderr", text: string): void => {
+    const all = partial[kind] + text;
+    const rows = all.split("\n");
+    partial[kind] = rows.pop() ?? "";
+    for (const row of rows) push({ kind, text: row });
+  };
+  const flush = (): void => {
+    for (const kind of ["stdout", "stderr"] as const) {
+      if (partial[kind]) push({ kind, text: partial[kind] });
+      partial[kind] = "";
+    }
+  };
   try {
-    const result = await sh.exec(text, { cwd: "workspace", signal: controller.signal });
+    const result = await sh.exec(text, {
+      cwd: "workspace",
+      signal: controller.signal,
+      onOutput: (chunk) => stream(chunk.stream, chunk.text),
+    });
+    flush();
     if (result.stdout) push({ kind: "stdout", text: result.stdout.replace(/\n$/, "") });
     if (result.stderr) push({ kind: "stderr", text: result.stderr.replace(/\n$/, "") });
     if (result.exitCode !== 0) push({ kind: "exit", code: result.exitCode });
@@ -152,6 +183,7 @@ export async function runCommand(command: string): Promise<void> {
     // same workspace through the runner's RPC (src/power/js-runner.ts).
     if (/\b(rm|mv|cp|mkdir|touch|tee|git|node|npm|npx)\b|>/.test(text)) await refreshFiles();
   } catch (err) {
+    flush();
     push({ kind: "stderr", text: err instanceof Error ? err.message : String(err) });
   } finally {
     busyRef.value = false;

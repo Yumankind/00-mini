@@ -224,6 +224,14 @@ const ISOLATION_HEADERS = {
 
 export default defineConfig({
   plugins: [vue(), tailwindcss(), serviceWorkerPrecache(), mediapipeWasm()],
+  /**
+   * THE NODE RUNTIME IS A MODULE WORKER. `src/power/js-runner.ts` starts one process per `node`
+   * command with `new Worker(new URL("./node-runtime-worker.ts", import.meta.url), { type: "module" })`,
+   * which vite turns into its own chunk. `format: "es"` because that Worker is declared `type:
+   * "module"` and because the default (`iife`) cannot code-split — `@00/agent-node` and the packages
+   * it stands on would otherwise be inlined into one file per worker entry.
+   */
+  worker: { format: "es" },
   // The owned agent lives on ONE product origin (§3.1: OPFS and the push subscription are per origin),
   // so the app is always served from the root and every path here is absolute.
   base: "/",

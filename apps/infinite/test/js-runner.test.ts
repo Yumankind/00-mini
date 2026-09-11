@@ -1,11 +1,12 @@
 /**
- * `node` in a browser tab — the runner, its prelude, and the RPC between them.
+ * `node` in a browser tab — the host half, the Worker half, and the four messages between them.
  *
- * WHAT MAKES THESE REAL. `createEvalWorker` runs the SHIPPED prelude source (the same string a Blob
- * URL Worker would be built from) in this process, so a script here goes through the real
- * `require`, the real `process`, the real fs RPC and the real `http.createServer`. Only the thread
- * is missing. The one thing node cannot check is that a browser accepts the Blob and the Worker,
- * which is a manual check in a real browser (see the commit and the header of js-runner.ts).
+ * WHAT MAKES THESE REAL. `createInlineNodeWorker` runs the SHIPPED worker module
+ * (`src/power/node-runtime-worker.ts`, the same file vite builds into a module Worker) in this
+ * process on an asynchronous channel, so a script here goes through the real `@00/agent-node` loader,
+ * the real `process`, the real fs RPC and the real `http.createServer`. Only the thread is missing.
+ * What node cannot check is that a browser accepts the module Worker and the SharedArrayBuffer, which
+ * is the live check in the commit message and in the header of js-runner.ts.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryFs } from "@00/agent-fs";
@@ -14,12 +15,11 @@ import {
   EXIT_TIMEOUT,
   agentPath,
   answerFs,
-  createEvalWorker,
   runScript,
   snapshotFolder,
   virtualPath,
-  workerSource,
 } from "../src/power/js-runner.js";
+import { createInlineNodeWorker } from "../src/power/node-runtime-worker.js";
 import { handleVirtualRequest, listPorts, resetPorts, unregister } from "../src/power/virtual-ports.js";
 
 let fs: MemoryFs;
@@ -52,7 +52,8 @@ async function run(code: string, opts: Parameters<typeof runScript>[1] = {}): Pr
   const result = await runScript(fs, {
     code,
     cwd: "/projects/site",
-    createWorker: createEvalWorker,
+    createWorker: () => createInlineNodeWorker(),
+    syncFs: null,
     onStdout: (t) => (out += t),
     onStderr: (t) => (err += t),
     ...opts,
@@ -81,6 +82,20 @@ describe("a script runs", () => {
     expect(r.err).toBe("errbad\n");
   });
 
+  it("streams stdout as it is written, not once at the end", async () => {
+    // The old runner could only hand back two strings when the script had ended; this is the
+    // difference, and it is the reason a long build no longer looks frozen.
+    const chunks: string[] = [];
+    await runScript(fs, {
+      code: "console.log('one'); setTimeout(() => console.log('two'), 5); setTimeout(() => console.log('three'), 10);",
+      cwd: "/projects/site",
+      createWorker: () => createInlineNodeWorker(),
+      syncFs: null,
+      onStdout: (t) => chunks.push(t),
+    });
+    expect(chunks).toEqual(["one\n", "two\n", "three\n"]);
+  });
+
   it("honours process.exit, code and all", async () => {
     const r = await run("console.log('before'); process.exit(3); console.log('never')");
     expect(r.out).toBe("before\n");
@@ -99,7 +114,8 @@ describe("a script runs", () => {
     const result = await runScript(fs, {
       entry: "app.js",
       cwd: "/projects/site",
-      createWorker: createEvalWorker,
+      createWorker: () => createInlineNodeWorker(),
+      syncFs: null,
       onStdout: (t) => (out += t),
     });
     expect(out.trim()).toBe("/projects/site/app.js /projects/site");
@@ -108,7 +124,7 @@ describe("a script runs", () => {
 
   it("says which file it could not find", async () => {
     await expect(
-      runScript(fs, { entry: "nope.js", cwd: "/projects/site", createWorker: createEvalWorker }),
+      runScript(fs, { entry: "nope.js", cwd: "/projects/site", createWorker: () => createInlineNodeWorker(), syncFs: null }),
     ).rejects.toThrow(/cannot find module 'nope.js'/);
   });
 
@@ -133,12 +149,25 @@ describe("require", () => {
     expect(r.out).toBe("2 true\n");
   });
 
-  it("refuses a package by name, and says why there is none", async () => {
+  it("names the npm install that would fix a missing package", async () => {
     const r = await run("require('express')");
     expect(r.err).toContain("Cannot find module 'express'");
-    expect(r.err).toContain("no node_modules in a browser tab");
-    expect(r.err).toContain("packages need your Mac");
+    expect(r.err).toContain("node_modules");
+    expect(r.err).toContain("npm install express");
     expect(r.code).toBe(1);
+  });
+
+  it("loads a package out of node_modules, which is the whole point of the npm client", async () => {
+    await fs.writeFile(
+      "workspace/projects/site/node_modules/left-pad/package.json",
+      JSON.stringify({ name: "left-pad", version: "1.0.0", main: "index.js" }),
+    );
+    await fs.writeFile(
+      "workspace/projects/site/node_modules/left-pad/index.js",
+      "module.exports = (s, n) => String(s).padStart(n, '0');\n",
+    );
+    const r = await run("console.log(require('left-pad')('7', 3))");
+    expect(r.out).toBe("007\n");
   });
 
   it("names a relative file that is not there", async () => {
@@ -152,7 +181,37 @@ describe("require", () => {
         "const e = new EventEmitter(); e.on('x', (v) => console.log('got', v)); e.emit('x', 1);" +
         "console.log(path.join('/a/b', '../c'), path.extname('x.tar.gz'), util.format('%s', 'n'))",
     );
-    expect(r.out).toBe("got 1\n/a/c .gz %s n\n");
+    expect(r.out).toBe("got 1\n/a/c .gz n\n");
+  });
+
+  it("refuses a socket, a child process and the network by name", async () => {
+    const r = await run(
+      "const say = (fn) => { try { fn(); } catch (err) { console.log(err.code); } };" +
+        "say(() => require('net').createServer());" +
+        "say(() => require('child_process').spawn('node', ['x.js']));" +
+        "require('http').get('http://example.com').on('error', (e) => console.log(e.message));",
+    );
+    expect(r.out).toContain("ERR_NO_SOCKETS");
+    expect(r.out).toContain("ERR_NO_PROCESS_MANAGER");
+    expect(r.out).toContain("example.com is not on this agent's network allow list");
+  });
+
+  it("lets an allowed host through the same door the agent's http_get uses", async () => {
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("pong");
+    }) as typeof globalThis.fetch;
+    try {
+      const r = await run("fetch('https://api.example.com/ping').then((res) => res.text()).then((t) => console.log(t))", {
+        network: { allow: ["example.com"] },
+      });
+      expect(r.out).toBe("pong\n");
+      expect(seen).toEqual(["https://api.example.com/ping"]);
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });
 
@@ -176,69 +235,83 @@ describe("the filesystem", () => {
     expect(r.out).toContain("true true");
   });
 
-  it("cannot climb out of the workspace", async () => {
+  it("cannot climb out of the workspace — the climb collapses at its root", async () => {
     const r = await run(
       "const fs = require('fs/promises');" +
-        "fs.readFile('../../../vault.json', 'utf8').then((t) => console.log('READ IT', t), (e) => console.log('refused:', e.message))",
+        "fs.readFile('../../../vault.json', 'utf8').then((t) => console.log('READ IT', t), (e) => console.log('refused:', e.code))",
     );
-    expect(r.out).toContain("refused:");
+    expect(r.out).toContain("refused: ENOENT");
     expect(r.out).not.toContain("READ IT");
   });
 
-  it("serves the sync READS from the snapshot", async () => {
-    const r = await run(
-      "const fs = require('fs');" +
-        "console.log(fs.readFileSync('./data.json', 'utf8'), fs.existsSync('./lib.js'), fs.readdirSync('.').includes('deep'))",
-    );
-    expect(r.out).toBe('{"who":"world"} true true\n');
+  it("still lets require read the snapshot when there is no channel", async () => {
+    // The snapshot feeds the LOADER, and only the loader: `require` works on an un-isolated origin
+    // and every `*Sync` refuses (below), because a runtime that answered a read from a stale copy
+    // would be worse than one that says which road it is on.
+    const r = await run("console.log(require('./data.json').who, require('./deep'))");
+    expect(r.out).toBe("world from index\n");
   });
 
-  it("refuses a sync WRITE by name, and says what to use instead", async () => {
-    const r = await run("require('fs').writeFileSync('./x.txt', 'no')");
-    expect(r.err).toContain("SyncUnsupportedError");
-    expect(r.err).toContain("cross-origin isolation");
-    expect(r.err).toContain("fs.promises.writeFile");
+  it("refuses every sync form by name when the origin is not isolated", async () => {
+    const write = await run("require('fs').writeFileSync('./x.txt', 'no')");
+    expect(write.err).toContain("a synchronous filesystem needs a shared-memory channel");
+    expect(write.err).toContain("cross-origin isolation");
+    expect(write.err).toContain("fs.promises");
     expect(await fs.stat("workspace/projects/site/x.txt")).toBeNull();
-  });
 
-  it("explains a sync read of a file the snapshot never had", async () => {
-    const r = await run("require('fs').readFileSync('./written-later.txt', 'utf8')");
-    expect(r.err).toContain("snapshot of your working folder");
+    const read = await run("require('fs').readFileSync('./data.json', 'utf8')");
+    expect(read.err).toContain("readFileSync('./data.json')");
+    expect(read.err).toContain("cross-origin isolation");
+    expect(read.code).toBe(1);
   });
 });
 
 describe("the fs RPC, framed", () => {
   /** The page half on its own: a message in, a reply out, with no worker of any kind. */
-  async function ask(op: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async function ask(op: string, args: Record<string, unknown>, data?: Uint8Array): Promise<Record<string, unknown>> {
     const replies: Record<string, unknown>[] = [];
-    await answerFs(fs, "/projects/site", { id: 7, op, args }, (m) => replies.push(m as Record<string, unknown>));
+    await answerFs(fs, "/projects/site", { id: 7, op, args, data }, (m) => replies.push(m as Record<string, unknown>));
     return replies[0]!;
   }
 
-  it("answers with the id it was asked with", async () => {
+  it("answers with the id it was asked with, and the bytes beside the value", async () => {
     const reply = await ask("readFile", { path: "./data.json" });
     expect(reply.t).toBe("fs-reply");
     expect(reply.id).toBe(7);
     expect(reply.ok).toBe(true);
-    expect(new TextDecoder().decode((reply.value as { bytes: Uint8Array }).bytes)).toBe('{"who":"world"}');
+    expect(new TextDecoder().decode(reply.data as Uint8Array)).toBe('{"who":"world"}');
+  });
+
+  it("answers readdir with dirents and stat with a kind, the way NodeFsBackend does", async () => {
+    expect((await ask("readdir", { path: "." })).value).toEqual(
+      expect.arrayContaining([
+        { name: "data.json", kind: "file" },
+        { name: "deep", kind: "dir" },
+      ]),
+    );
+    expect((await ask("stat", { path: "./data.json" })).value).toMatchObject({ kind: "file", size: 15 });
   });
 
   it("fails by name rather than throwing at the worker", async () => {
     const missing = await ask("stat", { path: "./nope" });
     expect(missing.ok).toBe(false);
     expect(String(missing.error)).toContain("ENOENT");
+    expect(missing.code).toBe("ENOENT");
+    // The climb collapses at the workspace root rather than reaching the agent's own record.
     const escaped = await ask("readFile", { path: "/../vault.json" });
     expect(escaped.ok).toBe(false);
-    expect(String(escaped.error)).toContain("outside your workspace");
-    const unknown = await ask("chmod", { path: "./data.json" });
+    expect(String(escaped.error)).toContain("ENOENT");
+    const unknown = await ask("fchmod", { path: "./data.json" });
     expect(unknown.ok).toBe(false);
     expect(String(unknown.error)).toContain("not one of the operations");
   });
 
-  it("appends, renames and removes", async () => {
-    await ask("writeFile", { path: "./a.txt", data: new TextEncoder().encode("one") });
-    await ask("appendFile", { path: "./a.txt", data: new TextEncoder().encode("-two") });
+  it("appends, copies, renames and removes", async () => {
+    await ask("writeFile", { path: "./a.txt" }, new TextEncoder().encode("one"));
+    await ask("appendFile", { path: "./a.txt" }, new TextEncoder().encode("-two"));
     expect(await fs.readText("workspace/projects/site/a.txt")).toBe("one-two");
+    await ask("copyFile", { path: "./a.txt", to: "./copy.txt" });
+    expect(await fs.readText("workspace/projects/site/copy.txt")).toBe("one-two");
     await ask("rename", { path: "./a.txt", to: "./b.txt" });
     expect(await fs.stat("workspace/projects/site/a.txt")).toBeNull();
     await ask("unlink", { path: "./b.txt" });
@@ -260,12 +333,12 @@ describe("the snapshot", () => {
     expect((await snapshotFolder(fs, "/projects/site", { maxBytes: 1 })).truncated).toBe(true);
   });
 
-  it("leaves .git and node_modules out of the budget", async () => {
-    await fs.mkdir("workspace/projects/site/node_modules/thing");
+  it("carries node_modules now that require can load it, and still leaves .git out", async () => {
     await fs.writeFile("workspace/projects/site/node_modules/thing/index.js", "module.exports = 1");
     await fs.writeFile("workspace/projects/site/.git/HEAD", "ref: refs/heads/main");
     const snapshot = await snapshotFolder(fs, "/projects/site");
-    expect(Object.keys(snapshot.files).some((p) => p.includes("node_modules") || p.includes(".git"))).toBe(false);
+    expect(Object.keys(snapshot.files)).toContain("/projects/site/node_modules/thing/index.js");
+    expect(Object.keys(snapshot.files).some((p) => p.includes(".git"))).toBe(false);
   });
 
   it("maps a workspace path both ways", () => {
@@ -313,7 +386,12 @@ describe("a server", () => {
     server.listen(3000, () => console.log('up on ' + server.address().port));
   `;
 
-  const request = (method: string, url: string, body?: string) => ({
+  const request = (method: string, url: string, body?: string): {
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+    body: Uint8Array | null;
+  } => ({
     method,
     url,
     headers: {},
@@ -354,10 +432,11 @@ describe("a server", () => {
     expect(answer.status).toBe(502);
   });
 
-  it("says EADDRINUSE in words when the port is taken", async () => {
+  it("says EADDRINUSE in words when the port is taken, and ends that process", async () => {
     await run(SOURCE);
     const second = await run(SOURCE);
     expect(second.err).toContain("already in use");
+    expect(second.code).toBe(1);
     expect(listPorts()).toHaveLength(1);
   });
 
@@ -367,17 +446,14 @@ describe("a server", () => {
     expect(answer.status).toBe(500);
     expect(new TextDecoder().decode(answer.body)).toContain("handler bug");
   });
-});
 
-describe("the prelude source", () => {
-  it("carries no reference to this module's scope", () => {
-    // The closure does not travel into a Worker: a slip here is a ReferenceError in the browser and
-    // nowhere else. Running it in an empty scope is the check.
-    const source = workerSource();
-    expect(source.startsWith("(function")).toBe(true);
-    expect(() => createEvalWorker(source)).not.toThrow();
-    for (const outside of ["NO_PACKAGES_LINE", "SNAPSHOT_MAX", "resolveInSandbox", "FILES_ROOT", "registerPort"]) {
-      expect(source, `the prelude reaches for ${outside}`).not.toContain(outside);
-    }
+  it("frees the port when the script closes the server itself", async () => {
+    const r = await run(
+      "const s = require('http').createServer((q, res) => res.end('hi'));" +
+        "s.listen(3200, () => { console.log('up'); s.close(); });",
+    );
+    expect(r.out).toContain("up");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(listPorts()).toEqual([]);
   });
 });

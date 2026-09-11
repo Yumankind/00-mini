@@ -210,11 +210,16 @@ for (const sync of [true, false]) {
 
     it("stats, lists and answers exists for both a file and a folder", async () => {
       const svc = await service(opfs(["a"], { "src/one.js": "1", "src/two.js": "22" }), sync);
-      const file = (await svc.ask("stat", { path: "/src/two.js" })).value as { size: number; file: boolean };
-      expect(file).toMatchObject({ size: 2, file: true, directory: false });
-      expect((await svc.ask("stat", { path: "/src" })).value).toMatchObject({ file: false, directory: true });
-      expect((await svc.ask("readdir", { path: "/src" })).value).toEqual(["one.js", "two.js"]);
-      expect((await svc.ask("readdir", { path: "/" })).value).toEqual(["src"]);
+      // The shapes are `NodeFsBackend`'s, because this service is the far end of its sync face:
+      // a `kind` rather than two booleans, and dirents rather than names.
+      const file = (await svc.ask("stat", { path: "/src/two.js" })).value as { size: number; kind: string };
+      expect(file).toMatchObject({ size: 2, kind: "file" });
+      expect((await svc.ask("stat", { path: "/src" })).value).toMatchObject({ kind: "dir" });
+      expect((await svc.ask("readdir", { path: "/src" })).value).toEqual([
+        { name: "one.js", kind: "file" },
+        { name: "two.js", kind: "file" },
+      ]);
+      expect((await svc.ask("readdir", { path: "/" })).value).toEqual([{ name: "src", kind: "dir" }]);
       expect((await svc.ask("exists", { path: "/src/one.js" })).value).toBe(true);
       expect((await svc.ask("exists", { path: "/src" })).value).toBe(true);
       expect((await svc.ask("exists", { path: "/nope" })).value).toBe(false);
@@ -227,7 +232,10 @@ for (const sync of [true, false]) {
       );
       expect((await svc.ask("stat", { path: "/nope" })).error).toContain("ENOENT");
       expect((await svc.ask("readdir", { path: "/nope" })).error).toContain("ENOENT");
-      expect((await svc.ask("chmod", { path: "/x" })).error).toContain("not one of the operations");
+      expect((await svc.ask("fchmod", { path: "/x" })).error).toContain("not one of the operations");
+      // `chmod` is accepted and ignored, exactly as NodeFsBackend accepts it: a tarball sets a mode
+      // on every file it writes, and refusing would fail an install over something OPFS cannot hold.
+      expect((await svc.ask("chmod", { path: "/x" })).ok).toBe(true);
     });
 
     it("removes a file, a folder, and something that was already gone", async () => {
@@ -266,7 +274,7 @@ for (const sync of [true, false]) {
     it("mkdir makes the whole chain and says so", async () => {
       const svc = await service(opfs(["a"]), sync);
       expect((await svc.ask("mkdir", { path: "/one/two/three" })).ok).toBe(true);
-      expect((await svc.ask("stat", { path: "/one/two/three" })).value).toMatchObject({ directory: true });
+      expect((await svc.ask("stat", { path: "/one/two/three" })).value).toMatchObject({ kind: "dir" });
     });
   });
 }

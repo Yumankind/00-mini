@@ -2,25 +2,26 @@
  * The synchronous filesystem a script gets on a cross-origin isolated origin — and the refusal it
  * gets everywhere else.
  *
- * WHAT IS REAL HERE AND WHAT IS NOT. The script, the prelude and the runner are the shipped ones:
- * `createEvalWorker` evaluates the same `workerSource()` a Blob Worker is built from, so `require`,
- * `fs.readFileSync` and `fs.writeFileSync` below are the real code paths. What is faked is the far
- * end of the channel — a real one would need two threads and a real OPFS, and both are covered
- * elsewhere (test/sync-channel.test.ts drives the protocol across `worker_threads`; the OPFS half is
- * the untestable-in-node adapter, checked live in a browser and recorded in
- * apps/infinite-site/README.md). The fake answers the ops with the same names and the same sentences
- * the service Worker answers them with, which is exactly the seam worth pinning: if the runner asked
- * for `read` instead of `readFile`, this fails.
+ * WHAT IS REAL HERE AND WHAT IS NOT. The script, the runtime Worker and the runner are the shipped
+ * ones: `createInlineNodeWorker` runs `src/power/node-runtime-worker.ts` itself, so `require`,
+ * `fs.readFileSync` and `fs.writeFileSync` below are `@00/agent-node`'s real code paths over a real
+ * `NodeFsBackend`. What is faked is the far end of the channel — a real one would need two threads
+ * and a real OPFS, and both are covered elsewhere (test/sync-channel.test.ts drives the protocol
+ * across `worker_threads`; the OPFS half is the untestable-in-node adapter, checked live in a browser
+ * and recorded in apps/infinite-site/README.md). The fake answers with the op names and the SHAPES
+ * `NodeFsBackend` answers with, which is exactly the seam worth pinning: if the runtime asked for
+ * `read` instead of `readFile`, or expected names where the service sends dirents, this fails.
+ *
+ * IT IS HANDED OVER AS AN OBJECT, not as a buffer, for one reason: `Atomics.wait` is illegal on a
+ * main thread, and vitest is a main thread. `runScript`'s `syncClient` is that seam and the browser
+ * never uses it.
  */
 import { describe, expect, it } from "vitest";
 import { MemoryFs } from "@00/agent-fs";
-import { createEvalWorker, runScript, type RunnerWorkerFactory } from "../src/power/js-runner.js";
-import {
-  SYNC_CHANNEL_LAYOUT,
-  createChannelBuffer,
-  type SyncChannelClient,
-  type SyncResponse,
-} from "../src/power/sync-channel.js";
+import { runScript } from "../src/power/js-runner.js";
+import { createInlineNodeWorker } from "../src/power/node-runtime-worker.js";
+import type { SyncCallable } from "../src/power/node-runtime-worker.js";
+import { SYNC_CHANNEL_LAYOUT, createChannelBuffer } from "../src/power/sync-channel.js";
 import {
   fsServiceSource,
   isCrossOriginIsolated,
@@ -36,70 +37,83 @@ const decoder = new TextDecoder();
 
 /**
  * A channel with a folder behind it. Synchronous, in memory, and deliberately NOT the workspace the
- * runner's async RPC writes to — so a test can tell which road a call took.
+ * runner's async RPC writes to — so a test can tell which road a call took. It throws where the real
+ * `SyncFsClient` throws, because that is how an ENOENT reaches a script.
  */
-function fakeChannel(seed: Record<string, string> = {}): SyncChannelClient & { store: Map<string, Uint8Array>; ops: string[] } {
+function fakeChannel(seed: Record<string, string> = {}): SyncCallable & { store: Map<string, Uint8Array>; ops: string[] } {
   const store = new Map<string, Uint8Array>();
   for (const [path, text] of Object.entries(seed)) store.set(path, encoder.encode(text));
   const ops: string[] = [];
-  const dirs = (path: string): string[] =>
+  const under = (path: string): string[] =>
     [...store.keys()].filter((key) => key.startsWith(path === "/" ? "/" : `${path}/`));
-  const call = (op: string, args: Record<string, unknown> = {}, data?: Uint8Array): SyncResponse => {
+  const fail = (code: string, message: string): never => {
+    const err = new Error(message) as Error & { code?: string };
+    err.code = code;
+    throw err;
+  };
+  const call = (op: string, args: Record<string, unknown> = {}, data?: Uint8Array | null): { value: unknown; data: Uint8Array } => {
     ops.push(op);
     const path = String(args.path ?? "");
+    const none = new Uint8Array(0);
     switch (op) {
       case "readFile": {
         const found = store.get(path);
-        return found ? { ok: true, data: found } : { ok: false, error: `ENOENT: no such file or directory, open '${path}'` };
+        if (!found) fail("ENOENT", `ENOENT: no such file or directory, open '${path}'`);
+        return { value: null, data: found! };
       }
       case "writeFile":
-        store.set(path, data ?? new Uint8Array(0));
-        return { ok: true, value: null };
+        store.set(path, data ?? none);
+        return { value: null, data: none };
       case "appendFile": {
-        const before = store.get(path) ?? new Uint8Array(0);
+        const before = store.get(path) ?? none;
         const joined = new Uint8Array(before.byteLength + (data?.byteLength ?? 0));
         joined.set(before, 0);
         if (data) joined.set(data, before.byteLength);
         store.set(path, joined);
-        return { ok: true, value: null };
+        return { value: null, data: none };
       }
       case "mkdir":
-        return { ok: true, value: null };
+        return { value: null, data: none };
       case "exists":
-        return { ok: true, value: store.has(path) || dirs(path).length > 0 };
-      case "stat": {
+        return { value: store.has(path) || under(path).length > 0, data: none };
+      case "stat":
+      case "lstat": {
         const found = store.get(path);
-        if (found) return { ok: true, value: { size: found.byteLength, mtimeMs: 5, file: true, directory: false } };
-        if (dirs(path).length) return { ok: true, value: { size: 0, mtimeMs: 0, file: false, directory: true } };
-        return { ok: false, error: `ENOENT: no such file or directory, stat '${path}'` };
+        if (found) return { value: { size: found.byteLength, mtimeMs: 5, kind: "file" }, data: none };
+        if (under(path).length) return { value: { size: 0, mtimeMs: 0, kind: "dir" }, data: none };
+        return fail("ENOENT", `ENOENT: no such file or directory, stat '${path}'`);
       }
       case "readdir": {
         const prefix = path === "/" ? "/" : `${path}/`;
-        const names = new Set<string>();
+        const entries = new Map<string, "file" | "dir">();
         for (const key of store.keys()) {
           if (!key.startsWith(prefix)) continue;
           const rest = key.slice(prefix.length);
-          names.add(rest.includes("/") ? rest.slice(0, rest.indexOf("/")) : rest);
+          const slash = rest.indexOf("/");
+          entries.set(slash === -1 ? rest : rest.slice(0, slash), slash === -1 ? "file" : "dir");
         }
-        if (!names.size) return { ok: false, error: `ENOENT: no such file or directory, scandir '${path}'` };
-        return { ok: true, value: [...names] };
+        if (!entries.size) return fail("ENOENT", `ENOENT: no such file or directory, scandir '${path}'`);
+        return {
+          value: [...entries].map(([name, kind]) => ({ name, kind })).sort((a, b) => (a.name < b.name ? -1 : 1)),
+          data: none,
+        };
       }
       case "unlink":
       case "rm":
         store.delete(path);
-        return { ok: true, value: null };
+        return { value: null, data: none };
       case "rename": {
         const found = store.get(path);
-        if (!found) return { ok: false, error: `ENOENT: no such file or directory, rename '${path}'` };
+        if (!found) fail("ENOENT", `ENOENT: no such file or directory, rename '${path}'`);
         store.delete(path);
-        store.set(String(args.to ?? ""), found);
-        return { ok: true, value: null };
+        store.set(String(args.to ?? ""), found!);
+        return { value: null, data: none };
       }
       default:
-        return { ok: false, error: `fs.${op} is not one of the operations this browser runtime has` };
+        return fail("ERR_SYNC_FS", `fs.${op} is not one of the operations this browser runtime has`);
     }
   };
-  return { call, close: () => undefined, store, ops };
+  return { call, store, ops };
 }
 
 /** A service that hands out real buffers (nothing reads them) and counts what the runner does. */
@@ -128,22 +142,21 @@ interface Run {
 
 async function runWith(
   code: string,
-  channel: SyncChannelClient | null,
+  channel: SyncCallable | null,
   extra: Partial<Parameters<typeof runScript>[1]> = {},
 ): Promise<Run & { service: ReturnType<typeof fakeService> | null }> {
   const fs = new MemoryFs();
   await fs.mkdir("workspace/projects/site");
   await fs.writeFile("workspace/projects/site/data.json", '{"who":"snapshot"}');
   const service = channel ? fakeService() : null;
-  const createWorker: RunnerWorkerFactory = (source) =>
-    createEvalWorker(source, channel ? { __00SyncChannel: () => channel } : undefined);
   let out = "";
   let err = "";
   const result = await runScript(fs, {
     code,
     cwd: "/projects/site",
-    createWorker,
+    createWorker: () => createInlineNodeWorker(),
     syncFs: service,
+    syncClient: channel,
     onStdout: (t) => (out += t),
     onStderr: (t) => (err += t),
     ...extra,
@@ -199,11 +212,21 @@ describe("the sync filesystem, when the origin is isolated", () => {
     expect(r.out).toBe("hello from the kit\n");
   });
 
+  it("lets require load an installed package, which is what the channel is for", async () => {
+    const channel = fakeChannel({
+      "/projects/site/node_modules/is-number/package.json": JSON.stringify({ name: "is-number", version: "7.0.0", main: "index.js" }),
+      "/projects/site/node_modules/is-number/index.js": "module.exports = (n) => typeof n === 'number';",
+    });
+    const r = await runWith("console.log(require('is-number')(5))", channel);
+    expect(r.err).toBe("");
+    expect(r.out).toBe("true\n");
+  });
+
   it("gives back ENOENT, not a lecture about isolation, when the file is simply not there", async () => {
     const channel = fakeChannel();
     const r = await runWith("require('fs').readFileSync('./nope.txt', 'utf8')", channel);
     expect(r.err).toContain("ENOENT");
-    expect(r.err).not.toContain("SyncUnsupportedError");
+    expect(r.err).not.toContain("cross-origin isolation");
     expect(r.code).toBe(1);
   });
 
@@ -218,20 +241,19 @@ describe("the sync filesystem, when the origin is isolated", () => {
 describe("the sync filesystem, when the origin is not isolated", () => {
   it("refuses a sync write by name and says what to use instead", async () => {
     const r = await runWith("require('fs').writeFileSync('./x.txt', 'no')", null);
-    expect(r.err).toContain("SyncUnsupportedError");
+    expect(r.err).toContain("a synchronous filesystem needs a shared-memory channel");
     expect(r.err).toContain("cross-origin isolation");
-    expect(r.err).toContain("fs.promises.writeFile");
+    expect(r.err).toContain("fs.promises");
   });
 
-  it("explains a sync read the snapshot cannot answer", async () => {
-    const r = await runWith("require('fs').readFileSync('./written-later.txt', 'utf8')", null);
-    expect(r.err).toContain("SyncUnsupportedError");
-    expect(r.err).toContain("snapshot of your working folder");
+  it("refuses a sync read the same way, rather than answering from a stale copy", async () => {
+    const r = await runWith("require('fs').readFileSync('./data.json', 'utf8')", null);
+    expect(r.err).toContain("cross-origin isolation");
   });
 
-  it("still answers from the snapshot, which is the whole point of keeping it", async () => {
-    const r = await runWith("console.log(require('fs').readFileSync('./data.json', 'utf8'))", null);
-    expect(r.out).toBe('{"who":"snapshot"}\n');
+  it("still lets require read the snapshot, which is the whole point of keeping it", async () => {
+    const r = await runWith("console.log(require('./data.json').who)", null);
+    expect(r.out).toBe("snapshot\n");
   });
 });
 
@@ -285,8 +307,8 @@ describe("the filesystem service", () => {
   });
 
   it("carries no reference to this module's scope into the Worker", () => {
-    // Same rule as the runner's prelude: the closure does not travel, and a slip is a ReferenceError
-    // in a browser and nowhere else.
+    // The service Worker is still a stringified function (it must run in a classic Blob Worker that
+    // fetches nothing), so its one rule still holds and this is what catches a slip.
     const source = fsServiceSource();
     for (const outside of ["FILES_ROOT", "SYNC_CHANNEL_LAYOUT", "createChannelBuffer", "startFsService"]) {
       expect(source, `the service reaches for ${outside}`).not.toContain(outside);

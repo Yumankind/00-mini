@@ -23,9 +23,20 @@
  * a runaway `find /` in a browser tab has no OOM killer to save the page.
  */
 import type { AgentFs, FsEntry } from "@00/agent-fs";
-import type { Shell, ShellResult, ShellRunOptions } from "@00/agent-runtime";
+import type { NetworkPolicy, Shell, ShellResult, ShellRunOptions } from "@00/agent-runtime";
 import { PathEscapeError, globToRegExp, normalizeSandbox, resolveInSandbox } from "@00/agent-runtime";
-import { NO_PACKAGES_LINE, runScript, type RunnerWorkerFactory } from "./js-runner.js";
+import {
+  DEFAULT_REGISTRY,
+  RegistryClient,
+  install,
+  npmLs,
+  npmRunPlan,
+  rewriteBinArgv,
+  type FetchLike,
+  type InstallResult,
+  type WorkerFactory,
+} from "@00/agent-node";
+import { NO_PACKAGES_LINE, runScript } from "./js-runner.js";
 import { DEFAULT_SERVE_PORT, PortInUseError, listPorts, portUrl, serveFolder, unregister } from "./virtual-ports.js";
 
 // ── What the shell answers with ───────────────────────────────────────────────────────────────────
@@ -68,12 +79,47 @@ export interface BuiltinShellOptions {
   /** Per-command output cap; a browser tab has no OOM killer. */
   maxOutputChars?: number;
   /**
-   * How `node` gets its Worker. The browser passes nothing (a Blob URL Worker); a node test passes
-   * `createEvalWorker`, which runs the SAME prelude in-process — see src/power/js-runner.ts.
+   * How `node` gets its Worker. The browser passes nothing (a module Worker built by vite from
+   * src/power/node-runtime-worker.ts); a node test passes `createInlineNodeWorker`, which runs the
+   * SAME worker code in-process.
    */
-  createWorker?: RunnerWorkerFactory;
+  createWorker?: WorkerFactory;
   /** Wall clock for one `node` run; a server is exempt while its port is registered. */
   scriptTimeoutMs?: number;
+  /** The hosts a script may reach with `fetch`. Absent = the empty list, and every call refuses. */
+  network?: NetworkPolicy | null;
+  /** The registry `npm install` talks to, and the fetch it talks with. Both injectable for tests. */
+  npm?: { registry?: string; fetch?: FetchLike };
+}
+
+/**
+ * Where a running command's output goes WHILE it runs.
+ *
+ * THE RULE, once: anything handed to this sink is NOT also in the `ExecResult` the call returns. A
+ * terminal that passes one prints chunks as they arrive (`src/state/terminal.ts`); an agent's `bash`
+ * passes none and gets the two strings it always got, which is what a tool result is. Only the
+ * commands that have a process behind them stream — `node`, `npm install`, `npm run`, `npx` — and
+ * only when their stdout is not being piped or redirected somewhere else.
+ */
+export type OutputSink = (chunk: { stream: "stdout" | "stderr"; text: string }) => void;
+
+/** The two streams of one command, going either to the terminal as they happen or into the result. */
+class Out {
+  stdout = "";
+  stderr = "";
+  constructor(private readonly live?: OutputSink) {}
+  write(stream: "stdout" | "stderr", text: string): void {
+    if (!text) return;
+    if (this.live) {
+      this.live({ stream, text });
+      return;
+    }
+    if (stream === "stdout") this.stdout += text;
+    else this.stderr += text;
+  }
+  done(exitCode: number): ExecResult {
+    return { stdout: this.stdout, stderr: this.stderr, exitCode };
+  }
 }
 
 /** The line every "not in a browser" refusal ends with, so the model repeats one sentence, not five. */
@@ -83,10 +129,16 @@ export const GIT_REMOTE_LINE = "git clone, push and pull need your Mac or a CORS
 
 /**
  * The ones that stay refused. `node`, `npm` and `npx` LEFT this set when the runner arrived
- * (src/power/js-runner.ts): they are builtins now, and `npm install` refuses inside `npm` where it
- * can say the useful half of the sentence. Everything still here needs a real toolchain.
+ * (src/power/js-runner.ts), and `npm install` left it when `@00/agent-node`'s npm client did: this
+ * tab now fetches from registry.npmjs.org itself. What is still here needs a real toolchain — a
+ * bundler is a build, and the three other package managers are three more lockfile dialects for a
+ * runtime that has exactly one client. The sentence says which one.
  */
-const NODE_FAMILY = new Set(["pnpm", "yarn", "bun", "deno", "tsc", "vite", "webpack", "esbuild"]);
+const OTHER_CLIENT_LINE =
+  "npm is the one package client in this tab (it installs pure-JS packages straight from " +
+  "registry.npmjs.org) — use `npm install`, or run this on your Mac";
+const NODE_FAMILY = new Set(["tsc", "vite", "webpack", "esbuild"]);
+const PACKAGE_CLIENTS = new Set(["pnpm", "yarn", "bun", "deno"]);
 const OTHER_BINARIES: Record<string, string> = {
   python: "this browser has no Python; run it on your Mac (Pyodide is a later phase)",
   python3: "this browser has no Python; run it on your Mac (Pyodide is a later phase)",
@@ -258,6 +310,8 @@ interface CommandContext {
   argv: string[];
   stdin: string;
   signal?: AbortSignal;
+  /** Present only when THIS command's output may go straight to the terminal — see `OutputSink`. */
+  stream?: OutputSink;
 }
 
 type Builtin = (ctx: CommandContext) => Promise<ExecResult>;
@@ -279,9 +333,13 @@ export class BuiltinShell implements Shell {
   private readonly git: ShellGit | null;
   private readonly now: () => Date;
   private readonly maxOutput: number;
-  private readonly env: Record<string, string>;
-  private readonly createWorker?: RunnerWorkerFactory;
+  /** Not readonly: `npm run` puts npm's own `npm_package_*` in front of it for the length of a script. */
+  private env: Record<string, string>;
+  private readonly createWorker?: WorkerFactory;
   private readonly scriptTimeoutMs?: number;
+  private readonly network: NetworkPolicy | null;
+  private readonly npmRegistry: string;
+  private readonly npmFetch?: FetchLike;
   /** `npm run` runs a line through this same shell; a script that calls itself must not spin. */
   private scriptDepth = 0;
   /** The sandbox root, agent-root-relative (`workspace`). */
@@ -298,6 +356,9 @@ export class BuiltinShell implements Shell {
     this.maxOutput = opts.maxOutputChars ?? DEFAULT_MAX_OUTPUT;
     this.createWorker = opts.createWorker;
     this.scriptTimeoutMs = opts.scriptTimeoutMs;
+    this.network = opts.network ?? null;
+    this.npmRegistry = opts.npm?.registry ?? DEFAULT_REGISTRY;
+    this.npmFetch = opts.npm?.fetch;
     this.env = { SHELL: "browser shell", HOME: "/", PWD: "/", TERM: "00-infinite", ...(opts.env ?? {}) };
     this.builtins = this.table();
   }
@@ -323,8 +384,11 @@ export class BuiltinShell implements Shell {
    * What the terminal pane calls: the two streams kept apart, so stderr can be red.
    * `cwd` re-roots the shell when it changes; the working directory itself survives between calls,
    * which is the whole reason a terminal feels like a terminal.
+   *
+   * `onOutput` is how a terminal sees a long command as it runs rather than when it ends; what goes
+   * to it does not come back in the result (see `OutputSink`).
    */
-  async exec(command: string, opts: Partial<ShellRunOptions> = {}): Promise<ExecResult> {
+  async exec(command: string, opts: Partial<ShellRunOptions> & { onOutput?: OutputSink } = {}): Promise<ExecResult> {
     if (opts.cwd) {
       const root = normalizeSandbox(opts.cwd);
       if (root !== this.root) {
@@ -347,9 +411,17 @@ export class BuiltinShell implements Shell {
     for (const stage of stages) {
       if (stage.connector === "&&" && code !== 0) continue;
       if (stage.connector === "||" && code === 0) continue;
-      const result = await this.runPipeline(stage.pipeline, opts.signal);
-      stdout += result.stdout;
-      stderr += result.stderr;
+      const result = await this.runPipeline(stage.pipeline, opts.signal, opts.onOutput);
+      // WITH A SINK, EVERYTHING GOES THROUGH IT — including the stages that had no process to
+      // stream. Otherwise `ls && npm run build` would print the build's live lines first and the
+      // `ls` afterwards, because one road prints as it goes and the other hands back a string.
+      if (opts.onOutput) {
+        if (result.stdout) opts.onOutput({ stream: "stdout", text: result.stdout });
+        if (result.stderr) opts.onOutput({ stream: "stderr", text: result.stderr });
+      } else {
+        stdout += result.stdout;
+        stderr += result.stderr;
+      }
       code = result.exitCode;
       if (opts.signal?.aborted) {
         stderr += "aborted\n";
@@ -365,11 +437,11 @@ export class BuiltinShell implements Shell {
     return `${text.slice(0, this.maxOutput)}\n… truncated at ${this.maxOutput.toLocaleString()} characters.\n`;
   }
 
-  private async runPipeline(pipeline: ParsedCommand[], signal?: AbortSignal): Promise<ExecResult> {
+  private async runPipeline(pipeline: ParsedCommand[], signal?: AbortSignal, onOutput?: OutputSink): Promise<ExecResult> {
     let carried = "";
     let stderr = "";
     let code = 0;
-    for (const command of pipeline) {
+    for (const [at, command] of pipeline.entries()) {
       let argv: string[];
       try {
         argv = await this.expand(command.words);
@@ -388,16 +460,22 @@ export class BuiltinShell implements Shell {
         }
       }
 
+      // Only the last command of a pipeline may stream, and only when its stdout is not on its way
+      // into a file: everything else has a reader that needs the string.
+      const streams =
+        onOutput && at === pipeline.length - 1 && !command.redirects.some((r) => r.op === ">" || r.op === ">>");
+      const ctx: CommandContext = { argv, stdin, signal, stream: streams ? onOutput : undefined };
+
       const run = this.builtins[argv[0]!];
       let result: ExecResult;
       if (run) {
         try {
-          result = await run({ argv, stdin, signal });
+          result = await run(ctx);
         } catch (err) {
           result = bad(`${argv[0]}: ${this.message(err)}`);
         }
       } else {
-        result = this.refuse(argv[0]!);
+        result = await this.runUnknown(ctx);
       }
 
       stderr += result.stderr;
@@ -429,10 +507,40 @@ export class BuiltinShell implements Shell {
 
   /** A command this host cannot run, said by name — never "command not found" for a real binary. */
   private refuse(name: string): ExecResult {
+    if (PACKAGE_CLIENTS.has(name)) return bad(`${name}: ${OTHER_CLIENT_LINE}`, EXIT_NOT_FOUND);
     if (NODE_FAMILY.has(name)) return bad(`${name}: ${NO_NODE_LINE}`, EXIT_NOT_FOUND);
     const other = OTHER_BINARIES[name];
     if (other) return bad(`${name}: ${other}`, EXIT_NOT_FOUND);
     return bad(`${name}: command not found`, EXIT_NOT_FOUND);
+  }
+
+  /**
+   * A name this shell has no builtin for: the PATH substitute, then the refusal.
+   *
+   * `node_modules/.bin` is what npm puts on a script's PATH, and there is no PATH here — so
+   * `rewriteBinArgv` (@00/agent-node) turns `tool --flag` into `node <cwd>/node_modules/.bin/tool
+   * --flag` when a shim of that name is installed, and leaves it alone when none is. The refusals
+   * come FIRST: a person who typed `vite` after installing it should read why a bundler needs their
+   * Mac rather than watch this runtime try.
+   */
+  private async runUnknown(ctx: CommandContext): Promise<ExecResult> {
+    const name = ctx.argv[0]!;
+    if (PACKAGE_CLIENTS.has(name) || NODE_FAMILY.has(name) || OTHER_BINARIES[name]) return this.refuse(name);
+    const rewritten = await this.binArgv(ctx.argv);
+    if (!rewritten) return this.refuse(name);
+    return await this.runNode({ entry: rewritten.entry, argv: rewritten.args, signal: ctx.signal, stream: ctx.stream });
+  }
+
+  /** `["vitest","run"]` → the shim's workspace path and the rest, or `null` when nothing is installed. */
+  private async binArgv(argv: string[]): Promise<{ entry: string; args: string[] } | null> {
+    const rewritten = await rewriteBinArgv(this.fs, this.dir(), argv, this.root);
+    if (!rewritten.bin) return null;
+    return { entry: this.display(rewritten.bin), args: rewritten.argv.slice(2) };
+  }
+
+  /** Where we are, as an `AgentFs` path — what every `@00/agent-node` npm call takes. */
+  private dir(): string {
+    return this.rel ? `${this.root}/${this.rel}` : this.root;
   }
 
   private message(err: unknown): string {
@@ -871,7 +979,12 @@ export class BuiltinShell implements Shell {
       which: async ({ argv }) => {
         const name = argv[1] ?? "";
         if (this.builtins[name]) return ok(`${name}: shell builtin\n`);
-        if (NODE_FAMILY.has(name) || OTHER_BINARIES[name]) return bad(this.refuse(name).stderr.trim());
+        if (PACKAGE_CLIENTS.has(name) || NODE_FAMILY.has(name) || OTHER_BINARIES[name]) {
+          return bad(this.refuse(name).stderr.trim());
+        }
+        // `node_modules/.bin` is the PATH here, so `which` must look down it like any other shell.
+        const installed = await this.binArgv([name]);
+        if (installed) return ok(`${installed.entry}\n`);
         return bad(`which: ${name}: not found`);
       },
 
@@ -1108,17 +1221,17 @@ export class BuiltinShell implements Shell {
     }
   }
 
-  // ── Scripts, servers and static folders (src/power/js-runner.ts, src/power/virtual-ports.ts) ────
+  // ── Scripts, packages, servers and static folders ───────────────────────────────────────────────
   //
-  // WHY THESE LIVE IN THE SHELL AND NOT IN A PANE. `node app.js`, `npm run build`, `npx serve` are
-  // what a person's hands already know, and the agent's `bash` tool is this same table — so wiring
-  // them here gives the agent the runner for free, with the same refusals and the same sandbox.
-  // Nothing streams: a command answers with two strings (see the header), so a script's output
-  // arrives when it ends. A server is the exception, and it is why `runScript` hands the terminal
-  // back the moment the main module has finished listening.
+  // WHY THESE LIVE IN THE SHELL AND NOT IN A PANE. `node app.js`, `npm install`, `npm run build`,
+  // `npx serve` are what a person's hands already know, and the agent's `bash` tool is this same
+  // table — so wiring them here gives the agent the runner for free, with the same refusals and the
+  // same sandbox. The process behind `node` is `@00/agent-node`'s (src/power/js-runner.ts), its
+  // packages come from registry.npmjs.org through that package's own client, and the output streams
+  // to whoever passed an `OutputSink` rather than arriving in one lump at the end.
 
   /** `node file.js [args]`, `node -e "…"`, `node -v`. */
-  private async nodeCommand({ argv, signal }: CommandContext): Promise<ExecResult> {
+  private async nodeCommand({ argv, signal, stream }: CommandContext): Promise<ExecResult> {
     const args = argv.slice(1);
     if (!args.length) {
       return bad("node: there is no REPL here — give it a file (`node app.js`) or `-e \"console.log(1)\"`.", 2);
@@ -1132,10 +1245,10 @@ export class BuiltinShell implements Shell {
     if (args[0] === "-e" || args[0] === "--eval") {
       const code = args[1];
       if (code === undefined) return bad("node: -e wants some code after it", 2);
-      return await this.runNode({ code, argv: args.slice(2), signal });
+      return await this.runNode({ code, argv: args.slice(2), signal, stream });
     }
     if (args[0]!.startsWith("-")) return bad(`node: ${args[0]} is not a flag this runtime has (-e, -v)`, 2);
-    return await this.runNode({ entry: args[0], argv: args.slice(1), signal });
+    return await this.runNode({ entry: args[0], argv: args.slice(1), signal, stream });
   }
 
   private async runNode(opts: {
@@ -1143,85 +1256,232 @@ export class BuiltinShell implements Shell {
     code?: string;
     argv: string[];
     signal?: AbortSignal;
+    stream?: OutputSink;
+    env?: Record<string, string>;
   }): Promise<ExecResult> {
-    let stdout = "";
-    let stderr = "";
+    const out = new Out(opts.stream);
     try {
       const result = await runScript(this.fs, {
         entry: opts.entry,
         code: opts.code,
         argv: opts.argv,
         cwd: this.cwd,
-        env: { ...this.env, PWD: this.cwd },
+        env: { ...this.env, ...(opts.env ?? {}), PWD: this.cwd },
         signal: opts.signal,
         timeoutMs: this.scriptTimeoutMs,
         createWorker: this.createWorker,
-        onStdout: (text) => (stdout += text),
-        onStderr: (text) => (stderr += text),
+        network: this.network,
+        onStdout: (text) => out.write("stdout", text),
+        onStderr: (text) => out.write("stderr", text),
       });
       for (const port of result.listening) {
-        stdout += `listening on ${portUrl(port)} — it answers while this tab is open; \`kill ${port}\` stops it.\n`;
+        out.write("stdout", `listening on ${portUrl(port)} — it answers while this tab is open; \`kill ${port}\` stops it.\n`);
       }
-      return { stdout, stderr, exitCode: result.exitCode };
+      return out.done(result.exitCode);
     } catch (err) {
-      return { stdout, stderr: `${stderr}node: ${this.message(err)}\n`, exitCode: 1 };
+      out.write("stderr", `node: ${this.message(err)}\n`);
+      return out.done(1);
     }
   }
 
-  /** `npm run <script>` (and `npm start` / `npm test`); everything that installs is refused by name. */
-  private async npmCommand({ argv, signal }: CommandContext): Promise<ExecResult> {
+  // ── npm ─────────────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * `npm install`, `npm run`, `npm ls` — a real client, in the tab.
+   *
+   * WHY THIS STOPPED BEING A REFUSAL. `@00/agent-node`'s npm client fetches from
+   * registry.npmjs.org directly (the registry answers `Access-Control-Allow-Origin: *` on both the
+   * abbreviated metadata and the tarballs, which is what makes this possible at all), verifies every
+   * tarball's sha512, unpacks it with agent-fs's tar reader and writes `node_modules` into the same
+   * workspace the file tree shows. What it will NOT do is run a lifecycle script or build a native
+   * addon, and both are named package by package in the output rather than discovered later.
+   */
+  private async npmCommand({ argv, signal, stream }: CommandContext): Promise<ExecResult> {
     const sub = argv[1] ?? "";
-    if (sub === "run" || sub === "run-script") return await this.npmRun(argv[2], signal);
-    if (sub === "start" || sub === "test") return await this.npmRun(sub, signal);
-    if (!sub) return bad(`npm: what would you like it to run? \`npm run <script>\` reads package.json. ${NO_PACKAGES_LINE}`, 2);
-    return bad(`npm ${sub}: ${NO_NODE_LINE}\n${NO_PACKAGES_LINE}`, EXIT_NOT_FOUND);
+    if (sub === "install" || sub === "i" || sub === "add" || sub === "ci") {
+      return await this.npmInstall(argv.slice(2), stream);
+    }
+    if (sub === "ls" || sub === "list") return await this.npmLsCommand(argv.slice(2));
+    if (sub === "run" || sub === "run-script") return await this.npmRun(argv[2], argv.slice(3), signal, stream);
+    if (sub === "start" || sub === "test") return await this.npmRun(sub, argv.slice(2), signal, stream);
+    if (!sub) {
+      return bad(
+        "npm: which one? `npm install` fetches packages, `npm run <script>` reads package.json, `npm ls` lists what is installed.",
+        2,
+      );
+    }
+    return bad(
+      `npm ${sub}: this tab's npm does install, run, ls and the two lifecycle names (start, test) — ` +
+        `everything else (${NO_NODE_LINE}) needs a real one`,
+      EXIT_NOT_FOUND,
+    );
   }
 
   /**
-   * The script line out of `package.json`, run through this same shell — which is exactly what npm
-   * does, minus the `node_modules/.bin` on the PATH that a browser has nothing to put in.
+   * `npm install [pkg…]`, with the two things it does not do said out loud.
+   *
+   * A named package is WRITTEN INTO `package.json` first (npm's own `--save` default) and the
+   * lockfile is bypassed for that run, because a lockfile that has never heard of the package a
+   * person just asked for is a lockfile that would quietly install nothing.
    */
-  private async npmRun(name: string | undefined, signal?: AbortSignal): Promise<ExecResult> {
-    if (!name) return bad("npm run: which script? `npm run` with a name, and package.json says the rest", 2);
-    let manifest: { scripts?: Record<string, string>; name?: string };
-    let path: string;
-    try {
-      path = this.resolve("package.json");
-    } catch (err) {
-      return bad(`npm run: ${this.message(err)}`);
-    }
-    if (!(await this.fs.stat(path))) return bad(`npm run: no package.json in ${this.cwd}`);
-    try {
-      manifest = JSON.parse(await this.fs.readText(path)) as { scripts?: Record<string, string> };
-    } catch (err) {
-      return bad(`npm run: package.json is not valid JSON — ${this.message(err)}`);
-    }
-    const scripts = manifest.scripts ?? {};
-    const line = scripts[name];
-    if (!line) {
-      const known = Object.keys(scripts).sort();
+  private async npmInstall(args: string[], stream?: OutputSink): Promise<ExecResult> {
+    const out = new Out(stream);
+    const dev = args.some((a) => a === "-D" || a === "--save-dev");
+    const specs = args.filter((a) => !a.startsWith("-"));
+    const dir = this.dir();
+    const manifestPath = `${dir}/package.json`;
+    if (!(await this.fs.stat(manifestPath))) {
       return bad(
-        `npm run: no script named "${name}"${known.length ? ` — package.json has ${known.join(", ")}` : " and package.json has no scripts"}`,
+        `npm install: there is no package.json in ${this.cwd} — npm needs one to know what to install ` +
+          `(\`echo '{"name":"app","version":"1.0.0"}' > package.json\`)`,
       );
+    }
+    const client = new RegistryClient({ registry: this.npmRegistry, fetch: this.npmFetch });
+
+    if (specs.length) {
+      let manifest: Record<string, unknown>;
+      try {
+        manifest = JSON.parse(await this.fs.readText(manifestPath)) as Record<string, unknown>;
+      } catch (err) {
+        return bad(`npm install: package.json is not valid JSON — ${this.message(err)}`);
+      }
+      const field = dev ? "devDependencies" : "dependencies";
+      const deps = { ...((manifest[field] ?? {}) as Record<string, string>) };
+      for (const spec of specs) {
+        const at = spec.lastIndexOf("@");
+        const name = at > 0 ? spec.slice(0, at) : spec;
+        const range = at > 0 ? spec.slice(at + 1) : "";
+        try {
+          const version = await client.resolveVersion(name, range || "latest");
+          deps[name] = range && !/^\d/.test(range) ? range : `^${version.version}`;
+          out.write("stdout", `resolved ${name}@${version.version}\n`);
+        } catch (err) {
+          out.write("stderr", `npm install: ${this.message(err)}\n`);
+          return out.done(1);
+        }
+      }
+      manifest[field] = Object.fromEntries(Object.entries(deps).sort(([a], [b]) => (a < b ? -1 : 1)));
+      await this.fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    }
+
+    try {
+      const result = await install(this.fs, dir, {
+        client,
+        registry: this.npmRegistry,
+        fetch: this.npmFetch,
+        // A lockfile that has never heard of the package just asked for would quietly install
+        // nothing, so naming one bypasses it; `npm install` with no names obeys it, as npm does.
+        useLockfile: specs.length === 0,
+        onProgress: ({ done, total, name, version }) => out.write("stdout", `fetched ${done}/${total} ${name}@${version}\n`),
+      });
+      out.write("stdout", this.installSummary(result));
+      return out.done(0);
+    } catch (err) {
+      out.write("stderr", `npm install: ${this.message(err)}\n`);
+      return out.done(1);
+    }
+  }
+
+  /** What was added, what was already there, and — by name — what was skipped and why. */
+  private installSummary(result: InstallResult): string {
+    let text = `added ${result.installed.length} package${result.installed.length === 1 ? "" : "s"}`;
+    if (result.skipped.length) text += `, ${result.skipped.length} already installed`;
+    text += "\n";
+    if (result.skippedScripts.length) {
+      text +=
+        `install scripts NOT run (arbitrary code from a stranger, at the moment you typed a name): ` +
+        `${result.skippedScripts.join(", ")}\n`;
+    }
+    if (result.nativePackages.length) {
+      text +=
+        `native addons NOT built (machine code needs a real OS; the JavaScript was written anyway): ` +
+        `${result.nativePackages.join(", ")}\n`;
+    }
+    for (const warning of result.warnings) text += `warning: ${warning}\n`;
+    return text;
+  }
+
+  /** `npm ls` over what is actually on disk — the question a person asking `npm ls` really has. */
+  private async npmLsCommand(args: string[]): Promise<ExecResult> {
+    const depthArg = args.find((a) => a.startsWith("--depth"));
+    const depth = depthArg ? Number(depthArg.split("=")[1] ?? "0") || 0 : Infinity;
+    try {
+      const listed = await npmLs(this.fs, this.dir(), depth);
+      let text = `${listed.root.name}@${listed.root.version} ${this.cwd}\n`;
+      for (const entry of listed.entries) {
+        text += `${"  ".repeat(entry.depth + 1)}${entry.name}@${entry.version}\n`;
+      }
+      if (!listed.entries.length) text += "  (nothing installed — `npm install` fetches what package.json asks for)\n";
+      for (const name of listed.missing) text += `  UNMET DEPENDENCY ${name}\n`;
+      return ok(text);
+    } catch (err) {
+      return bad(`npm ls: ${this.message(err)}`);
+    }
+  }
+
+  /**
+   * `npm run <script>`: the plan `@00/agent-node` works out (pre/post hooks, npm's own environment,
+   * npm's two defaults for `start` and `test`), each line run through this same shell — which is
+   * exactly what npm does, `node_modules/.bin` included, since `runUnknown` is the PATH here.
+   */
+  private async npmRun(
+    name: string | undefined,
+    extra: string[] = [],
+    signal?: AbortSignal,
+    stream?: OutputSink,
+  ): Promise<ExecResult> {
+    if (!name) return bad("npm run: which script? `npm run` with a name, and package.json says the rest", 2);
+    let plan: Awaited<ReturnType<typeof npmRunPlan>>;
+    try {
+      plan = await npmRunPlan(this.fs, this.dir(), name);
+    } catch (err) {
+      return bad(`npm run: ${this.message(err).replace(/^npm run \S+: /, "")}`);
     }
     if (this.scriptDepth >= MAX_SCRIPT_DEPTH) {
       return bad(`npm run ${name}: scripts are ${MAX_SCRIPT_DEPTH} deep here — something is calling itself`);
     }
+    const passed = extra.filter((a) => a !== "--");
+    const out = new Out(stream);
+    const before = { ...this.env };
+    Object.assign(this.env, plan.env);
     this.scriptDepth += 1;
     try {
-      const result = await this.exec(line, { signal });
-      return { stdout: `> ${name}\n> ${line}\n\n${result.stdout}`, stderr: result.stderr, exitCode: result.exitCode };
+      let code = 0;
+      for (const step of plan.steps) {
+        const line = step === plan.steps[plan.steps.length - 1] && passed.length ? `${step.command} ${passed.join(" ")}` : step.command;
+        out.write("stdout", `> ${step.script}\n> ${line}\n\n`);
+        const result = await this.exec(line, { signal, onOutput: stream });
+        out.write("stdout", result.stdout);
+        out.write("stderr", result.stderr);
+        code = result.exitCode;
+        if (code !== 0) break;
+      }
+      return out.done(code);
     } finally {
       this.scriptDepth -= 1;
+      this.env = before;
     }
   }
 
-  /** `npx serve [dir]` is the one npx that means something here; the rest say where they can run. */
-  private async npxCommand({ argv }: CommandContext): Promise<ExecResult> {
+  /**
+   * `npx <tool>`: the local `node_modules/.bin` and nothing else. npx's other half — fetching a
+   * package it has never seen into a cache and running it — is a download a person did not ask for,
+   * so it says so and names `npm install` instead.
+   */
+  private async npxCommand({ argv, signal, stream }: CommandContext): Promise<ExecResult> {
     const tool = argv[1] ?? "";
     if (tool === "serve" || tool === "http-server") return await this.serveCommand(argv.slice(2));
-    if (!tool) return bad(`npx: which one? \`npx serve\` serves a folder. ${NO_PACKAGES_LINE}`, 2);
-    return bad(`npx ${tool}: ${NO_NODE_LINE}\n${NO_PACKAGES_LINE}`, EXIT_NOT_FOUND);
+    if (!tool) return bad(`npx: which one? \`npx serve\` serves a folder, and \`npx <tool>\` runs one from node_modules/.bin.`, 2);
+    const rewritten = await this.binArgv(argv.slice(1));
+    if (rewritten) {
+      return await this.runNode({ entry: rewritten.entry, argv: rewritten.args, signal, stream });
+    }
+    if (PACKAGE_CLIENTS.has(tool) || NODE_FAMILY.has(tool) || OTHER_BINARIES[tool]) return this.refuse(tool);
+    return bad(
+      `npx ${tool}: there is no ${tool} in node_modules/.bin here, and this npx does not fetch a package ` +
+        `you did not ask for — \`npm install ${tool}\` first.`,
+      EXIT_NOT_FOUND,
+    );
   }
 
   /** `serve [dir] [-p PORT]` — a workspace folder on a virtual port, served by the service worker. */
@@ -1301,12 +1561,14 @@ export class BuiltinShell implements Shell {
       `text       echo sort uniq tr cut`,
       `shell      cd pwd env date true false which help`,
       `git        init status log diff add commit branch checkout`,
-      `run        node file.js · node -e "…" · npm run <script>`,
+      `run        node file.js · node -e "…" · npm run <script> · npx <tool>`,
+      `packages   npm install [pkg] · npm ls`,
       `serve      serve ./dir -p 3000 · ports · kill 3000`,
       "",
       "pipes `|`, redirects `>` `>>` `<`, `&&` `||` `;`, quotes and one level of globbing.",
       `\`/\` is your workspace, and there is no way out of it.`,
-      `Scripts run in a Web Worker with fs, path, http and your own require — but ${NO_PACKAGES_LINE}.`,
+      `Scripts run in a Web Worker with Node's own modules, your own require and the packages npm put`,
+      `in node_modules — but ${NO_PACKAGES_LINE}.`,
       `python, curl, ssh, pnpm, vite: ${NO_NODE_LINE.replace("Node", "runtime")} — they are named, not hidden.`,
       "",
     ].join("\n");
