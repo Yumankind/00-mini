@@ -18,7 +18,17 @@ import {
   signingString,
   type Frame,
 } from "@00/shared";
-import * as engineWire from "../../00d/src/mobile-connect-wire.js";
+/**
+ * The engine's half of the wire, for the interop cases below. It lives in the private 00 repository
+ * beside this app; in the public 00-mini repository it is absent and those cases are skipped BY NAME
+ * (`itWithEngine`), while everything the browser signs and verifies on its own still runs.
+ */
+const engineWire = (await import(/* @vite-ignore */ "../../00d/src/mobile-connect-wire.js").catch(() => null)) as EngineWire | null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the engine module is deliberately untyped here: its types live with the engine
+type EngineWire = Record<string, any>;
+const itWithEngine = engineWire ? it : it.skip;
+/** Reached only inside `itWithEngine` cases, so the null never runs. */
+const engine = (): EngineWire => engineWire!;
 import {
   b64u,
   b64uDecode,
@@ -64,31 +74,31 @@ async function sharedKey(): Promise<{ privateKey: CryptoKey; seed: Uint8Array; p
 }
 
 describe("the engine's wire and the shared wire are the same wire", () => {
-  it("re-exports the same constants, not a second copy of them", () => {
-    expect(engineWire.MOBILE_CONNECT_VERSION).toBe(MOBILE_CONNECT_VERSION);
-    expect(engineWire.SUPPORTED_VERSIONS).toEqual(SUPPORTED_VERSIONS);
-    expect([...engineWire.FRAME_KINDS]).toEqual([...FRAME_KINDS]);
-    expect(engineWire.SESSION_TTL_MS).toBe(24 * 60 * 60 * 1000);
-    expect(engineWire.EMPTY_PAYLOAD_HASH).toBe(EMPTY_PAYLOAD_HASH);
+  itWithEngine("re-exports the same constants, not a second copy of them", () => {
+    expect(engine().MOBILE_CONNECT_VERSION).toBe(MOBILE_CONNECT_VERSION);
+    expect(engine().SUPPORTED_VERSIONS).toEqual(SUPPORTED_VERSIONS);
+    expect([...engine().FRAME_KINDS]).toEqual([...FRAME_KINDS]);
+    expect(engine().SESSION_TTL_MS).toBe(24 * 60 * 60 * 1000);
+    expect(engine().EMPTY_PAYLOAD_HASH).toBe(EMPTY_PAYLOAD_HASH);
   });
 
-  it("uses one field charset, character for character", () => {
-    expect(engineWire.WIRE_FIELD_RE.source).toBe(WIRE_FIELD_RE.source);
-    expect(engineWire.WIRE_FIELD_RE.flags).toBe(WIRE_FIELD_RE.flags);
+  itWithEngine("uses one field charset, character for character", () => {
+    expect(engine().WIRE_FIELD_RE.source).toBe(WIRE_FIELD_RE.source);
+    expect(engine().WIRE_FIELD_RE.flags).toBe(WIRE_FIELD_RE.flags);
     // The anchors are load-bearing: an LF inside a field of an LF-joined string lets a sender choose
     // where the boundaries fall, which is how two different frames sign identical bytes.
     expect(WIRE_FIELD_RE.test("prompt\ninjected")).toBe(false);
   });
 
-  it("builds byte-identical signing strings, including for an older version", () => {
-    const hash = engineWire.payloadHash("hello");
-    expect(engineWire.signingString(frame(), hash)).toBe(signingString(frame(), hash));
-    expect(engineWire.signingString(frame(), hash, "00mc/1")).toBe(signingString(frame(), hash, "00mc/1"));
+  itWithEngine("builds byte-identical signing strings, including for an older version", () => {
+    const hash = engine().payloadHash("hello");
+    expect(engine().signingString(frame(), hash)).toBe(signingString(frame(), hash));
+    expect(engine().signingString(frame(), hash, "00mc/1")).toBe(signingString(frame(), hash, "00mc/1"));
   });
 
-  it("hashes payloads the same way, WebCrypto against @noble", async () => {
+  itWithEngine("hashes payloads the same way, WebCrypto against @noble", async () => {
     for (const payload of ["hello", "", JSON.stringify({ text: "olá — ✓" }), "a".repeat(5000)]) {
-      expect(await payloadHash(payload)).toBe(engineWire.payloadHash(payload || undefined));
+      expect(await payloadHash(payload)).toBe(engine().payloadHash(payload || undefined));
     }
     expect(await payloadHash(undefined)).toBe(EMPTY_PAYLOAD_HASH);
     // The constant is pinned against a real sha256 rather than trusted: `@00/shared` holds no hash
@@ -96,20 +106,20 @@ describe("the engine's wire and the shared wire are the same wire", () => {
     expect(EMPTY_PAYLOAD_HASH).toBe(await payloadHash(new Uint8Array()));
   });
 
-  it("derives the same glance code, and never sends it", async () => {
+  itWithEngine("derives the same glance code, and never sends it", async () => {
     const code = await glanceCode("mc-aabbccddeeff", "ENGINEKEY", "PHONEKEY");
-    expect(code).toBe(engineWire.glanceCode("mc-aabbccddeeff", "ENGINEKEY", "PHONEKEY"));
+    expect(code).toBe(engine().glanceCode("mc-aabbccddeeff", "ENGINEKEY", "PHONEKEY"));
     expect(code).toMatch(/^[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}$/);
   });
 });
 
 describe("a signature crosses the two implementations", () => {
-  it("browser signs, engine verifies", async () => {
+  itWithEngine("browser signs, engine verifies", async () => {
     const key = await sharedKey();
     const f = frame();
     const sig = await signFrame(f, "hello", key.privateKey);
     expect(
-      engineWire.verifyFrame({
+      engine().verifyFrame({
         frame: f,
         payload: "hello",
         signatureB64u: sig,
@@ -121,10 +131,10 @@ describe("a signature crosses the two implementations", () => {
     ).toBeNull();
   });
 
-  it("engine signs, browser verifies", async () => {
+  itWithEngine("engine signs, browser verifies", async () => {
     const key = await sharedKey();
     const f = frame({ dir: "res" });
-    const sig = engineWire.signFrame(f, "hello", key.seed);
+    const sig = engine().signFrame(f, "hello", key.seed);
     expect(
       await verifyFrame({
         frame: f,
@@ -138,7 +148,7 @@ describe("a signature crosses the two implementations", () => {
     ).toBeNull();
   });
 
-  it("names the same refusals in the same order", async () => {
+  itWithEngine("names the same refusals in the same order", async () => {
     const key = await sharedKey();
     const f = frame();
     const sig = await signFrame(f, "hello", key.privateKey);
@@ -153,7 +163,7 @@ describe("a signature crosses the two implementations", () => {
     };
     const both = async (over: Partial<typeof base>) => {
       const mine = await verifyFrame({ ...base, ...over });
-      const theirs = engineWire.verifyFrame({ ...base, ...over });
+      const theirs = engine().verifyFrame({ ...base, ...over });
       expect(mine).toBe(theirs);
       return mine;
     };

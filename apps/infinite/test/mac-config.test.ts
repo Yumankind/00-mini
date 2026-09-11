@@ -5,19 +5,25 @@
 // origin the ENGINE derives (read out of the engine's own source, so the two cannot drift apart), a
 // build with no usable origin says so instead of fetching, and the origin actually answers.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { RELAY_NOT_CONFIGURED, RELAY_ORIGIN, envRelayOrigin, relayConfigured, relayOrigin } from "../src/mac/config.js";
 import { createRelay } from "../src/mac/relay.js";
 
 const engineClient = fileURLToPath(new URL("../../00d/src/overblast-client.ts", import.meta.url));
+/**
+ * The engine's sources sit beside this app in the private 00 repository and not in the public
+ * 00-mini one: a twin check against them runs where they are, and is skipped by name where they
+ * are not — the value under test is still pinned below to the origin the plan names.
+ */
+const itWithEngine = existsSync(engineClient) ? it : it.skip;
 
 // `import.meta.env` is inlined at BUILD time and cannot be moved from a node test, so the value under
 // test is passed in — the seam `relayOrigin()` and `relayConfigured()` declare for exactly this.
 
 describe("the relay origin", () => {
-  it("is the origin of the engine's own Overblast base", () => {
+  itWithEngine("is the origin of the engine's own Overblast base", () => {
     // The twin: `DEFAULT_BASE` in apps/00d/src/overblast-client.ts, and `relayFor()` in
     // mobile-connect-client.ts taking `new URL(overblastBaseUrl()).origin` of it. Read from the file
     // rather than imported, because this app must not depend on the engine package to hold a string.
