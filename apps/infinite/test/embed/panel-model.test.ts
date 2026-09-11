@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { matchLandmark, planNoBrainReply, subjectOf } from "../../embed/src/panel/no-brain.js";
 import {
-  SETUP_STEPS,
   WELL_KNOWN_PATH,
   buildSiteConfig,
   checkSiteFile,
@@ -71,10 +70,6 @@ describe("the owner's setup flow (§5.2.4)", () => {
     introLine: "Ask me where anything is.",
     knowledge: ["/faq.md"],
   };
-
-  it("has the five steps of the plan, in order", () => {
-    expect(SETUP_STEPS.map((s) => s.id)).toEqual(["site", "read", "intro", "keep", "later"]);
-  });
 
   it("says dev mode on a local origin", () => {
     expect(isDevOrigin("http://localhost:5173")).toBe(true);

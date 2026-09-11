@@ -6,32 +6,14 @@
  * first time, because the owner may only get one paste. So the production of it is pure, and
  * tested, and the view is just inputs bound to these fields.
  *
- * The five steps are §5.2.4's, in its order and in its words:
- *   1. This site — the origin, shown as a rule, not a choice. On localhost the flow says dev mode.
- *   2. What the agent may read — depth, includes/excludes, TTL, do-not-touch, and the auto knowledge
- *      base toggle, which asks how a visitor's session is kept BECAUSE that is how the agent knows
- *      to forget (index/session.ts holds the purge those answers drive).
- *   3. How it introduces itself — name, one line, and same-origin knowledge files.
- *   4. Where to keep these settings — a file on the site, or the snippet attribute.
- *   5. Optional, later — register, claim, publish, messages, a stronger brain. None required.
+ * Every answer §5.2.4 asks for lives in `SetupAnswers` below, and every field of the document it
+ * produces is built in `buildSiteConfig`. WHICH SCREEN ASKS FOR WHAT is not here: that is the walk,
+ * and the walk is `wizard-model.ts` (which is also where the step list went when the flow became a
+ * modal wizard). Nothing about the document moved when it did.
  */
 
 import type { ClaimNonceResult, RegisterResult } from "../registry/client.js";
 import { DEFAULT_SITE_CONFIG, LINK_PUB_RE, encodeDataSite, normalisePath, type SessionKind, type SiteConfig } from "../site-config.js";
-
-export interface SetupStep {
-  id: "site" | "read" | "intro" | "keep" | "later";
-  title: string;
-  blurb: string;
-}
-
-export const SETUP_STEPS: SetupStep[] = [
-  { id: "site", title: "This site", blurb: "The agent only ever reads this one domain. That is a rule, not a setting." },
-  { id: "read", title: "What it may read", blurb: "How deep to look on load, what to leave alone, and how long a page stays fresh." },
-  { id: "intro", title: "How it introduces itself", blurb: "A name, one line, and any text files on your site it may quote." },
-  { id: "keep", title: "Where to keep these settings", blurb: "A file on your site, or inside the snippet itself." },
-  { id: "later", title: "Optional, later", blurb: "Register for a stronger brain and for messages. Nothing here is required." },
-];
 
 export interface SetupAnswers {
   origin: string;
