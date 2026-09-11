@@ -54,6 +54,11 @@ export function rememberTool(opts: { now?: () => Date } = {}): Tool {
       const notePath = resolveInSandbox(ctx.sandbox, `memory/${date}.md`);
       await ctx.fs.mkdir(resolveInSandbox(ctx.sandbox, "memory"));
       const existing = (await ctx.fs.stat(notePath)) ? await ctx.fs.readText(notePath) : "";
+      // The same words twice on one day is a model repeating itself, not a second fact (a stuck
+      // Gemma wrote "waiting for the correct path" forty times on 2026-09-11). Said, not written.
+      if (existing.includes(`\n${note}\n`)) {
+        return { output: `Already remembered today, in ${relativeToSandbox(ctx.sandbox, notePath)} — nothing added.` };
+      }
       const head = existing || `# ${date}\n`;
       const entry = `\n## ${time}${title ? ` — ${title}` : ""}\n\n${note}\n`;
       await ctx.fs.writeFile(notePath, `${head.replace(/\n*$/, "\n")}${entry}`);

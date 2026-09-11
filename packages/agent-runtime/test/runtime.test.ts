@@ -111,7 +111,9 @@ describe("the loop", () => {
   });
 
   it("stops at maxSteps and says so", async () => {
-    const looping: ScriptedTurn[] = Array.from({ length: 10 }, () => ({ toolCalls: [call("ls")] }));
+    // Alternating arguments: a real walk that never repeats three rounds, so the loop detector
+    // (three identical rounds) stays out of it and maxSteps is what ends the run.
+    const looping: ScriptedTurn[] = Array.from({ length: 10 }, (_, i) => ({ toolCalls: [call("ls", { path: i % 2 ? "workspace" : "workspace/memory" })] }));
     const { runtime } = harness({ script: looping });
     const result = await runtime.run({ prompt: "loop", maxSteps: 3 });
     expect(result).toMatchObject({ steps: 3, stopped: "max_steps" });
@@ -752,5 +754,42 @@ describe("setExtraTools", () => {
   it("refuses a name that shadows a base tool, in the caller's stack", () => {
     const { runtime } = harness();
     expect(() => runtime.setExtraTools([extra("ls", "nope")])).toThrow(/already registered/);
+  });
+});
+
+// ── Loop detection (2026-09-11) ─────────────────────────────────────────────────────────────────
+
+describe("a model going in circles", () => {
+  it("is stopped by name after three identical rounds of tool calls, keeping the text it had", async () => {
+    const note = { note: "Waiting for the correct image path." };
+    const { runtime, events } = harness({
+      script: [
+        { text: "I will wait.", toolCalls: [call("remember", note)] },
+        { text: "Still waiting.", toolCalls: [call("remember", note)] },
+        { text: "Waiting.", toolCalls: [call("remember", note)] },
+        { text: "never reached" },
+      ],
+    });
+    const result = await runtime.run({ prompt: "can you see the image?" });
+    expect(result.stopped).toBe("loop");
+    expect(result.steps).toBe(3);
+    expect(result.text).toBe("Waiting.");
+    const error = events.find((e) => e.type === "error") as { message: string } | undefined;
+    expect(error?.message).toMatch(/`remember` with the same arguments 3 times in a row/);
+    // The third round's call was NOT run: two remembers, not three.
+    expect(events.filter((e) => e.type === "tool_started").length).toBe(2);
+  });
+
+  it("does not mistake progress for a loop: the same tool with different arguments runs on", async () => {
+    const { runtime } = harness({
+      script: [
+        { toolCalls: [call("ls", { path: "workspace" })] },
+        { toolCalls: [call("ls", { path: "workspace/memory" })] },
+        { toolCalls: [call("ls", { path: "workspace" })] },
+        { text: "done looking" },
+      ],
+    });
+    const result = await runtime.run({ prompt: "look around" });
+    expect(result).toMatchObject({ stopped: "final", text: "done looking", steps: 4 });
   });
 });

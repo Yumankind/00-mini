@@ -29,6 +29,7 @@ export {
   contextTokensOf,
   DEFAULT_CONTEXT_TOKENS,
   DEFAULT_MAX_STEPS,
+  LOOP_ROUNDS,
   DEFAULT_WORKSPACE,
   OWN_TOOLS_FOOTER,
   providerOffersTools,

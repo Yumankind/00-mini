@@ -361,6 +361,17 @@ This is that list. Every item is committed and pushed on 00Local `main` (moltwor
     mentions and the workers.dev account name. Creating the GitHub repository is the click the owner
     makes.
 
+37. **A model going in circles is stopped by name** (Bruno's transcript, 2026-09-11: a stuck Gemma
+    wrote `remember("Waiting for the correct image path")` forty times). Three things: the
+    prompt-fallback parser runs ONE call for twelve identical spellings in one message; the loop ends
+    a run after three identical rounds of tool calls (`RunResult.stopped = "loop"`, additive, with an
+    error that names the call — "going in circles, not working"); and `remember` refuses a note it
+    already holds for the day. On the picture itself: the vision road (read → image parts → LiteRT
+    prompt segments) is implemented and pinned; a brain without vision gets "[A picture was attached
+    (path), but this model cannot see pictures.]" — the transcript's "path is incorrect" was a
+    text-only row talking about a picture it never saw. Gemma 3n is the vision row, and its 3 GB
+    load only became possible with the streamed model load of the same day.
+
 **Things I did NOT do, on purpose**
 - No deploy of the landing, the site Worker, or moltworker (your call each time).
 - No enabling of `INFINITE_ENABLED`, no D1 migration applied, no secrets created.

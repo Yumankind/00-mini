@@ -149,7 +149,12 @@ export interface RunResult {
   text: string;
   steps: number;
   usage: Usage;
-  stopped: "final" | "max_steps" | "aborted" | "error";
+  /**
+   * `loop` (additive, 2026-09-11): the model asked for the same tool calls, with the same arguments,
+   * three steps in a row — a small model stuck on "remember this" forty times over. The run ends
+   * with an `error` event that names the call, and whatever text it had produced.
+   */
+  stopped: "final" | "max_steps" | "aborted" | "error" | "loop";
   /**
    * Which brain actually answered, and on which model (contract revision 2026-09-10). The LAST one
    * of the run, because a run that switched brains mid-way ended on this one — and because the

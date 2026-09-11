@@ -65,6 +65,8 @@ import { SeenFiles } from "./tools-fs.js";
 import { MAX_OUTPUT_CHARS, capToolOutput } from "./truncate.js";
 
 export const DEFAULT_MAX_STEPS = 40;
+/** Identical rounds of tool calls in a row that end a run as a loop (see the loop's fingerprint). */
+export const LOOP_ROUNDS = 3;
 /** The full agent's sandbox. The light agent's is its own thread folder, passed per run. */
 export const DEFAULT_WORKSPACE = "workspace";
 
@@ -240,6 +242,16 @@ export function dropOlderTurns(messages: ChatMessage[]): number {
   return removed;
 }
 
+/** JSON with sorted keys, so two spellings of the same arguments fingerprint the same. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((k) => `${JSON.stringify(k)}:${stableJson(rec[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
   const fs: AgentFs = opts.fs;
   const bus = new EventBus();
@@ -368,6 +380,14 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
       };
 
       const maxSteps = run.maxSteps ?? DEFAULT_MAX_STEPS;
+      /**
+       * Loop detection (2026-09-11): the fingerprint of each step's tool calls, and how many steps in
+       * a row it has held. A model that writes `remember` with the same note step after step is not
+       * working, it is stuck, and `maxSteps` (40) is far too late to notice — the person watched it
+       * fill its memory with the same line. Three identical rounds end the run by name.
+       */
+      let lastRound = "";
+      let sameRounds = 0;
       while (steps < maxSteps) {
         if (signal.aborted) return finish("aborted");
         steps++;
@@ -490,6 +510,18 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
           emit({ type: "agent_message", text, final: true });
         }
         if (!calls.length) return finish("final");
+
+        const round = calls.map((c) => `${c.name}\u0000${stableJson(c.arguments)}`).sort().join("\n");
+        sameRounds = round === lastRound ? sameRounds + 1 : 1;
+        lastRound = round;
+        if (sameRounds >= LOOP_ROUNDS) {
+          const what = calls.length === 1 ? `\`${calls[0]!.name}\`` : `the same ${calls.length} tool calls`;
+          emit({
+            type: "error",
+            message: `stopped: the model asked for ${what} with the same arguments ${LOOP_ROUNDS} times in a row — it is going in circles, not working. Try rephrasing, or pick a stronger brain.`,
+          });
+          return finish("loop");
+        }
 
         // Rule 1: sequential, in emitted order.
         for (const call of calls) {

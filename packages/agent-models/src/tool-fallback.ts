@@ -160,6 +160,16 @@ function toCall(raw: unknown, index: number): ToolCall | null {
  * answer. What it returns as `text` is the answer with those spans removed, so a model that wrote a
  * sentence and then a call does not have the call read twice — once as prose, once as an action.
  */
+/** JSON with sorted keys, so two spellings of the same arguments compare equal. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((k) => `${JSON.stringify(k)}:${stableJson(rec[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 export function parseFallbackToolCalls(raw: string): { text: string; calls: ToolCall[] } {
   const calls: ToolCall[] = [];
   // The wrappers go first: their contents are then plain JSON to the span scan below.
@@ -177,8 +187,12 @@ export function parseFallbackToolCalls(raw: string): { text: string; calls: Tool
     }
     const call = toCall(parsed, calls.length);
     if (!call) continue;
-    calls.push(call);
     consumed.push(span);
+    // A small model that has decided on a call often writes it three, six, twelve times in one
+    // message (seen with `remember` on 2026-09-11). Twelve identical writes are one decision: the
+    // repeats are consumed out of the text and not run again.
+    if (calls.some((c) => c.name === call.name && stableJson(c.arguments) === stableJson(call.arguments))) continue;
+    calls.push(call);
   }
   let out = text;
   for (const span of consumed.slice().reverse()) out = out.slice(0, span.start) + out.slice(span.end);

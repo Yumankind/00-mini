@@ -155,3 +155,23 @@ describe("parsing what the model writes back", () => {
     expect(calls.map((c) => c.id)).toEqual(["call_0", "call_1"]);
   });
 });
+
+describe("a model that repeats itself (2026-09-11)", () => {
+  it("runs one call for twelve identical spellings in one message, and consumes all twelve from the text", () => {
+    const one = '{"tool_call": {"name": "remember", "arguments": {"note": "Waiting for the path."}}}';
+    const raw = `Okay, I will wait.\n${Array.from({ length: 12 }, () => one).join("\n")}\nDone.`;
+    const parsed = parseFallbackToolCalls(raw);
+    expect(parsed.calls).toHaveLength(1);
+    expect(parsed.calls[0]).toMatchObject({ name: "remember", arguments: { note: "Waiting for the path." } });
+    expect(parsed.text).toBe("Okay, I will wait.\n\nDone.");
+  });
+
+  it("keeps two calls that differ in arguments, whatever the key order", () => {
+    const raw = [
+      '{"tool_call": {"name": "read", "arguments": {"path": "a.md", "limit": 5}}}',
+      '{"tool_call": {"name": "read", "arguments": {"limit": 5, "path": "a.md"}}}',
+      '{"tool_call": {"name": "read", "arguments": {"path": "b.md"}}}',
+    ].join("\n");
+    expect(parseFallbackToolCalls(raw).calls.map((c) => c.arguments.path)).toEqual(["a.md", "b.md"]);
+  });
+});
