@@ -25,6 +25,9 @@
 export const MINI_CSS = `
 :host { all: initial; }
 .mini, .mini *, .mini *::before, .mini *::after { box-sizing: border-box; }
+/* The hidden attribute is how this widget hides a row it may show again, and every display rule
+   below would otherwise out-specify the browser's own [hidden] { display: none }. */
+.mini [hidden] { display: none !important; }
 .mini {
   --mini-void: #ffffff; --mini-card: #fafafa; --mini-panel: #f4f4f5; --mini-panel-2: #ececee;
   --mini-line: #e4e4e7; --mini-ink: #111113; --mini-dim: #6b6b74; --mini-faint: #9b9ba3;
@@ -251,6 +254,134 @@ export const MINI_CSS = `
 }
 .mini-note { color: var(--mini-dim); font-size: 11px; }
 
+/* ── the owner's setup: a centred modal wizard over the panel (§5.2.4) ────────────────────────── */
+/* Fixed to the viewport rather than to the .mini column, which is a 400 px column in the bottom-right corner:
+   the setup is the whole screen's business for as long as it is up. It is still inside the closed
+   shadow root, so "over the page" never means a node on the page. */
+.mini-modal {
+  position: fixed; inset: 0; z-index: 10; display: none; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.mini-modal[data-open="1"] { display: flex; }
+.mini-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+.mini-wizard {
+  position: relative; display: flex; flex-direction: column; text-align: left;
+  width: 100%; max-width: 560px; max-height: calc(100vh - 48px);
+  background: var(--mini-void); border: 1px solid var(--mini-line); border-radius: 18px;
+  box-shadow: var(--mini-shadow); overflow: hidden;
+}
+.mini-wizard-head {
+  display: flex; align-items: center; gap: 9px; padding: 12px 14px;
+  border-bottom: 1px solid var(--mini-line); background: var(--mini-card);
+}
+.mini-wizard-head h2 { margin: 0; font: 600 14px/1.35 var(--mini-font); min-width: 0; }
+.mini-wizard-head .mini-icon { margin-left: auto; flex: none; }
+
+/* The progress row: five numbered steps, done behind, current lit, next waiting. Scoped under
+   .mini-steps so the plain .mini-step card keeps the look it has. */
+.mini-steps {
+  display: flex; gap: 8px; padding: 10px 14px; overflow-x: auto;
+  border-bottom: 1px solid var(--mini-line); background: var(--mini-card);
+}
+.mini-steps .mini-step {
+  flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px;
+  border: 0; border-radius: 8px; padding: 2px; background: transparent; cursor: default;
+  color: var(--mini-faint); font: 600 10.5px/1.2 var(--mini-font); text-align: left;
+}
+.mini-steps .mini-step span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-steps .mini-step i {
+  flex: none; width: 18px; height: 18px; border-radius: 999px; font-style: normal;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--mini-panel-2); color: var(--mini-dim); font-size: 10px;
+}
+.mini-steps .mini-step[data-state="done"] { color: var(--mini-dim); cursor: pointer; }
+.mini-steps .mini-step[data-state="done"] i { background: var(--mini-accent); color: var(--mini-void); }
+.mini-steps .mini-step[data-state="current"] { color: var(--mini-ink); }
+.mini-steps .mini-step[data-state="current"] i { background: var(--mini-ink); color: var(--mini-void); }
+.mini-steps .mini-step:disabled { opacity: .75; }
+
+.mini-wizard-body { flex: 1; overflow-y: auto; padding: 15px 14px; display: flex; flex-direction: column; gap: 13px; }
+/* A column that scrolls must not also squash: without this the review's summary is compressed to
+   whatever is left rather than scrolled to. */
+.mini-wizard-body > * { flex: 0 0 auto; }
+.mini-wizard-body > .mini-copy { align-self: flex-start; margin-top: 0; }
+.mini-wizard-body h3 { margin: 0; font: 600 14px/1.35 var(--mini-font); }
+.mini-wizard-body > h3 + .mini-note { margin: -11px 0 0; }
+.mini-wizard-group { display: flex; flex-direction: column; gap: 13px; }
+.mini-wizard .mini-field { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
+.mini-wizard .mini-field.row { flex-direction: row; align-items: center; gap: 9px; }
+.mini-wizard .mini-field > .mini-note { margin: 0; }
+.mini-wizard label { display: block; font: 600 11.5px/1.4 var(--mini-font); color: var(--mini-dim); }
+.mini-wizard .mini-field.row label { color: var(--mini-ink); font-weight: 500; font-size: 13px; }
+.mini-wizard input, .mini-wizard select, .mini-wizard textarea {
+  width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--mini-line);
+  background: var(--mini-void); color: var(--mini-ink); font: 400 13px/1.4 var(--mini-font);
+}
+.mini-wizard input[type="checkbox"] { width: auto; flex: none; }
+.mini-wizard p { margin: 0; }
+.mini-wizard .mini-error:empty { display: none; }
+.mini-wizard .mini-error { color: var(--mini-red); font-size: 11.5px; }
+.mini-preview {
+  display: flex; justify-content: center; padding: 14px; border-radius: 12px;
+  background: var(--mini-panel); border: 1px dashed var(--mini-line);
+}
+
+/* A path list, as what it is: one chip a path, each removable on its own. */
+.mini-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mini-chips:empty { display: none; }
+.mini-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 9px;
+  border: 1px solid var(--mini-line); border-radius: 999px; background: var(--mini-panel);
+  font: 400 11.5px/1.5 var(--mini-mono); overflow-wrap: anywhere;
+}
+.mini-chip button {
+  border: 0; background: transparent; color: var(--mini-dim); cursor: pointer; padding: 0;
+  width: 17px; height: 17px; border-radius: 999px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; font: 400 12px/1 var(--mini-font);
+}
+.mini-chip button:hover { background: var(--mini-panel-2); color: var(--mini-ink); }
+
+.mini-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 9px; align-items: start; }
+.mini-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 11px; text-align: left;
+  border: 1px solid var(--mini-line); border-radius: 14px; background: var(--mini-void);
+  color: var(--mini-ink); font: inherit;
+}
+button.mini-card { cursor: pointer; }
+button.mini-card:hover { border-color: var(--mini-dim); }
+.mini-card b { font: 600 12.5px/1.35 var(--mini-font); }
+.mini-card p { font-size: 11.5px; color: var(--mini-dim); }
+.mini-card[data-picked="1"] { border-color: var(--mini-accent); background: color-mix(in srgb, var(--mini-accent) 9%, var(--mini-void)); }
+.mini-card-foot { display: flex; flex-wrap: wrap; gap: 6px; }
+.mini-card-foot .mini-copy { margin-top: 0; }
+.mini-card .mini-licence { font-size: 11px; color: var(--mini-dim); }
+.mini-card .mini-licence a { color: inherit; }
+
+.mini-summary { border: 1px solid var(--mini-line); border-radius: 12px; overflow: hidden; }
+.mini-summary > div { display: flex; align-items: baseline; gap: 9px; padding: 6px 10px; font-size: 11.5px; border-top: 1px solid var(--mini-line); }
+.mini-summary > div:first-child { border-top: 0; }
+.mini-summary b { flex: 0 0 36%; color: var(--mini-dim); font-weight: 600; }
+.mini-summary span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.mini-jump {
+  flex: none; border: 0; background: transparent; color: var(--mini-dim); cursor: pointer;
+  padding: 0; text-decoration: underline; font: 500 11px/1.4 var(--mini-font);
+}
+.mini-jump:hover { color: var(--mini-ink); }
+
+.mini-wizard-foot {
+  display: flex; align-items: center; gap: 8px; padding: 11px 14px;
+  border-top: 1px solid var(--mini-line); background: var(--mini-card);
+}
+.mini-wizard-foot .mini-grow { margin-left: auto; }
+.mini-wizard-foot button {
+  border: 1px solid var(--mini-line); background: transparent; color: var(--mini-ink);
+  border-radius: 10px; padding: 7px 15px; cursor: pointer; font: 600 12.5px/1.2 var(--mini-font);
+}
+/* DESIGN.md: the primary button is ink on void, never mint. */
+.mini-wizard-foot button.primary { background: var(--mini-ink); color: var(--mini-void); border-color: var(--mini-ink); }
+.mini-wizard-foot button:disabled { opacity: .4; cursor: default; }
+.mini-wizard-foot .mini-note { margin-right: 4px; }
+
 /* ── a phone: the panel is a sheet, the launcher stays out of the page's own buttons ──────────── */
 @media (max-width: 480px) {
   .mini { right: 10px; left: 10px; bottom: 10px; align-items: stretch; }
@@ -259,9 +390,18 @@ export const MINI_CSS = `
     width: auto; max-width: none; height: min(80vh, 640px);
     border-radius: 18px 18px 12px 12px; padding-bottom: env(safe-area-inset-bottom);
   }
+  /* The wizard is a full-screen sheet: five screens of questions do not fit beside a phone's edge. */
+  .mini-modal { padding: 0; }
+  .mini-wizard {
+    max-width: none; height: 100%; max-height: none; border: 0; border-radius: 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .mini-cards { grid-template-columns: 1fr; }
+  .mini-summary b { flex-basis: 42%; }
 }
 @media (prefers-reduced-motion: no-preference) {
   .mini-panel[data-open="1"] { animation: mini-rise .16s ease-out; }
+  .mini-modal[data-open="1"] .mini-wizard { animation: mini-rise .16s ease-out; }
   @keyframes mini-rise { from { transform: translateY(8px); opacity: 0 } to { transform: none; opacity: 1 } }
 }
 `;

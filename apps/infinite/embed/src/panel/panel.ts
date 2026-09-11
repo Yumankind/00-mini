@@ -19,7 +19,7 @@ import type { SiteIndex } from "../index/site-index.js";
 import { pathOf } from "../index/site-index.js";
 import type { PageBridge } from "../page/bridge.js";
 import { matchLandmark, planNoBrainReply } from "./no-brain.js";
-import { renderSetup, type AdminFlow } from "./setup.js";
+import { renderSetup, type AdminFlow, type SetupHandle } from "./setup.js";
 import { PANEL_CSS } from "./styles.js";
 import { MINI_NAME, pixelFaceSvg } from "../../../src/mini/brand.js";
 import { renderMarkdown } from "../../../src/lib/markdown-lite.js";
@@ -403,21 +403,50 @@ export function createPanel(deps: PanelDeps): PanelHandle {
     });
   });
 
+  /**
+   * The owner's setup is a MODAL over the panel, not a screen inside it (§5.2.4, DESIGN.md).
+   *
+   * Built on the first press of the gear and then kept: the answers a person has given survive a
+   * close, and the register card of §5.3 keeps whatever the registry told it. It lives in the same
+   * closed shadow root as everything else here — the flow never puts a node on the host page.
+   */
+  let setup: SetupHandle | null = null;
+  const setupHost = el("div");
+  wrap.append(setupHost);
   gear.addEventListener("click", () => {
-    body.replaceChildren();
-    const host = el("div");
-    body.append(host);
-    if (deps.notes.length) for (const note of deps.notes) say("status", note, false);
-    renderSetup(host, {
+    setup ??= renderSetup(setupHost, {
       origin: deps.origin,
       ref: deps.ref,
       productHost: deps.productHost,
       fetchImpl: deps.fetchImpl,
-      onApply: deps.applyConfig,
+      // The header and the launcher ARE step 1's preview, so they follow the answers.
+      onApply: (next) => {
+        deps.applyConfig(next);
+        relabel(next);
+      },
       ...(deps.admin ? { admin: deps.admin } : {}),
+      // The notes the carriers produced (a rejected site file, a clamped field) are the owner's
+      // business, and the review step is where an owner is reading about their settings.
+      ...(deps.notes.length ? { notes: deps.notes } : {}),
+      localAi: {
+        sizeMb: deps.localAi.sizeMb,
+        model: deps.localAi.model,
+        ...(deps.localAi.note ? { note: deps.localAi.note } : {}),
+      },
       linkPub: deps.config.linkPub ?? "",
+      onClose: () => input.focus(),
     });
+    setup.open();
   });
+
+  /** Step 1 of the setup, applied: the name and the line a visitor reads are these. */
+  const relabel = (next: SiteConfig): void => {
+    const name = next.intro.name || MINI_NAME;
+    title.querySelector(".mini-title")!.textContent = name;
+    title.querySelector(".mini-sub")!.textContent = next.intro.line || `${deps.index.size()} pages known`;
+    launcher.lastElementChild!.textContent = name;
+    panel.setAttribute("aria-label", name);
+  };
 
   const setOpen = (next: boolean): void => {
     const changed = next !== open;
