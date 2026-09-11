@@ -7,6 +7,8 @@ import { snap } from "./helpers.js";
 import type { CreateLoaderOptions } from "../src/loader/index.js";
 import { NodeFsBackend } from "../src/fs/backend.js";
 import { MemoryFs } from "@00/agent-fs";
+import { createEsbuildTransformer } from "../src/transform/esbuild.js";
+import type { Transformer } from "../src/loader/transform.js";
 
 /**
  * The scripts these processes run. Ordinary CommonJS, as a person would write it, so what is being
@@ -49,13 +51,14 @@ interface Harness {
   fs: MemoryFs;
 }
 
-function harness(extra: Record<string, string> = {}): Harness {
+function harness(extra: Record<string, string> = {}, transformer: Transformer | null = null): Harness {
   const fs = new MemoryFs();
   const loaderFs = snap({ ...scripts, ...extra });
   const factory = createInlineWorkerFactory({
     configure(spec: ProcessSpec, io: ProcessIo): CreateLoaderOptions {
       const backend = new NodeFsBackend({ fs, root: "", cwd: () => spec.cwd });
       return {
+        transformer,
         fs: loaderFs,
         cwd: spec.cwd,
         root: "/",
@@ -311,5 +314,29 @@ describe("worker_threads over the manager", () => {
     const message = await new Promise<unknown>((resolve) => worker.on("message", resolve));
     expect(message).toEqual({ from: "child" });
     await worker.terminate();
+  });
+});
+
+
+describe("a TypeScript entry through the process wire (the runner warms the graph up before it runs)", () => {
+  it("runs `node typed.ts` — the entry and a .ts it requires — when a transformer is configured", async () => {
+    const { manager } = harness(
+      {
+        "/typed.ts": `import { double } from "./lib"; const n: number = 21; console.log("ts says", double(n));`,
+        "/lib.ts": `export function double(x: number): number { return x * 2; }`,
+      },
+      createEsbuildTransformer(),
+    );
+    const result = await collect(manager.spawn("node", ["/typed.ts"]));
+    expect(result.err).toBe("");
+    expect(result.out).toBe("ts says 42\n");
+    expect(result.code).toBe(0);
+  });
+
+  it("refuses a .ts entry by name when the host gave no transformer", async () => {
+    const { manager } = harness({ "/typed.ts": `const n: number = 1; console.log(n);` });
+    const result = await collect(manager.spawn("node", ["/typed.ts"]));
+    expect(result.code).toBe(1);
+    expect(result.err).toMatch(/TypeScript transform/);
   });
 });

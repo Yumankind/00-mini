@@ -57,10 +57,21 @@ import {
   type NetworkBridge,
   type NodeProcess,
   type ProcessIo,
+  createEsbuildTransformer,
   type ProcessSpec,
   type ProcessWorker,
   type WorkerChannel,
 } from "@00/agent-node";
+
+/**
+ * One transformer per Worker, made on first use. The wasm path is a build-time constant from
+ * vite.config.ts; a host that built without it (a test) gets no transformer and `.ts` refuses by name.
+ */
+function transformer(): ReturnType<typeof createEsbuildTransformer> | null {
+  const path = typeof __ESBUILD_WASM_URL__ === "string" ? __ESBUILD_WASM_URL__ : null;
+  if (!path || typeof self === "undefined" || !("location" in self)) return null;
+  return createEsbuildTransformer({ wasmURL: new URL(path, (self as unknown as { location: Location }).location.origin).href });
+}
 
 // ── The wire this file adds to agent-node's own ───────────────────────────────────────────────────
 
@@ -432,6 +443,9 @@ export function serveNodeProcess(channel: WorkerChannel): void {
         // `fetch` inside a module is the same door `http.get` is, and it is shadowed rather than left
         // as the Worker's own global so the allow list cannot be walked around by spelling.
         globals: { fetch: (input: string, init?: Record<string, unknown>) => network.fetch(input, init as { method?: string }) },
+        // TypeScript, TSX and JSX through esbuild-wasm, initialised lazily from this origin's copy of
+        // the binary (vite.config.ts `esbuildWasm()`); a plain .js run never fetches it.
+        transformer: transformer(),
       };
     },
     onReady(loader) {

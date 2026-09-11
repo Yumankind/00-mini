@@ -175,6 +175,55 @@ function mediapipeWasm(): Plugin {
 }
 
 /**
+ * ESBUILD'S WASM, SAME-ORIGIN, VERSIONED. `@00/agent-node`'s TypeScript transform initialises
+ * esbuild-wasm from `/esbuild/<version>/esbuild.wasm` on THIS origin: under COOP+COEP a CDN copy
+ * would not load, and esbuild's JS half refuses a binary whose version differs from its own, so the
+ * version is in the path and read from the package rather than typed. 12 MB, under Cloudflare's 25 MiB
+ * asset cap, so unlike MediaPipe's runtime it can ship as a static asset (build-site.sh copies dist/
+ * minus embed/ and mediapipe/ — this folder rides along). Fetched only when a `.ts` file is run.
+ */
+function esbuildWasm(): Plugin {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkgDir = resolve(here, "../../packages/agent-node/node_modules/esbuild-wasm");
+  const version = ((): string => {
+    try {
+      return (JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as { version: string }).version;
+    } catch {
+      return "unknown";
+    }
+  })();
+  const file = join(pkgDir, "esbuild.wasm");
+  const urlPath = `/esbuild/${version}/esbuild.wasm`;
+  let outDir = "dist";
+  let root = process.cwd();
+  return {
+    name: "infinite-esbuild-wasm",
+    // The runner reads the path from this define, so the two can never disagree about the version.
+    config() {
+      return { define: { __ESBUILD_WASM_URL__: JSON.stringify(urlPath) } };
+    },
+    configResolved(config) {
+      outDir = config.build.outDir;
+      root = config.root;
+    },
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if ((request.url?.split("?")[0] ?? "") !== urlPath || !existsSync(file)) return next();
+        response.setHeader("content-type", "application/wasm");
+        response.setHeader("cache-control", "public, max-age=31536000, immutable");
+        response.end(readFileSync(file));
+      });
+    },
+    closeBundle() {
+      if (!existsSync(file)) return;
+      const dest = resolve(root, outDir, "esbuild", version);
+      cpSync(file, join(dest, "esbuild.wasm"), { recursive: true });
+      console.log(`esbuild wasm: ${version} copied to dist/esbuild/${version}/esbuild.wasm`);
+    },
+  };
+}
+
+/**
  * THE LAN, OVER HTTPS. Everything the agent is built on — OPFS, WebGPU, WebCrypto keys, the service
  * worker — exists only in a secure context, which plain http gets on localhost and nowhere else. To
  * open the app from a phone or another machine on the LAN, the dev server must speak https, and the
@@ -223,7 +272,7 @@ const ISOLATION_HEADERS = {
 };
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), serviceWorkerPrecache(), mediapipeWasm()],
+  plugins: [vue(), tailwindcss(), serviceWorkerPrecache(), mediapipeWasm(), esbuildWasm()],
   /**
    * THE NODE RUNTIME IS A MODULE WORKER. `src/power/js-runner.ts` starts one process per `node`
    * command with `new Worker(new URL("./node-runtime-worker.ts", import.meta.url), { type: "module" })`,

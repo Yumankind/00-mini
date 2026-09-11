@@ -203,19 +203,26 @@ export function serveProcess(channel: WorkerChannel, opts: ProcessRuntimeOptions
       end(127);
       return;
     }
-    try {
-      loader.runMain(spec.entry, spec.argv.slice(2));
-    } catch (err) {
-      if (err instanceof ExitSignal) {
-        end(err.code);
+    // TypeScript needs the warm-up first (the browser's esbuild has no synchronous transform — see
+    // loader/index.ts), and a warm-up is an await, so the entry runs from an async tail. A plain
+    // JavaScript entry with no transformer takes the same road with nothing to await.
+    const run = async (): Promise<void> => {
+      try {
+        if (config.transformer) await loader.warmup(spec.entry!);
+        loader.runMain(spec.entry!, spec.argv.slice(2));
+      } catch (err) {
+        if (err instanceof ExitSignal) {
+          end(err.code);
+          return;
+        }
+        post({ t: "stderr", text: `${(err as Error)?.stack ?? String(err)}\n` });
+        end(1);
         return;
       }
-      post({ t: "stderr", text: `${(err as Error)?.stack ?? String(err)}\n` });
-      end(1);
-      return;
-    }
-    mainDone = true;
-    settleLater();
+      mainDone = true;
+      settleLater();
+    };
+    void run();
   };
 
   channel.onMessage((raw) => {
