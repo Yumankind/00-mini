@@ -10,18 +10,13 @@
  * THE BOUNDARY IS THE EMBED'S BOUNDARY (§13): read, scroll, outline, describe, and navigate within
  * this origin. There is no click, no fill, no submit — not disabled, ABSENT.
  *
- * ── THE DOOR THAT IS NOT THERE ─────────────────────────────────────────────────────────────────
- * `AgentRuntime` (packages/agent-runtime/src/api.ts) takes its tools at CONSTRUCTION and exposes no
- * way to add one afterwards: `RunOptions.tools` filters names that are already registered, there is
- * no `setTools`/`registerTool` on the interface, and the `ToolRegistry` inside `createAgentRuntime`
- * is private. The runtime for this app is built once in `src/runtime/bootstrap.ts`, before anything
- * knows whether this load is the landing page or the app.
- *
- * So `installPageTools` PROBES for a door and reports what it found. Where a door appears — the
- * frozen contract growing a `registerTool`, or the bootstrap taking page tools — this starts working
- * with no change here. Where there is none, it returns `installed: false` with the reason, the
- * landing agent still gets the page's map through `landingContext()` (which needs no door at all),
- * and nothing pretends to have been wired.
+ * ── THE DOOR ────────────────────────────────────────────────────────────────────────────────────
+ * `AgentRuntime.setExtraTools` (contract revision 2026-09-11 (e)) takes a second list beside the
+ * host's base table and replaces it on every call; the next run sees it, a run in flight keeps its
+ * own. `installPageTools` hands the five tools through it and `uninstallPageTools` hands `[]`, which
+ * is what Root does when the full app takes the screen — `/app` has no page under it to point at.
+ * The install never throws: a landing page that cannot point at its own sections is a smaller
+ * failure than a landing page that does not load, so the report says what happened instead.
  */
 
 import type { Tool } from "@00/agent-runtime";
@@ -205,36 +200,34 @@ export interface InstallReport {
   names: string[];
 }
 
-/**
- * Hand the tools to a runtime, if that runtime has anywhere to put them.
- *
- * The probe is deliberately narrow — two names, both of which would mean exactly this on the frozen
- * contract — and it never throws: a landing page that cannot point at its own sections is a smaller
- * failure than a landing page that does not load.
- */
+interface ExtraToolsHost {
+  setExtraTools?: (tools: Tool[]) => unknown;
+}
+
+/** Hand the tools to a runtime through `setExtraTools`; report, never throw. */
 export function installPageTools(runtime: unknown, tools: Tool[]): InstallReport {
   const names = tools.map((t) => t.schema.name);
-  const host = runtime as {
-    registerTool?: (tool: Tool) => unknown;
-    setTools?: (tools: Tool[]) => unknown;
-  } | null;
+  const host = runtime as ExtraToolsHost | null;
   if (!host) return { installed: false, detail: "no runtime", names };
+  if (typeof host.setExtraTools !== "function") {
+    return { installed: false, detail: "this runtime has no setExtraTools (contract revision 2026-09-11 (e))", names };
+  }
   try {
-    if (typeof host.registerTool === "function") {
-      for (const tool of tools) host.registerTool(tool);
-      return { installed: true, detail: "runtime.registerTool", names };
-    }
-    if (typeof host.setTools === "function") {
-      host.setTools(tools);
-      return { installed: true, detail: "runtime.setTools", names };
-    }
+    host.setExtraTools(tools);
+    return { installed: true, detail: "runtime.setExtraTools", names };
   } catch (err) {
     return { installed: false, detail: `the runtime refused them: ${err instanceof Error ? err.message : String(err)}`, names };
   }
-  return {
-    installed: false,
-    detail:
-      "AgentRuntime takes its tools at construction and exposes no registerTool/setTools; the page tools are ready and unwired (see the module header)",
-    names,
-  };
+}
+
+/** Take them away again — the next run has only the base table. Safe on a runtime without the door. */
+export function uninstallPageTools(runtime: unknown): void {
+  const host = runtime as ExtraToolsHost | null;
+  if (host && typeof host.setExtraTools === "function") {
+    try {
+      host.setExtraTools([]);
+    } catch {
+      /* nothing to take away */
+    }
+  }
 }

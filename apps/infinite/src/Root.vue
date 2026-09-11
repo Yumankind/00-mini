@@ -17,7 +17,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import App from "./App.vue";
 import LandingPage from "./landing/LandingPage.vue";
 import MiniWidget from "./components/MiniWidget.vue";
-import { boot } from "./state/agent.js";
+import { agent, boot } from "./state/agent.js";
 import { listen } from "./state/conversation.js";
 import { startTheme } from "./state/install.js";
 import { primeBrains } from "./state/model-choice.js";
@@ -25,6 +25,9 @@ import { loadMoveReceipt } from "./state/move.js";
 import { startOffline } from "./state/offline.js";
 import { refreshVault } from "./state/vault.js";
 import { currentUrl, isAppUrl } from "./mini/nav.js";
+import { buildPageTools, installPageTools, uninstallPageTools } from "./mini/page-tools.js";
+import { LANDING_SECTIONS } from "./landing/sections.js";
+import { createDomBridge } from "../embed/src/page/dom-bridge.js";
 
 const url = ref(currentUrl());
 const isApp = computed(() => isAppUrl(url.value));
@@ -43,12 +46,22 @@ async function startLanding(): Promise<void> {
   await refreshVault();
   listen();
   void primeBrains();
+  // The agent can see the page it floats over: the embed's own bridge over THIS document, and the
+  // five page tools through the runtime's extra-tools door. `/app` takes them away again below.
+  const owned = agent.value;
+  if (owned && landingLive) {
+    const page = createDomBridge({ origin: window.location.origin, authState: () => "anon" });
+    const report = installPageTools(owned.runtime, buildPageTools({ page, sections: LANDING_SECTIONS }));
+    if (!report.installed) console.warn("[00 mini] page tools not installed —", report.detail);
+  }
 }
 
 function stopLanding(): void {
   for (const stop of landingStops) stop();
   landingStops = [];
   landingLive = false;
+  const owned = agent.value;
+  if (owned) uninstallPageTools(owned.runtime);
 }
 
 function onPopState(): void {

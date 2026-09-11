@@ -13,6 +13,7 @@ import {
   PAGE_TOOL_NAMES,
   buildPageTools,
   installPageTools,
+  uninstallPageTools,
   landingContext,
   resolveSection,
   splitLandingContext,
@@ -150,27 +151,34 @@ describe("installPageTools", () => {
   it("reports the gap rather than pretending, when the runtime has no door", () => {
     const report = installPageTools({ run: () => undefined }, buildPageTools({ page: fakePage() }));
     expect(report.installed).toBe(false);
-    expect(report.detail).toContain("registerTool");
+    expect(report.detail).toContain("setExtraTools");
     expect(report.names).toEqual([...PAGE_TOOL_NAMES]);
   });
 
-  it("uses a door the day the contract grows one", () => {
-    const registerTool = vi.fn();
-    const report = installPageTools({ registerTool }, buildPageTools({ page: fakePage() }));
+  it("hands the five tools through setExtraTools, and takes them away with an empty list", () => {
+    const setExtraTools = vi.fn();
+    const report = installPageTools({ setExtraTools }, buildPageTools({ page: fakePage() }));
     expect(report.installed).toBe(true);
-    expect(registerTool).toHaveBeenCalledTimes(PAGE_TOOL_NAMES.length);
+    expect(setExtraTools).toHaveBeenCalledTimes(1);
+    expect((setExtraTools.mock.calls[0]![0] as { schema: { name: string } }[]).map((t) => t.schema.name)).toEqual([
+      ...PAGE_TOOL_NAMES,
+    ]);
+    uninstallPageTools({ setExtraTools });
+    expect(setExtraTools).toHaveBeenLastCalledWith([]);
   });
 
-  it("survives a runtime that refuses them", () => {
+  it("survives a runtime that refuses them, and an uninstall on a runtime without the door", () => {
     const report = installPageTools(
       {
-        registerTool: () => {
-          throw new Error("tool \"page_open\" is already registered");
+        setExtraTools: () => {
+          throw new Error('tool "page_open" is already registered');
         },
       },
       buildPageTools({ page: fakePage() }),
     );
     expect(report.installed).toBe(false);
     expect(report.detail).toContain("already registered");
+    expect(() => uninstallPageTools({})).not.toThrow();
+    expect(() => uninstallPageTools(null)).not.toThrow();
   });
 });
