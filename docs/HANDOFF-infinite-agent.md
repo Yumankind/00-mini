@@ -1487,6 +1487,18 @@ Everything it returns is still untrusted data; conversion makes the words readab
 response, for the same reason `isolation-headers.test.ts` exists: that folder has no `node_modules`.
 The rules and the reasoning are in `apps/infinite-site/README.md`, "The read-only fetch proxy".
 
+### (e) `AgentRuntime.setExtraTools(tools: Tool[]): void`
+
+The tools become swappable the way the brains did in (a) of 2026-09-10. The host's base table is
+still what `createAgentRuntime` was given; `setExtraTools` adds a second list beside it, and each
+call REPLACES the previous extras (so `[]` takes them away). Same timing rule as `setProviders`:
+the next `run()` sees the new table, a run in flight keeps the one it started with — a call the
+model still makes after the tool is gone is refused by name, not run. A name that collides with a
+base tool throws in the caller's stack. Why it exists: the surface in front of the person changes
+without the agent changing — the landing page's `page_*` tools (scroll to `#vault`, outline a
+button) belong to `/` and not to `/app`, and rebuilding the runtime to swap a tool would drop the
+listeners the panes subscribed at mount. Pinned in `test/runtime.test.ts` ("setExtraTools").
+
 ### (d) The QR encoder — `apps/infinite/src/lib/qr.ts`
 
 App-local, not a package: `qrMatrix(text)` and `qrSvg(text, { size, fg, bg, quiet })`, byte mode,

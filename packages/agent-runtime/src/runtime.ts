@@ -243,7 +243,13 @@ export function dropOlderTurns(messages: ChatMessage[]): number {
 export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
   const fs: AgentFs = opts.fs;
   const bus = new EventBus();
-  const registry = new ToolRegistry(opts.tools);
+  /**
+   * The tools, swappable the same way the brains are (`setExtraTools`, contract revision
+   * 2026-09-11): the host's base table from construction plus whatever the surface in front of the
+   * person adds — the landing page's `page_*` tools, a preview's inspector. A run captures the
+   * registry it started with, so a swap bites at the NEXT run and never mid-turn.
+   */
+  let registry = new ToolRegistry(opts.tools);
   /**
    * The brains, swappable (`setProviders`, contract revision 2026-09-10).
    *
@@ -275,6 +281,8 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
     const signal = linked.signal;
 
     const router = new ModelRouter(providers);
+    /** This run's table, pinned: `setExtraTools` during the run changes the next one, not this one. */
+    const tools = registry;
     /** One catalogue read per provider per run — the same budget the class question already has. */
     const toolsCache = new Map<string, Promise<boolean>>();
     const offersTools = (provider: ModelProvider): Promise<boolean> => {
@@ -310,8 +318,8 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
       // which is what resuming means.
       if (!resuming) seenFiles?.clear();
 
-      const toolNames = run.tools ? run.tools.filter((n) => registry.has(n)) : registry.names();
-      const schemas = registry.schemas(toolNames);
+      const toolNames = run.tools ? run.tools.filter((n) => tools.has(n)) : tools.names();
+      const schemas = tools.schemas(toolNames);
       const context = new ContextManager(fs, {
         ...opts.context,
         trust: opts.trust,
@@ -486,7 +494,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
         // Rule 1: sequential, in emitted order.
         for (const call of calls) {
           if (signal.aborted) return finish("aborted");
-          const result = await runToolCall(call, { workspace, sessionId, signal });
+          const result = await runToolCall(call, { workspace, sessionId, signal, tools });
           // The SESSION FILE gets the text only: pi's transcript format has no place for bytes, and
           // a resumed session that re-sent a four-megabyte picture on every turn would be worse than
           // one that carries the caption and the path the picture came from (gap B10).
@@ -571,11 +579,11 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
 
   async function runToolCall(
     call: ToolCall,
-    ctx: { workspace: string; sessionId: string; signal: AbortSignal },
+    ctx: { workspace: string; sessionId: string; signal: AbortSignal; tools: ToolRegistry },
   ): Promise<{ output: string; isError: boolean; images?: ImagePart[] }> {
-    const tool: Tool | undefined = registry.get(call.name);
+    const tool: Tool | undefined = ctx.tools.get(call.name);
     if (!tool) {
-      const message = `No tool named "${call.name}". Available: ${registry.names().join(", ")}`;
+      const message = `No tool named "${call.name}". Available: ${ctx.tools.names().join(", ")}`;
       emit({ type: "tool_failed", callId: call.id, name: call.name, error: message });
       return { output: message, isError: true };
     }
@@ -648,6 +656,11 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
       // The invariant fails HERE rather than at the next run, so the caller who emptied the list is
       // the one who hears about it.
       providers = nonEmpty(next);
+    },
+    setExtraTools(extra) {
+      // A duplicate name fails HERE, in the caller's stack, the same way an empty provider list does:
+      // the base table is the host's and an extra tool may not shadow it.
+      registry = new ToolRegistry([...opts.tools, ...extra]);
     },
     on: (listener) => bus.on(listener),
     async listSessions() {

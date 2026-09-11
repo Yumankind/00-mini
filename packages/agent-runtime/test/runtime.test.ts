@@ -715,3 +715,42 @@ describe("which row's context is read", () => {
     expect(await contextTokensOf(angry)).toBe(DEFAULT_CONTEXT_TOKENS);
   });
 });
+
+// ── The contract revision of 2026-09-11 ─────────────────────────────────────────────────────────
+
+describe("setExtraTools", () => {
+  const extra = (name: string, output: string) => ({
+    schema: { name, description: `the ${name} tool`, parameters: { type: "object", properties: {} } },
+    tier: "safe" as const,
+    async run() {
+      return { output };
+    },
+  });
+
+  it("adds tools beside the base table for the next run, and a later call replaces them", async () => {
+    const provider = new FakeProvider("local", [
+      { toolCalls: [call("page_scroll")] },
+      { text: "scrolled" },
+      { toolCalls: [call("page_scroll")] },
+      { text: "gone" },
+    ]);
+    const { runtime } = harness({ providers: [provider] });
+    runtime.setExtraTools([extra("page_scroll", "at #vault")]);
+    const first = await runtime.run({ prompt: "show me the vault" });
+    expect(first.text).toBe("scrolled");
+    expect(provider.requests[0]!.tools?.some((t) => t.name === "page_scroll")).toBe(true);
+
+    runtime.setExtraTools([]);
+    await runtime.run({ prompt: "again" });
+    // The table the third request saw had no page tool, and the call the model still made was
+    // refused by name rather than run.
+    expect(provider.requests[2]!.tools?.some((t) => t.name === "page_scroll")).toBe(false);
+    const refusal = provider.requests[3]!.messages.find((m) => m.role === "tool");
+    expect(String(refusal?.content)).toMatch(/No tool named "page_scroll"/);
+  });
+
+  it("refuses a name that shadows a base tool, in the caller's stack", () => {
+    const { runtime } = harness();
+    expect(() => runtime.setExtraTools([extra("ls", "nope")])).toThrow(/already registered/);
+  });
+});

@@ -231,6 +231,14 @@ export interface AgentRuntime {
    * An empty list throws, exactly as the constructor does — a runtime with no provider cannot run.
    */
   setProviders(providers: ModelProvider[]): void;
+  /**
+   * Add tools beside the host's base table without rebuilding the runtime (contract revision
+   * 2026-09-11). Same timing rule as `setProviders`: the NEXT `run()` sees the new table, a run in
+   * flight keeps the one it started with. Each call REPLACES the previous extras, so a surface that
+   * goes away (the landing page's `page_*` tools when the full app takes the screen) calls it with
+   * `[]`. A name that collides with a base tool throws here, in the caller's stack.
+   */
+  setExtraTools(tools: Tool[]): void;
   on(listener: (event: AgentEvent) => void): () => void;
   listSessions(): Promise<{ id: string; title: string; updatedAt: number }[]>;
   loadSession(id: string): Promise<ChatMessage[]>;
