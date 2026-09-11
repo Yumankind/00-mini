@@ -40,7 +40,8 @@
  *    a whole answer from another is not a fallback, it is a corrupted turn. (Same rule, same
  *    sentence, as the models router's own `stream`.)
  */
-import { isSwitchable, type ChatMessage, type ChatResponse, type ImagePart, type ModelProvider, type ToolCall, type Usage } from "@00/agent-models";
+import { estimateTokens } from "./context.js";
+import { isContextOverflow, isSwitchable, providerErrorFromThrow, type ChatMessage, type ChatResponse, type ImagePart, type ModelProvider, type ToolCall, type Usage } from "@00/agent-models";
 import type { AgentFs } from "@00/agent-fs";
 import type {
   AgentEvent,
@@ -219,6 +220,26 @@ function linkSignals(...signals: (AbortSignal | undefined)[]): { signal: AbortSi
   };
 }
 
+/**
+ * Removes every turn between the system turn and the latest user turn, in place, and answers how
+ * many went. The latest user turn and whatever followed it (tool results of this step) stay, so the
+ * question being answered is never the thing dropped.
+ */
+export function dropOlderTurns(messages: ChatMessage[]): number {
+  const start = messages[0]?.role === "system" ? 1 : 0;
+  let lastUser = -1;
+  for (let i = messages.length - 1; i >= start; i--) {
+    if (messages[i]?.role === "user") {
+      lastUser = i;
+      break;
+    }
+  }
+  if (lastUser <= start) return 0;
+  const removed = lastUser - start;
+  messages.splice(start, removed);
+  return removed;
+}
+
 export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
   const fs: AgentFs = opts.fs;
   const bus = new EventBus();
@@ -267,7 +288,7 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
     /** One catalogue read per provider-and-model per run, the same budget the two questions above have. */
     const contextCache = new Map<string, Promise<number>>();
     const contextBudget = (provider: ModelProvider, model?: string): Promise<number> => {
-      const key = `${provider.id} ${model ?? ""}`;
+      const key = `${provider.id}\u0000${model ?? ""}`;
       let pending = contextCache.get(key);
       if (!pending) {
         pending = contextTokensOf(provider, model);
@@ -370,6 +391,8 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
         let model: string | undefined;
         /** True when this attempt's brain brings its own tools and ours were withheld. */
         let ownTools = false;
+        /** One history trim per step: a second overflow after it is the answer, not a loop. */
+        let historyTrimmed = false;
         while (!attempt.done) {
           ({ provider, model } = attempt.value);
           answeredBy = { providerId: provider.id, model };
@@ -401,7 +424,31 @@ export function createAgentRuntime(opts: AgentRuntimeOptionsExt): AgentRuntime {
                 continue;
               }
             }
-            emit({ type: "error", message: `model failed: ${(err as Error).message}` });
+            /**
+             * The window, not the brain, is the problem: drop the older turns of THIS conversation
+             * (everything between the system turn and the latest user turn) and ask the same brain
+             * once more. The event says so, the way the system-prompt trim does. A second overflow,
+             * or nothing left to drop, surfaces the mapped sentence — never an engine trace.
+             */
+            if (!emitted && !historyTrimmed && isContextOverflow(err)) {
+              const before = estimateTokens(JSON.stringify(messages));
+              const removed = dropOlderTurns(messages);
+              if (removed > 0) {
+                historyTrimmed = true;
+                emit({
+                  type: "context_trimmed",
+                  dropped: [`history (${removed} earlier turns)`],
+                  budgetTokens: before,
+                  usedTokens: estimateTokens(JSON.stringify(messages)),
+                });
+                continue;
+              }
+            }
+            // A provider that forgot to map the engine's words gets them mapped here, so the
+            // person reads the sentence and never the trace.
+            const overflow = isContextOverflow(err);
+            const said = overflow ? providerErrorFromThrow(provider.id, err).message : ((err as Error).message ?? String(err));
+            emit({ type: "error", message: overflow ? said : `model failed: ${said}` });
             return finish("error");
           }
         }

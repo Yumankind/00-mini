@@ -17,6 +17,9 @@ const EXPECTED = [
   "classifyStatus",
   "providerErrorFromResponse",
   "providerErrorFromThrow",
+  "contextOverflowOf",
+  "contextOverflowSentence",
+  "isContextOverflow",
   "throwIfAborted",
   // sse
   "readSse",

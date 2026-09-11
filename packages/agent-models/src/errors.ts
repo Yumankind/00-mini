@@ -43,7 +43,10 @@ export type ProviderErrorCode =
   | "aborted"
   | "unsupported"
   /** No provider in the preference list was ready. Raised by the router, never by a provider. */
-  | "no_brain";
+  | "no_brain"
+  /** The turn does not fit the model's context window. Not a switchable refusal — a bigger window
+   *  or a shorter history fixes it, not another purse — and never a raw engine trace. */
+  | "context_overflow";
 
 export interface ProviderErrorInit {
   status: number;
@@ -86,6 +89,14 @@ export type SwitchableCode = Extract<ProviderErrorCode, "credential" | "insuffic
 
 export function isSwitchable(err: unknown): err is ProviderError & { code: SwitchableCode } {
   return err instanceof ProviderError && (err.code === "credential" || err.code === "insufficient_credits");
+}
+
+/** True when the turn did not fit the window — a mapped `ProviderError`, or a raw engine error a
+ *  provider forgot to map (the sentence is recognised either way, so the loop never shows a trace). */
+export function isContextOverflow(err: unknown): boolean {
+  if (err instanceof ProviderError) return err.code === "context_overflow";
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return contextOverflowOf(message) !== null;
 }
 
 /** True when the caller pulled the plug. Never retried, never switched — the person said stop. */
@@ -170,7 +181,11 @@ export function providerErrorFromResponse(input: {
   origin?: string;
 }): ProviderError {
   const body = parseErrorBody(input.text);
-  const code = classifyStatus(input.status, body);
+  // A 400 whose sentence is "maximum context length" is not a bad request the caller can fix by
+  // reading the body; it is the window, and it gets the same code the local engines get.
+  const overflow = body.message ? contextOverflowOf(body.message) : null;
+  const code = overflow ? "context_overflow" : classifyStatus(input.status, body);
+  if (overflow) body.message = contextOverflowSentence(input.providerId, overflow);
   const header = input.headers?.get("retry-after");
   const headerSeconds = header && /^\d+$/.test(header.trim()) ? Number(header.trim()) : undefined;
   const topUp = body.topUp && (body.topUp.packsUrl || body.topUp.checkoutUrl) ? { ...body.topUp, origin: input.origin } : undefined;
@@ -187,12 +202,43 @@ export function providerErrorFromResponse(input: {
 }
 
 /** A thrown `fetch` — DNS, TLS, offline, or the person pressing stop. */
+/**
+ * The engines say "too long" in their own words: MediaPipe throws a C++ trace ending in
+ * `input_size(5197) was not less than maxTokens(4096)`, OpenAI-shaped hosts answer 400 with
+ * "maximum context length", web-llm mentions the context window. One reader, so a person is never
+ * shown the trace and the loop can act on the code.
+ */
+const OVERFLOW_RE = /input is too long|was not less than maxtokens|maximum context length|context length|context window|too many tokens|prompt is too long|exceeds the model's context|context_length_exceeded/i;
+
+export interface ContextOverflow {
+  /** Tokens the turn needed, when the engine said. */
+  needed?: number;
+  /** Tokens the window holds, when the engine said. */
+  window?: number;
+}
+
+/** Reads the two numbers MediaPipe prints, or nothing. */
+export function contextOverflowOf(message: string): ContextOverflow | null {
+  if (!OVERFLOW_RE.test(message)) return null;
+  const m = /input_size\((\d+)\)[^]*?maxTokens\((\d+)\)/i.exec(message);
+  return m ? { needed: Number(m[1]), window: Number(m[2]) } : {};
+}
+
+export function contextOverflowSentence(providerId: string, o: ContextOverflow): string {
+  const sizes = o.needed && o.window ? ` (this turn needs about ${o.needed} tokens; the window holds ${o.window})` : "";
+  return `${providerId}: this turn does not fit the model's context window${sizes}. Start a new conversation, or pick a brain with a larger window.`;
+}
+
 export function providerErrorFromThrow(providerId: string, err: unknown, signal?: AbortSignal): ProviderError {
   if (err instanceof ProviderError) return err;
   if (isAborted(err) || signal?.aborted) {
     return new ProviderError({ status: 0, code: "aborted", message: "The request was cancelled.", providerId, cause: err });
   }
   const message = err instanceof Error ? err.message : String(err);
+  const overflow = contextOverflowOf(message);
+  if (overflow) {
+    return new ProviderError({ status: 0, code: "context_overflow", message: contextOverflowSentence(providerId, overflow), providerId, cause: err });
+  }
   return new ProviderError({ status: 0, code: "network", message: `${providerId} could not be reached: ${message}`, providerId, cause: err });
 }
 

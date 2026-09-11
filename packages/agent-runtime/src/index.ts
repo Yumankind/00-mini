@@ -33,6 +33,7 @@ export {
   OWN_TOOLS_FOOTER,
   providerOffersTools,
   SYSTEM_PROMPT_SHARE,
+  dropOlderTurns,
 } from "./runtime.js";
 export type { AgentRuntimeOptionsExt, RuntimeExtensions } from "./runtime.js";
 
